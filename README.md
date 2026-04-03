@@ -27,43 +27,74 @@ Or with `pip`:
 python3 -m pip install codex-stats
 ```
 
-## Commands
+## Command Reference
 
-```bash
-codex-stats
-codex-stats today
-codex-stats week
-codex-stats month
-codex-stats session
-codex-stats session --id <session_id>
-codex-stats models
-codex-stats project
-codex-stats project backend-api
-codex-stats project backend-api --days 30
-codex-stats daily
-codex-stats compare
-codex-stats compare today yesterday
-codex-stats history
-codex-stats top
-codex-stats top --project backend-api
-codex-stats costs
-codex-stats insights
-codex-stats doctor
-codex-stats doctor --strict
-codex-stats init
-codex-stats report weekly
-codex-stats report weekly --format markdown
-codex-stats report weekly --project backend-api
-codex-stats report weekly --format markdown --output weekly-report.md
-codex-stats --days 14
-codex-stats --color always
-codex-stats export codex-stats-export.json
-codex-stats export codex-stats-export.json --since 30d
-codex-stats import laptop.json desktop.json
-codex-stats merge merged.json laptop.json desktop.json
-codex-stats completions zsh
-codex-stats --json
-```
+- `codex-stats`
+  Show the default usage summary for today.
+- `codex-stats today`
+  Show today's usage summary explicitly.
+- `codex-stats week`
+  Show usage totals for the last 7 days.
+- `codex-stats month`
+  Show usage totals for the last 30 days.
+- `codex-stats --days 14`
+  Show a rolling summary for the last `N` days.
+- `codex-stats session`
+  Show the most recent session in detail.
+- `codex-stats session --id <session_id>`
+  Show one specific session by ID.
+- `codex-stats models`
+  Break usage down by model.
+- `codex-stats project`
+  Break usage down by project.
+- `codex-stats project backend-api`
+  Show a single project's summary across all available local data.
+- `codex-stats project backend-api --days 30`
+  Show a single project's summary for a rolling time window.
+- `codex-stats daily`
+  Show per-day usage with an ASCII trend graph.
+- `codex-stats compare`
+  Compare the last 7 days against the previous 7 days.
+- `codex-stats compare today yesterday`
+  Compare named time windows directly.
+- `codex-stats history`
+  Show recent session history.
+- `codex-stats top`
+  Show the largest sessions by token usage.
+- `codex-stats top --project backend-api`
+  Show the largest sessions for one project.
+- `codex-stats costs`
+  Show estimated cost totals and monthly projection.
+- `codex-stats insights`
+  Show anomaly-aware insights and recommended next steps.
+- `codex-stats doctor`
+  Validate local Codex data sources and config.
+- `codex-stats doctor --strict`
+  Return a non-zero exit code if any doctor check fails.
+- `codex-stats init`
+  Create a default config file under `~/.config/codex-stats/`.
+- `codex-stats report weekly`
+  Generate a weekly shareable report.
+- `codex-stats report weekly --format markdown`
+  Generate a weekly report in Markdown.
+- `codex-stats report weekly --project backend-api`
+  Generate a weekly report for one project.
+- `codex-stats report weekly --format markdown --output weekly-report.md`
+  Write a formatted report to a file.
+- `codex-stats export codex-stats-export.json`
+  Export normalized local stats to JSON.
+- `codex-stats export codex-stats-export.json --since 30d`
+  Export only a rolling window of recent sessions.
+- `codex-stats import laptop.json desktop.json`
+  Read one or more exported snapshots and summarize them.
+- `codex-stats merge merged.json laptop.json desktop.json`
+  Merge multiple exported snapshots into one deduplicated file.
+- `codex-stats completions zsh`
+  Print shell completion setup for your shell.
+- `codex-stats --color always`
+  Force ANSI color output.
+- `codex-stats --json`
+  Return machine-readable JSON output for supported commands.
 
 ## How It Works
 
