@@ -37,7 +37,11 @@ python -m pip install -e .
 ```bash
 codex-stats
 codex-stats today
+codex-stats week
+codex-stats month
 codex-stats session
+codex-stats models
+codex-stats project
 codex-stats session --id <session_id>
 codex-stats --json
 ```

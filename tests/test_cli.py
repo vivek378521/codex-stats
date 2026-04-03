@@ -22,6 +22,12 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.command, "session")
         self.assertEqual(args.session_id, "abc")
 
+    def test_models_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["models", "--json"])
+        self.assertEqual(args.command, "models")
+        self.assertTrue(args.json_output)
+
 
 if __name__ == "__main__":
     unittest.main()

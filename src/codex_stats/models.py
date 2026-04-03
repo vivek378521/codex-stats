@@ -79,3 +79,15 @@ class TimeSummary:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BreakdownEntry:
+    name: str
+    sessions: int
+    requests: int
+    total_tokens: int
+    estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

@@ -73,6 +73,10 @@ def get_session(paths: Paths, session_id: str | None = None) -> SessionRecord | 
     return None
 
 
+def iter_session_details(paths: Paths) -> list[SessionDetails]:
+    return [get_session_details(paths, session) for session in iter_sessions(paths)]
+
+
 def _read_rollout_details(path: Path) -> dict[str, int | str | None]:
     details: dict[str, int | str | None] = {
         "request_count": 0,

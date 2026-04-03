@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC
 
-from .models import SessionDetails, TimeSummary
+from .models import BreakdownEntry, SessionDetails, TimeSummary
 
 
 def format_summary(summary: TimeSummary) -> str:
@@ -47,6 +47,21 @@ def format_session(details: SessionDetails) -> str:
 
 def as_json(payload: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def format_breakdown(title: str, entries: list[BreakdownEntry]) -> str:
+    lines = [title, ""]
+    if not entries:
+        lines.append("No data.")
+        return "\n".join(lines)
+    for entry in entries:
+        lines.append(f"{entry.name}")
+        lines.append(f"  Sessions: {entry.sessions}")
+        lines.append(f"  Requests: {entry.requests}")
+        lines.append(f"  Total tokens: {entry.total_tokens:,}")
+        lines.append(f"  Estimated cost: ${entry.estimated_cost_usd:.2f}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _fmt_dt(value) -> str:

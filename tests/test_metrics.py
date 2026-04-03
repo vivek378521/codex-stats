@@ -5,13 +5,14 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.config import Paths
 from codex_stats.ingest import get_session, get_session_details
-from codex_stats.metrics import summarize_today
+from codex_stats.metrics import summarize_models, summarize_month, summarize_projects, summarize_today, summarize_week
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -151,11 +152,26 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(details.effective_total_tokens(), 280)
 
     def test_today_summary_aggregates_sessions(self) -> None:
-        summary = summarize_today(self.paths)
+        summary = summarize_today(self.paths, now=datetime.fromisoformat("2026-04-03T18:30:00+05:30"))
         self.assertEqual(summary.sessions, 1)
         self.assertEqual(summary.requests, 2)
         self.assertEqual(summary.total_tokens, 280)
         self.assertEqual(summary.top_model, "gpt-5.4")
+
+    def test_week_and_month_summaries_include_session(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        week = summarize_week(self.paths, now=now)
+        month = summarize_month(self.paths, now=now)
+        self.assertEqual(week.total_tokens, 280)
+        self.assertEqual(month.total_tokens, 280)
+
+    def test_model_and_project_breakdowns(self) -> None:
+        models = summarize_models(self.paths)
+        projects = summarize_projects(self.paths)
+        self.assertEqual(models[0].name, "gpt-5.4")
+        self.assertEqual(models[0].total_tokens, 280)
+        self.assertEqual(projects[0].name, "project")
+        self.assertEqual(projects[0].requests, 2)
 
 
 if __name__ == "__main__":

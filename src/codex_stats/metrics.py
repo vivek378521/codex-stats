@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime, tzinfo
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta, tzinfo
 
 from .config import Paths
-from .ingest import get_session_details, sessions_for_day
-from .models import SessionDetails, TimeSummary
+from .ingest import get_session_details, iter_session_details
+from .models import BreakdownEntry, SessionDetails, TimeSummary
 
 # Conservative placeholder pricing. Replace with model-specific pricing later.
 DEFAULT_USD_PER_1K_TOKENS = 0.01
@@ -17,10 +17,36 @@ def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float = DEFAULT_USD_
 
 def summarize_today(paths: Paths, now: datetime | None = None) -> TimeSummary:
     current_time = now or datetime.now().astimezone()
-    timezone = current_time.tzinfo
-    sessions = sessions_for_day(paths, current_time.date(), timezone)
-    details = [get_session_details(paths, session) for session in sessions]
-    return summarize_details("today", details)
+    return summarize_period(paths, "today", current_time.date(), current_time.date(), current_time.tzinfo)
+
+
+def summarize_week(paths: Paths, now: datetime | None = None) -> TimeSummary:
+    current_time = now or datetime.now().astimezone()
+    end_day = current_time.date()
+    start_day = end_day - timedelta(days=6)
+    return summarize_period(paths, "week", start_day, end_day, current_time.tzinfo)
+
+
+def summarize_month(paths: Paths, now: datetime | None = None) -> TimeSummary:
+    current_time = now or datetime.now().astimezone()
+    end_day = current_time.date()
+    start_day = end_day - timedelta(days=29)
+    return summarize_period(paths, "month", start_day, end_day, current_time.tzinfo)
+
+
+def summarize_period(
+    paths: Paths,
+    label: str,
+    start_day: date,
+    end_day: date,
+    timezone: tzinfo | None,
+) -> TimeSummary:
+    details = [
+        detail
+        for detail in iter_session_details(paths)
+        if start_day <= local_date(detail.session.created_at, timezone) <= end_day
+    ]
+    return summarize_details(label, details)
 
 
 def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
@@ -50,3 +76,35 @@ def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
 def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
     target_timezone = timezone or value.astimezone().tzinfo
     return value.astimezone(target_timezone).date()
+
+
+def summarize_models(paths: Paths) -> list[BreakdownEntry]:
+    details = iter_session_details(paths)
+    grouped: dict[str, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        grouped[detail.session.model or "unknown"].append(detail)
+    return _build_breakdown(grouped)
+
+
+def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
+    details = iter_session_details(paths)
+    grouped: dict[str, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        grouped[detail.session.project_name].append(detail)
+    return _build_breakdown(grouped)
+
+
+def _build_breakdown(grouped: dict[str, list[SessionDetails]]) -> list[BreakdownEntry]:
+    entries: list[BreakdownEntry] = []
+    for name, details in grouped.items():
+        total_tokens = sum(detail.effective_total_tokens() for detail in details)
+        entries.append(
+            BreakdownEntry(
+                name=name,
+                sessions=len(details),
+                requests=sum(detail.request_count for detail in details),
+                total_tokens=total_tokens,
+                estimated_cost_usd=estimate_cost_usd(total_tokens),
+            )
+        )
+    return sorted(entries, key=lambda entry: (-entry.total_tokens, entry.name))
