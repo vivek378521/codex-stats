@@ -1,29 +1,57 @@
 # codex-stats
 
-Local AI usage observability CLI for Codex sessions.
+`codex-stats` is a local analytics CLI for Codex usage.
 
-## What it does
+It reads your local Codex state from `~/.codex` and surfaces:
 
-`codex-stats` reads local Codex state from `~/.codex` and shows:
-
-- session totals from `state_5.sqlite`
-- request counts from rollout JSONL files
-- model and project breakdown from local session metadata
-- estimated cost from a local pricing table
+- session summaries
+- today, week, and month usage totals
+- model and project breakdowns
+- estimated token-based cost
 
 ## Install
-
-```bash
-pip install .
-```
-
-After publish:
 
 ```bash
 pipx install codex-stats
 ```
 
-For local development:
+Or with `pip`:
+
+```bash
+python3 -m pip install codex-stats
+```
+
+## Commands
+
+```bash
+codex-stats
+codex-stats today
+codex-stats week
+codex-stats month
+codex-stats session
+codex-stats session --id <session_id>
+codex-stats models
+codex-stats project
+codex-stats --json
+```
+
+## How It Works
+
+`codex-stats` does not proxy or intercept Codex API traffic.
+
+It reads local Codex artifacts, including:
+
+- `state_5.sqlite` for session metadata
+- rollout JSONL files for request and token snapshots
+
+## Notes
+
+- Costs are estimates, not billing values.
+- Output depends on local Codex file formats remaining compatible.
+
+## Development
+
+For local development from the repo:
 
 ```bash
 python3 -m venv .venv
@@ -32,38 +60,8 @@ python -m pip install -U pip setuptools
 python -m pip install -e .
 ```
 
-## Usage
-
-```bash
-codex-stats
-codex-stats today
-codex-stats week
-codex-stats month
-codex-stats session
-codex-stats models
-codex-stats project
-codex-stats session --id <session_id>
-codex-stats --json
-```
-
-From the repo without installing:
+Run without installing:
 
 ```bash
 PYTHONPATH=src python3 -m codex_stats
 ```
-
-## Notes
-
-- This tool does not intercept Codex API traffic.
-- Costs are estimates, not authoritative billing values.
-- The current MVP relies on local file formats that may evolve with Codex CLI versions.
-
-## Release
-
-Recommended publish flow:
-
-1. Create the GitHub repository `vivek378521/codex-stats`.
-2. Create a PyPI project named `codex-stats`.
-3. Configure PyPI Trusted Publishing for the GitHub repository.
-4. Push a version tag and publish a GitHub release.
-5. The release workflow will build and upload the package to PyPI.
