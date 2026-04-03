@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from codex_stats.config import Paths
+from codex_stats.ingest import get_session, get_session_details
+from codex_stats.metrics import summarize_today
+
+
+class MetricsTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        root = Path(self.tmpdir.name)
+        codex_home = root / ".codex"
+        sessions_dir = codex_home / "sessions" / "2026" / "04" / "03"
+        sessions_dir.mkdir(parents=True)
+        self.state_db = codex_home / "state_5.sqlite"
+        rollout_path = sessions_dir / "rollout-test.jsonl"
+
+        connection = sqlite3.connect(self.state_db)
+        connection.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT NOT NULL,
+                sandbox_policy TEXT NOT NULL,
+                approval_mode TEXT NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                cli_version TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                agent_nickname TEXT,
+                agent_role TEXT,
+                memory_mode TEXT NOT NULL DEFAULT 'enabled',
+                model TEXT,
+                reasoning_effort TEXT,
+                agent_path TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO threads (
+                id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+                title, sandbox_policy, approval_mode, tokens_used, model
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "session-1",
+                str(rollout_path),
+                1775222209,
+                1775222447,
+                "cli",
+                "openai",
+                "/tmp/project",
+                "Test Thread",
+                "workspace-write",
+                "default",
+                223342,
+                "gpt-5.4",
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        lines = [
+            {
+                "timestamp": "2026-04-03T13:17:23.324Z",
+                "type": "session_meta",
+                "payload": {"timestamp": "2026-04-03T13:16:49.765Z"},
+            },
+            {
+                "timestamp": "2026-04-03T13:17:23.325Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "first"},
+            },
+            {
+                "timestamp": "2026-04-03T13:17:23.740Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 10,
+                            "reasoning_output_tokens": 3,
+                            "total_tokens": 110,
+                        }
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-04-03T13:18:23.325Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "second"},
+            },
+            {
+                "timestamp": "2026-04-03T13:18:23.740Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 250,
+                            "cached_input_tokens": 50,
+                            "output_tokens": 30,
+                            "reasoning_output_tokens": 7,
+                            "total_tokens": 280,
+                        }
+                    },
+                },
+            },
+        ]
+        rollout_path.write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8")
+        self.paths = Paths(
+            codex_home=codex_home,
+            state_db=self.state_db,
+            logs_db=codex_home / "logs_1.sqlite",
+            sessions_dir=codex_home / "sessions",
+        )
+
+    def tearDown(self) -> None:
+        self.tmpdir.cleanup()
+
+    def test_session_details_are_read_from_local_state(self) -> None:
+        session = get_session(self.paths, "session-1")
+        assert session is not None
+        details = get_session_details(self.paths, session)
+        self.assertEqual(details.request_count, 2)
+        self.assertEqual(details.input_tokens, 250)
+        self.assertEqual(details.output_tokens, 30)
+        self.assertEqual(details.effective_total_tokens(), 280)
+
+    def test_today_summary_aggregates_sessions(self) -> None:
+        summary = summarize_today(self.paths)
+        self.assertEqual(summary.sessions, 1)
+        self.assertEqual(summary.requests, 2)
+        self.assertEqual(summary.total_tokens, 280)
+        self.assertEqual(summary.top_model, "gpt-5.4")
+
+
+if __name__ == "__main__":
+    unittest.main()
