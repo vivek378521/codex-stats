@@ -50,7 +50,7 @@ from .metrics import (
     summarize_top_sessions_from_details,
     summarize_week,
 )
-from .transfer import read_imports, write_export
+from .transfer import read_imports, write_export, write_merged_export
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="Validate local Codex data sources.")
     doctor_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any doctor check fails.")
 
     completions_parser = subparsers.add_parser("completions", help="Print shell completion script.")
     completions_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell name.")
@@ -133,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = subparsers.add_parser("report", help="Generate a shareable usage report.")
     report_parser.add_argument("period", choices=["weekly", "monthly"], help="Report period.")
     report_parser.add_argument("--format", choices=["text", "markdown", "json"], default="text", help="Output format.")
+    report_parser.add_argument("--project", dest="project_name", help="Generate the report for one project.")
+    report_parser.add_argument("--output", help="Write the report to a file instead of stdout.")
+
+    merge_parser = subparsers.add_parser("merge", help="Merge one or more exported stats files into one snapshot.")
+    merge_parser.add_argument("output", help="Merged output JSON file.")
+    merge_parser.add_argument("input", nargs="+", help="Input export JSON files.")
 
     return parser
 
@@ -176,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json(details.to_dict()))
         else:
-            print(format_session(details, options))
+            print(format_session(details, options, load_pricing_config(paths)))
         return 0
 
     if args.command == "models":
@@ -306,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
             print(as_json({"checks": [check.to_dict() for check in checks]}))
         else:
             print(format_doctor(checks, options))
+        if args.strict and any(not check.ok for check in checks):
+            return 1
         return 0
 
     if args.command == "init":
@@ -318,13 +327,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "report":
-        report = build_report(paths, period=args.period)
+        report = build_report(paths, period=args.period, project_name=args.project_name)
         if args.format == "json":
-            print(as_json(report.to_dict()))
+            content = as_json(report.to_dict())
         elif args.format == "markdown":
-            print(format_report_markdown(report))
+            content = format_report_markdown(report)
         else:
-            print(format_report(report, options))
+            content = format_report(report, options)
+        if args.output:
+            output_path = Path(args.output).expanduser()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
+            print(f"Wrote report to {output_path}")
+        else:
+            print(content)
+        return 0
+
+    if args.command == "merge":
+        output_path = write_merged_export(
+            [Path(input_path).expanduser() for input_path in args.input],
+            Path(args.output).expanduser(),
+        )
+        print(f"Merged stats to {output_path}")
         return 0
 
     parser.print_help()

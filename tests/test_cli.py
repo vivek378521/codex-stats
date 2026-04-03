@@ -65,12 +65,13 @@ class CliTestCase(unittest.TestCase):
         parser = build_parser()
         daily_args = parser.parse_args(["daily", "--days", "14"])
         compare_args = parser.parse_args(["compare", "--days", "14", "--json"])
-        doctor_args = parser.parse_args(["doctor"])
+        doctor_args = parser.parse_args(["doctor", "--strict"])
         self.assertEqual(daily_args.command, "daily")
         self.assertEqual(daily_args.days, 14)
         self.assertEqual(compare_args.command, "compare")
         self.assertTrue(compare_args.json_output)
         self.assertEqual(doctor_args.command, "doctor")
+        self.assertTrue(doctor_args.strict)
 
     def test_top_import_and_completions_parsers(self) -> None:
         parser = build_parser()
@@ -87,13 +88,15 @@ class CliTestCase(unittest.TestCase):
         parser = build_parser()
         init_args = parser.parse_args(["init", "--force"])
         compare_args = parser.parse_args(["compare", "today", "yesterday"])
-        report_args = parser.parse_args(["report", "weekly", "--format", "markdown"])
+        report_args = parser.parse_args(["report", "weekly", "--format", "markdown", "--project", "project", "--output", "weekly.md"])
         self.assertEqual(init_args.command, "init")
         self.assertTrue(init_args.force)
         self.assertEqual(compare_args.current, "today")
         self.assertEqual(compare_args.previous, "yesterday")
         self.assertEqual(report_args.period, "weekly")
         self.assertEqual(report_args.format, "markdown")
+        self.assertEqual(report_args.project_name, "project")
+        self.assertEqual(report_args.output, "weekly.md")
 
     def test_project_drilldown_parser(self) -> None:
         parser = build_parser()
@@ -102,6 +105,13 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.name, "project")
         self.assertEqual(args.days, 30)
         self.assertTrue(args.json_output)
+
+    def test_merge_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["merge", "merged.json", "a.json", "b.json"])
+        self.assertEqual(args.command, "merge")
+        self.assertEqual(args.output, "merged.json")
+        self.assertEqual(args.input, ["a.json", "b.json"])
 
 
 if __name__ == "__main__":

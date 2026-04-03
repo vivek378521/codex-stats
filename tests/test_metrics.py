@@ -32,7 +32,7 @@ from codex_stats.metrics import (
     summarize_top_sessions,
     summarize_week,
 )
-from codex_stats.transfer import export_payload, read_import, read_imports
+from codex_stats.transfer import export_payload, read_import, read_imports, write_merged_export
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -252,6 +252,7 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(weekly.period, "weekly")
         self.assertEqual(weekly.summary.total_tokens, 280)
         self.assertEqual(weekly.comparison.previous.total_tokens, 0)
+        self.assertIsNone(weekly.project_name)
 
     def test_project_drilldown_and_filtered_top(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -269,6 +270,21 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(parse_since_days("30d"), 30)
         with self.assertRaises(ValueError):
             parse_since_days("30")
+
+    def test_project_report_and_merge_export(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        report = build_report(self.paths, "weekly", project_name="project", now=now)
+        export_path_a = Path(self.tmpdir.name) / "a.json"
+        export_path_b = Path(self.tmpdir.name) / "b.json"
+        export_path_out = Path(self.tmpdir.name) / "merged.json"
+        export_path_a.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
+        export_path_b.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
+        write_merged_export([export_path_a, export_path_b], export_path_out)
+        merged_payload = json.loads(export_path_out.read_text(encoding="utf-8"))
+        self.assertEqual(report.project_name, "project")
+        self.assertEqual(report.summary.total_tokens, 280)
+        self.assertEqual(report.projects, [])
+        self.assertEqual(len(merged_payload["sessions"]), 1)
 
 
 if __name__ == "__main__":

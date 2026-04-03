@@ -6,6 +6,8 @@ import textwrap
 from datetime import UTC
 from dataclasses import dataclass
 
+from .config import PricingConfig
+from .metrics import estimate_detail_cost
 from .models import (
     BreakdownEntry,
     CompareReport,
@@ -53,8 +55,13 @@ def format_summary(summary: TimeSummary, options: FormatOptions | None = None) -
     return _card("Codex Usage", rows, options)
 
 
-def format_session(details: SessionDetails, options: FormatOptions | None = None) -> str:
+def format_session(
+    details: SessionDetails,
+    options: FormatOptions | None = None,
+    pricing: PricingConfig | None = None,
+) -> str:
     options = options or FormatOptions()
+    pricing = pricing or PricingConfig()
     session = details.session
     rows = [
         ("Session ID", session.session_id),
@@ -68,7 +75,7 @@ def format_session(details: SessionDetails, options: FormatOptions | None = None
         ("Cached input", _fmt_optional_int(details.cached_input_tokens)),
         ("Reasoning", _fmt_optional_int(details.reasoning_output_tokens)),
         ("Total tokens", f"{details.effective_total_tokens():,}"),
-        ("Estimated cost", f"${details.effective_total_tokens() / 1000 * 0.01:.2f}"),
+        ("Estimated cost", f"${estimate_detail_cost(details, pricing):.2f}"),
     ]
     return _card("Session Summary", rows, options)
 
@@ -197,12 +204,13 @@ def format_top(entries: list[TopEntry], options: FormatOptions | None = None) ->
 
 def format_report(report: ReportData, options: FormatOptions | None = None) -> str:
     options = options or FormatOptions()
+    project_title = report.period.title() if report.project_name is None else f"{report.period.title()} Report: {report.project_name}"
     lines = [
+        _card("Report", [("Window", project_title)], options),
+        "",
         format_summary(report.summary, options),
         "",
         format_compare(report.comparison, options),
-        "",
-        format_breakdown("Top Projects", report.projects, options),
         "",
         format_top(report.top_sessions, options),
         "",
@@ -210,35 +218,33 @@ def format_report(report: ReportData, options: FormatOptions | None = None) -> s
         "",
         format_insights(report.insights, options),
     ]
+    if report.project_name is None:
+        lines[4:4] = ["", format_breakdown("Top Projects", report.projects, options)]
     return "\n".join(lines)
 
 
 def format_report_markdown(report: ReportData) -> str:
     delta_pct = "n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%"
+    title = f"Codex Stats {report.period.title()} Report"
+    if report.project_name:
+        title = f"{title}: {report.project_name}"
     lines = [
-        f"# Codex Stats {report.period.title()} Report",
+        f"# {title}",
         "",
         f"- Total tokens: `{report.summary.total_tokens:,}`",
         f"- Requests: `{report.summary.requests}`",
         f"- Estimated cost: `${report.summary.estimated_cost_usd:.2f}`",
         f"- Top model: `{report.summary.top_model or 'unknown'}`",
         f"- Trend vs previous window: `{delta_pct}`",
-        "",
-        "## Top Projects",
-        "",
     ]
-    if report.projects:
-        for entry in report.projects:
-            lines.append(f"- `{entry.name}`: `{entry.total_tokens:,}` tokens, `{entry.requests}` requests, `${entry.estimated_cost_usd:.2f}`")
-    else:
-        lines.append("- No data")
-    lines.extend(
-        [
-            "",
-            "## Top Sessions",
-            "",
-        ]
-    )
+    if report.project_name is None:
+        lines.extend(["", "## Top Projects", ""])
+        if report.projects:
+            for entry in report.projects:
+                lines.append(f"- `{entry.name}`: `{entry.total_tokens:,}` tokens, `{entry.requests}` requests, `${entry.estimated_cost_usd:.2f}`")
+        else:
+            lines.append("- No data")
+    lines.extend(["", "## Top Sessions", ""])
     if report.top_sessions:
         for entry in report.top_sessions:
             lines.append(f"- `{entry.project_name}` / `{entry.model or 'unknown'}`: `{entry.total_tokens:,}` tokens, `{entry.requests}` requests")

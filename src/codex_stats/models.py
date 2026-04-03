@@ -196,6 +196,7 @@ class TopEntry:
 @dataclass(frozen=True)
 class ReportData:
     period: str
+    project_name: str | None
     summary: TimeSummary
     comparison: CompareReport
     projects: list[BreakdownEntry]
@@ -206,6 +207,7 @@ class ReportData:
     def to_dict(self) -> dict[str, Any]:
         return {
             "period": self.period,
+            "project_name": self.project_name,
             "summary": self.summary.to_dict(),
             "comparison": self.comparison.to_dict(),
             "projects": [entry.to_dict() for entry in self.projects],

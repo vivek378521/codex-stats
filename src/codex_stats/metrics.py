@@ -489,28 +489,66 @@ def summarize_top_sessions_from_details(
     ]
 
 
-def build_report(paths: Paths, period: str = "weekly", now: datetime | None = None) -> ReportData:
+def build_report(
+    paths: Paths,
+    period: str = "weekly",
+    project_name: str | None = None,
+    now: datetime | None = None,
+) -> ReportData:
     current_time = now or datetime.now().astimezone()
     pricing = load_pricing_config(paths)
     if period == "weekly":
         details = details_for_last_days(paths, 7, now=current_time)
-        summary = summarize_details("weekly", details, pricing)
         previous = summarize_compare_named(paths, "week", "last-week", now=current_time)
     elif period == "monthly":
         details = details_for_last_days(paths, 30, now=current_time)
-        summary = summarize_details("monthly", details, pricing)
         previous = summarize_compare_named(paths, "month", "last-month", now=current_time)
     else:
         raise ValueError(f"Unsupported period: {period}")
 
+    filtered_details = filter_details_by_project(details, project_name)
+    label = period if project_name is None else f"{period} {project_name}"
+    summary = summarize_details(label, filtered_details, pricing)
+    if project_name is not None:
+        previous_current = filter_details_by_project(details_for_last_days(paths, 7 if period == "weekly" else 30, now=current_time), project_name)
+        previous_previous = filter_details_by_project(
+            details_for_last_days(paths, 7 if period == "weekly" else 30, now=current_time - timedelta(days=7 if period == "weekly" else 30)),
+            project_name,
+        )
+        previous = CompareReport(
+            current=summarize_details(summary.label, previous_current, pricing),
+            previous=summarize_details(
+                f"prev {period}",
+                previous_previous,
+                pricing,
+            ),
+            total_tokens_delta=0,
+            total_tokens_delta_pct=None,
+            requests_delta=0,
+            cost_delta_usd=0.0,
+        )
+        total_tokens_delta = previous.current.total_tokens - previous.previous.total_tokens
+        total_tokens_delta_pct = None
+        if previous.previous.total_tokens:
+            total_tokens_delta_pct = (total_tokens_delta / previous.previous.total_tokens) * 100.0
+        previous = CompareReport(
+            current=previous.current,
+            previous=previous.previous,
+            total_tokens_delta=total_tokens_delta,
+            total_tokens_delta_pct=total_tokens_delta_pct,
+            requests_delta=previous.current.requests - previous.previous.requests,
+            cost_delta_usd=round(previous.current.estimated_cost_usd - previous.previous.estimated_cost_usd, 4),
+        )
+
     report = ReportData(
         period=period,
+        project_name=project_name,
         summary=summary,
         comparison=previous,
-        projects=summarize_projects_from_details(details, pricing)[:5],
-        top_sessions=summarize_top_sessions_from_details(details, pricing, limit=5),
-        costs=summarize_costs_from_details(details, pricing=pricing, today=summary, week=summary, month=summary, now=current_time),
-        insights=summarize_insights_from_details(details, pricing=pricing, month=summary, now=current_time),
+        projects=summarize_projects_from_details(filtered_details, pricing)[:5] if project_name is None else [],
+        top_sessions=summarize_top_sessions_from_details(filtered_details, pricing, limit=5),
+        costs=summarize_costs_from_details(filtered_details, pricing=pricing, today=summary, week=summary, month=summary, now=current_time),
+        insights=summarize_insights_from_details(filtered_details, pricing=pricing, month=summary, now=current_time),
     )
     return report
 

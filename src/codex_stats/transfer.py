@@ -20,8 +20,24 @@ def export_payload(paths, since: str | None = None) -> dict:
     }
 
 
+def export_payload_from_details(details: list[SessionDetails]) -> dict:
+    return {
+        "schema_version": 1,
+        "exported_at": datetime.now(tz=UTC).isoformat(),
+        "sessions": [detail.to_dict() for detail in details],
+    }
+
+
 def write_export(paths, output_path: Path, since: str | None = None) -> Path:
     payload = export_payload(paths, since=since)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return output_path
+
+
+def write_merged_export(input_paths: list[Path], output_path: Path) -> Path:
+    payload = export_payload_from_details(read_imports(input_paths))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return output_path
 

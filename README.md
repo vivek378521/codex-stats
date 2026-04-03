@@ -12,6 +12,7 @@ It reads your local Codex state from `~/.codex` and surfaces:
 - estimated token-based cost
 - anomaly-aware usage insights and recommendations
 - export and import for cross-device snapshots
+- merged export snapshots for multi-device rollups
 - shareable weekly and monthly reports
 
 ## Install
@@ -48,14 +49,18 @@ codex-stats top --project backend-api
 codex-stats costs
 codex-stats insights
 codex-stats doctor
+codex-stats doctor --strict
 codex-stats init
 codex-stats report weekly
 codex-stats report weekly --format markdown
+codex-stats report weekly --project backend-api
+codex-stats report weekly --format markdown --output weekly-report.md
 codex-stats --days 14
 codex-stats --color always
 codex-stats export codex-stats-export.json
 codex-stats export codex-stats-export.json --since 30d
 codex-stats import laptop.json desktop.json
+codex-stats merge merged.json laptop.json desktop.json
 codex-stats completions zsh
 codex-stats --json
 ```
@@ -74,7 +79,9 @@ It reads local Codex artifacts, including:
 - Costs are estimates, not billing values.
 - Output depends on local Codex file formats remaining compatible.
 - `export` and `import` let you move normalized snapshots between machines.
+- `merge` lets you deduplicate and combine exported snapshots into one file.
 - `export --since Nd` limits snapshots to a rolling window before sharing.
+- `doctor --strict` is useful in scripts and CI because it returns a non-zero exit code on failed checks.
 - `--color auto|always|never` controls ANSI styling.
 
 ## Pricing Config
