@@ -12,7 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.config import Paths
 from codex_stats.ingest import get_session, get_session_details
-from codex_stats.metrics import summarize_models, summarize_month, summarize_projects, summarize_today, summarize_week
+from codex_stats.metrics import (
+    summarize_costs,
+    summarize_history,
+    summarize_insights,
+    summarize_models,
+    summarize_month,
+    summarize_projects,
+    summarize_today,
+    summarize_week,
+)
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -172,6 +181,17 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(models[0].total_tokens, 280)
         self.assertEqual(projects[0].name, "project")
         self.assertEqual(projects[0].requests, 2)
+
+    def test_history_costs_and_insights(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        history = summarize_history(self.paths, limit=5)
+        costs = summarize_costs(self.paths, now=now)
+        insights = summarize_insights(self.paths, now=now)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].project_name, "project")
+        self.assertGreater(costs.month_cost_usd, 0.0)
+        self.assertEqual(insights.large_session_count, 0)
+        self.assertGreater(insights.average_tokens_per_request, 0.0)
 
 
 if __name__ == "__main__":

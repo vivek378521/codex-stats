@@ -28,6 +28,23 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.command, "models")
         self.assertTrue(args.json_output)
 
+    def test_history_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["history", "--limit", "5"])
+        self.assertEqual(args.command, "history")
+        self.assertEqual(args.limit, 5)
+
+    def test_costs_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["costs"])
+        self.assertEqual(args.command, "costs")
+
+    def test_insights_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["insights", "--json"])
+        self.assertEqual(args.command, "insights")
+        self.assertTrue(args.json_output)
+
 
 if __name__ == "__main__":
     unittest.main()

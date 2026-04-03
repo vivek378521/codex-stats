@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, tzinfo
 
 from .config import Paths
 from .ingest import get_session_details, iter_session_details
-from .models import BreakdownEntry, SessionDetails, TimeSummary
+from .models import BreakdownEntry, CostSummary, HistoryEntry, InsightReport, SessionDetails, TimeSummary
 
 # Conservative placeholder pricing. Replace with model-specific pricing later.
 DEFAULT_USD_PER_1K_TOKENS = 0.01
@@ -59,6 +59,9 @@ def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
     total_tokens = sum(detail.effective_total_tokens() for detail in details)
     model_counter = Counter(detail.session.model for detail in details if detail.session.model)
     top_model = model_counter.most_common(1)[0][0] if model_counter else None
+    average_tokens_per_request = total_tokens / requests if requests else 0.0
+    cache_ratio = (cached_input_tokens / input_tokens) if input_tokens else None
+    largest_session_tokens = max((detail.effective_total_tokens() for detail in details), default=0)
     return TimeSummary(
         label=label,
         sessions=sessions_count,
@@ -70,6 +73,9 @@ def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
         total_tokens=total_tokens,
         estimated_cost_usd=estimate_cost_usd(total_tokens),
         top_model=top_model,
+        average_tokens_per_request=average_tokens_per_request,
+        cache_ratio=cache_ratio,
+        largest_session_tokens=largest_session_tokens,
     )
 
 
@@ -92,6 +98,85 @@ def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
     for detail in details:
         grouped[detail.session.project_name].append(detail)
     return _build_breakdown(grouped)
+
+
+def summarize_history(paths: Paths, limit: int = 10) -> list[HistoryEntry]:
+    details = sorted(
+        iter_session_details(paths),
+        key=lambda detail: detail.session.updated_at,
+        reverse=True,
+    )
+    history: list[HistoryEntry] = []
+    for detail in details[:limit]:
+        history.append(
+            HistoryEntry(
+                session_id=detail.session.session_id,
+                project_name=detail.session.project_name,
+                model=detail.session.model,
+                updated_at=detail.session.updated_at,
+                total_tokens=detail.effective_total_tokens(),
+                requests=detail.request_count,
+                estimated_cost_usd=estimate_cost_usd(detail.effective_total_tokens()),
+            )
+        )
+    return history
+
+
+def summarize_costs(paths: Paths, now: datetime | None = None) -> CostSummary:
+    current_time = now or datetime.now().astimezone()
+    today = summarize_today(paths, now=current_time)
+    week = summarize_week(paths, now=current_time)
+    month = summarize_month(paths, now=current_time)
+    details = iter_session_details(paths)
+    month_start = current_time.date() - timedelta(days=29)
+    active_days = {
+        local_date(detail.session.created_at, current_time.tzinfo)
+        for detail in details
+        if month_start <= local_date(detail.session.created_at, current_time.tzinfo) <= current_time.date()
+    }
+    highest_session_cost_usd = max(
+        (estimate_cost_usd(detail.effective_total_tokens()) for detail in details),
+        default=0.0,
+    )
+    projected_monthly = month.estimated_cost_usd
+    if active_days and month.estimated_cost_usd:
+        projected_monthly = round((month.estimated_cost_usd / len(active_days)) * 30, 4)
+    return CostSummary(
+        today_cost_usd=today.estimated_cost_usd,
+        week_cost_usd=week.estimated_cost_usd,
+        month_cost_usd=month.estimated_cost_usd,
+        projected_monthly_cost_usd=projected_monthly,
+        highest_session_cost_usd=highest_session_cost_usd,
+    )
+
+
+def summarize_insights(paths: Paths, now: datetime | None = None) -> InsightReport:
+    current_time = now or datetime.now().astimezone()
+    month = summarize_month(paths, now=current_time)
+    details = iter_session_details(paths)
+    large_session_threshold = 100_000
+    large_session_count = sum(1 for detail in details if detail.effective_total_tokens() >= large_session_threshold)
+    cache_ratio = month.cache_ratio
+    possible_savings_usd = 0.0
+    suggestion = "Usage looks balanced."
+    if cache_ratio is not None and cache_ratio < 0.25:
+        possible_savings_usd = round(month.estimated_cost_usd * 0.15, 2)
+        suggestion = "Cache reuse is low. Reuse context or break work into steadier sessions."
+    elif month.average_tokens_per_request > 50_000:
+        possible_savings_usd = round(month.estimated_cost_usd * 0.1, 2)
+        suggestion = "Requests are very large. Reset context more aggressively between tasks."
+    elif large_session_count > 0:
+        possible_savings_usd = round(month.estimated_cost_usd * 0.05, 2)
+        suggestion = "Large sessions detected. Consider shorter task-focused runs."
+
+    return InsightReport(
+        average_tokens_per_request=month.average_tokens_per_request,
+        cache_ratio=cache_ratio,
+        large_session_count=large_session_count,
+        possible_savings_usd=possible_savings_usd,
+        largest_session_tokens=month.largest_session_tokens,
+        suggestion=suggestion,
+    )
 
 
 def _build_breakdown(grouped: dict[str, list[SessionDetails]]) -> list[BreakdownEntry]:

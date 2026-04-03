@@ -32,6 +32,9 @@ codex-stats session
 codex-stats session --id <session_id>
 codex-stats models
 codex-stats project
+codex-stats history
+codex-stats costs
+codex-stats insights
 codex-stats --json
 ```
 

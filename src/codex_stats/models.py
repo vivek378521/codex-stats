@@ -76,6 +76,9 @@ class TimeSummary:
     total_tokens: int
     estimated_cost_usd: float
     top_model: str | None
+    average_tokens_per_request: float
+    cache_ratio: float | None
+    largest_session_tokens: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -88,6 +91,47 @@ class BreakdownEntry:
     requests: int
     total_tokens: int
     estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    session_id: str
+    project_name: str
+    model: str | None
+    updated_at: datetime
+    total_tokens: int
+    requests: int
+    estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["updated_at"] = self.updated_at.isoformat()
+        return payload
+
+
+@dataclass(frozen=True)
+class CostSummary:
+    today_cost_usd: float
+    week_cost_usd: float
+    month_cost_usd: float
+    projected_monthly_cost_usd: float
+    highest_session_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class InsightReport:
+    average_tokens_per_request: float
+    cache_ratio: float | None
+    large_session_count: int
+    possible_savings_usd: float
+    largest_session_tokens: int
+    suggestion: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

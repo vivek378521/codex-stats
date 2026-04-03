@@ -4,9 +4,26 @@ import argparse
 import sys
 
 from .config import Paths
-from .display import as_json, format_breakdown, format_session, format_summary
+from .display import (
+    as_json,
+    format_breakdown,
+    format_costs,
+    format_history,
+    format_insights,
+    format_session,
+    format_summary,
+)
 from .ingest import get_session, get_session_details
-from .metrics import summarize_models, summarize_month, summarize_projects, summarize_today, summarize_week
+from .metrics import (
+    summarize_costs,
+    summarize_history,
+    summarize_insights,
+    summarize_models,
+    summarize_month,
+    summarize_projects,
+    summarize_today,
+    summarize_week,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     project_parser = subparsers.add_parser("project", help="Show usage by project.")
     project_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+
+    history_parser = subparsers.add_parser("history", help="Show recent session history.")
+    history_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    history_parser.add_argument("--limit", type=int, default=10, help="Maximum sessions to show.")
+
+    costs_parser = subparsers.add_parser("costs", help="Show estimated cost breakdown.")
+    costs_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+
+    insights_parser = subparsers.add_parser("insights", help="Show usage insights.")
+    insights_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
     return parser
 
@@ -91,6 +118,30 @@ def main(argv: list[str] | None = None) -> int:
             print(as_json({"projects": [entry.to_dict() for entry in entries]}))
         else:
             print(format_breakdown("Project Usage", entries))
+        return 0
+
+    if args.command == "history":
+        entries = summarize_history(paths, limit=args.limit)
+        if args.json_output:
+            print(as_json({"history": [entry.to_dict() for entry in entries]}))
+        else:
+            print(format_history(entries))
+        return 0
+
+    if args.command == "costs":
+        costs = summarize_costs(paths)
+        if args.json_output:
+            print(as_json(costs.to_dict()))
+        else:
+            print(format_costs(costs))
+        return 0
+
+    if args.command == "insights":
+        insights = summarize_insights(paths)
+        if args.json_output:
+            print(as_json(insights.to_dict()))
+        else:
+            print(format_insights(insights))
         return 0
 
     parser.print_help()
