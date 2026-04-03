@@ -14,7 +14,10 @@ from codex_stats.config import Paths
 from codex_stats.ingest import get_session, get_session_details
 from codex_stats.metrics import (
     details_for_last_days,
+    run_doctor,
+    summarize_compare,
     summarize_costs,
+    summarize_daily,
     summarize_history,
     summarize_insights,
     summarize_models,
@@ -207,6 +210,16 @@ class MetricsTestCase(unittest.TestCase):
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         details = details_for_last_days(self.paths, 7, now=now)
         self.assertEqual(len(details), 1)
+
+    def test_daily_compare_and_doctor(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        daily = summarize_daily(self.paths, days=7, now=now)
+        compare = summarize_compare(self.paths, days=7, now=now)
+        checks = run_doctor(self.paths)
+        self.assertEqual(len(daily), 7)
+        self.assertEqual(daily[-1].total_tokens, 280)
+        self.assertEqual(compare.current.total_tokens, 280)
+        self.assertTrue(any(check.name == "state_db" and check.ok for check in checks))
 
 
 if __name__ == "__main__":

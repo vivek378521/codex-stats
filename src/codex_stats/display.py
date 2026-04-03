@@ -6,7 +6,17 @@ import textwrap
 from datetime import UTC
 from dataclasses import dataclass
 
-from .models import BreakdownEntry, CostSummary, HistoryEntry, InsightReport, SessionDetails, TimeSummary
+from .models import (
+    BreakdownEntry,
+    CompareReport,
+    CostSummary,
+    DailyPoint,
+    DoctorCheck,
+    HistoryEntry,
+    InsightReport,
+    SessionDetails,
+    TimeSummary,
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +132,48 @@ def format_insights(insights: InsightReport, options: FormatOptions | None = Non
     return _card("Insights", rows, options)
 
 
+def format_daily(points: list[DailyPoint], options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    if not points:
+        return _card("Daily Usage", [("Status", "No data")], options)
+    max_tokens = max((point.total_tokens for point in points), default=0)
+    sparkline = _sparkline([point.total_tokens for point in points], options)
+    lines = [_box_top("Daily Usage", options)]
+    lines.append(_box_line(f"Trend   {sparkline}"))
+    lines.append(_box_separator())
+    for point in points:
+        ratio = point.total_tokens / max_tokens if max_tokens else 0.0
+        bar = _bar(ratio, options, width=10)
+        label = point.day[5:]
+        lines.append(_box_line(f"{label}  {bar}  {point.total_tokens:>10,}  {point.requests:>3} req"))
+    lines.append(_box_bottom())
+    return "\n".join(lines)
+
+
+def format_compare(report: CompareReport, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    pct = "n/a" if report.total_tokens_delta_pct is None else f"{report.total_tokens_delta_pct:+.1f}%"
+    rows = [
+        ("Current", f"{report.current.total_tokens:,} tokens"),
+        ("Previous", f"{report.previous.total_tokens:,} tokens"),
+        ("Delta", f"{report.total_tokens_delta:+,}"),
+        ("Delta %", pct),
+        ("Request delta", f"{report.requests_delta:+d}"),
+        ("Cost delta", f"${report.cost_delta_usd:+.2f}"),
+    ]
+    return _card("Compare", rows, options)
+
+
+def format_doctor(checks: list[DoctorCheck], options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    lines = [_box_top("Doctor", options)]
+    for check in checks:
+        status = _tint("OK", "32", options) if check.ok else _tint("WARN", "31", options)
+        lines.append(_box_line(f"{status:<4} {check.name:<14} {check.detail}"))
+    lines.append(_box_bottom())
+    return "\n".join(lines)
+
+
 def _card(title: str, rows: list[tuple[str, str]], options: FormatOptions) -> str:
     inner_width = 51
     lines = [_box_top(title, options)]
@@ -182,6 +234,18 @@ def _bar(value: float, options: FormatOptions, width: int = 16) -> str:
     filled = round(safe_value * width)
     bar = "█" * filled + "░" * (width - filled)
     return _tint(bar, "36", options) if options.color else bar
+
+
+def _sparkline(values: list[int], options: FormatOptions) -> str:
+    if not values:
+        return ""
+    ticks = "▁▂▃▄▅▆▇█"
+    max_value = max(values)
+    if max_value <= 0:
+        line = ticks[0] * len(values)
+    else:
+        line = "".join(ticks[min(len(ticks) - 1, round((value / max_value) * (len(ticks) - 1)))] for value in values)
+    return _tint(line, "35", options) if options.color else line
 
 
 def _accent(text: str, options: FormatOptions) -> str:

@@ -8,7 +8,10 @@ from .config import Paths
 from .display import (
     as_json,
     format_breakdown,
+    format_compare,
     format_costs,
+    format_daily,
+    format_doctor,
     format_history,
     format_insights,
     format_session,
@@ -18,6 +21,9 @@ from .display import (
 from .ingest import get_session, get_session_details
 from .metrics import (
     details_for_last_days,
+    run_doctor,
+    summarize_compare,
+    summarize_daily,
     summarize_imported_details,
     summarize_last_days,
     summarize_costs,
@@ -68,6 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     project_parser = subparsers.add_parser("project", help="Show usage by project.")
     project_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
+    daily_parser = subparsers.add_parser("daily", help="Show per-day usage and a trend graph.")
+    daily_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    daily_parser.add_argument("--days", type=int, default=7, help="Number of days to show.")
+
+    compare_parser = subparsers.add_parser("compare", help="Compare the last N days to the previous N days.")
+    compare_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    compare_parser.add_argument("--days", type=int, default=7, help="Days per comparison window.")
+
     history_parser = subparsers.add_parser("history", help="Show recent session history.")
     history_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
     history_parser.add_argument("--limit", type=int, default=10, help="Maximum sessions to show.")
@@ -86,6 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser = subparsers.add_parser("import", help="Read an exported stats JSON file.")
     import_parser.add_argument("input", help="Input JSON file.")
     import_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+
+    doctor_parser = subparsers.add_parser("doctor", help="Validate local Codex data sources.")
+    doctor_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
     return parser
 
@@ -148,6 +165,22 @@ def main(argv: list[str] | None = None) -> int:
             print(format_breakdown("Project Usage", entries, options))
         return 0
 
+    if args.command == "daily":
+        points = summarize_daily(paths, days=args.days)
+        if args.json_output:
+            print(as_json({"days": [point.to_dict() for point in points]}))
+        else:
+            print(format_daily(points, options))
+        return 0
+
+    if args.command == "compare":
+        report = summarize_compare(paths, days=args.days)
+        if args.json_output:
+            print(as_json(report.to_dict()))
+        else:
+            print(format_compare(report, options))
+        return 0
+
     if args.command == "history":
         entries = summarize_history(paths, limit=args.limit)
         if args.json_output:
@@ -205,6 +238,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(format_summary(summary, options))
+        return 0
+
+    if args.command == "doctor":
+        checks = run_doctor(paths)
+        if args.json_output:
+            print(as_json({"checks": [check.to_dict() for check in checks]}))
+        else:
+            print(format_doctor(checks, options))
         return 0
 
     parser.print_help()

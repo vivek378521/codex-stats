@@ -135,3 +135,44 @@ class InsightReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class DailyPoint:
+    day: str
+    total_tokens: int
+    requests: int
+    estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CompareReport:
+    current: TimeSummary
+    previous: TimeSummary
+    total_tokens_delta: int
+    total_tokens_delta_pct: float | None
+    requests_delta: int
+    cost_delta_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "current": self.current.to_dict(),
+            "previous": self.previous.to_dict(),
+            "total_tokens_delta": self.total_tokens_delta,
+            "total_tokens_delta_pct": self.total_tokens_delta_pct,
+            "requests_delta": self.requests_delta,
+            "cost_delta_usd": self.cost_delta_usd,
+        }
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    name: str
+    ok: bool
+    detail: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

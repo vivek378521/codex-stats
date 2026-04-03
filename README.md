@@ -35,9 +35,12 @@ codex-stats session
 codex-stats session --id <session_id>
 codex-stats models
 codex-stats project
+codex-stats daily
+codex-stats compare
 codex-stats history
 codex-stats costs
 codex-stats insights
+codex-stats doctor
 codex-stats --days 14
 codex-stats --color always
 codex-stats export codex-stats-export.json

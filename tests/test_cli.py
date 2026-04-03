@@ -60,6 +60,17 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(import_args.command, "import")
         self.assertTrue(import_args.json_output)
 
+    def test_daily_compare_doctor_parsers(self) -> None:
+        parser = build_parser()
+        daily_args = parser.parse_args(["daily", "--days", "14"])
+        compare_args = parser.parse_args(["compare", "--days", "14", "--json"])
+        doctor_args = parser.parse_args(["doctor"])
+        self.assertEqual(daily_args.command, "daily")
+        self.assertEqual(daily_args.days, 14)
+        self.assertEqual(compare_args.command, "compare")
+        self.assertTrue(compare_args.json_output)
+        self.assertEqual(doctor_args.command, "doctor")
+
 
 if __name__ == "__main__":
     unittest.main()

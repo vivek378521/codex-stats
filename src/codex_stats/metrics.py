@@ -5,7 +5,17 @@ from datetime import date, datetime, timedelta, tzinfo
 
 from .config import Paths
 from .ingest import get_session_details, iter_session_details
-from .models import BreakdownEntry, CostSummary, HistoryEntry, InsightReport, SessionDetails, TimeSummary
+from .models import (
+    BreakdownEntry,
+    CompareReport,
+    CostSummary,
+    DailyPoint,
+    DoctorCheck,
+    HistoryEntry,
+    InsightReport,
+    SessionDetails,
+    TimeSummary,
+)
 
 # Conservative placeholder pricing. Replace with model-specific pricing later.
 DEFAULT_USD_PER_1K_TOKENS = 0.01
@@ -155,6 +165,94 @@ def summarize_history_from_details(details: list[SessionDetails], limit: int = 1
             )
         )
     return history
+
+
+def summarize_daily(paths: Paths, days: int = 7, now: datetime | None = None) -> list[DailyPoint]:
+    current_time = now or datetime.now().astimezone()
+    safe_days = max(days, 1)
+    details = details_for_last_days(paths, safe_days, now=current_time)
+    day_map: dict[date, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        day_map[local_date(detail.session.created_at, current_time.tzinfo)].append(detail)
+
+    points: list[DailyPoint] = []
+    for offset in range(safe_days):
+        current_day = current_time.date() - timedelta(days=safe_days - 1 - offset)
+        day_details = day_map.get(current_day, [])
+        summary = summarize_details(current_day.isoformat(), day_details)
+        points.append(
+            DailyPoint(
+                day=current_day.isoformat(),
+                total_tokens=summary.total_tokens,
+                requests=summary.requests,
+                estimated_cost_usd=summary.estimated_cost_usd,
+            )
+        )
+    return points
+
+
+def summarize_compare(paths: Paths, days: int = 7, now: datetime | None = None) -> CompareReport:
+    current_time = now or datetime.now().astimezone()
+    safe_days = max(days, 1)
+    current_details = details_for_last_days(paths, safe_days, now=current_time)
+    previous_end = current_time - timedelta(days=safe_days)
+    previous_details = details_for_last_days(paths, safe_days, now=previous_end)
+    current_summary = summarize_details(f"last {safe_days} days", current_details)
+    previous_summary = summarize_details(f"prev {safe_days} days", previous_details)
+    total_tokens_delta = current_summary.total_tokens - previous_summary.total_tokens
+    total_tokens_delta_pct = None
+    if previous_summary.total_tokens:
+        total_tokens_delta_pct = (total_tokens_delta / previous_summary.total_tokens) * 100.0
+    return CompareReport(
+        current=current_summary,
+        previous=previous_summary,
+        total_tokens_delta=total_tokens_delta,
+        total_tokens_delta_pct=total_tokens_delta_pct,
+        requests_delta=current_summary.requests - previous_summary.requests,
+        cost_delta_usd=round(current_summary.estimated_cost_usd - previous_summary.estimated_cost_usd, 4),
+    )
+
+
+def run_doctor(paths: Paths) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    checks.append(
+        DoctorCheck(
+            name="codex_home",
+            ok=paths.codex_home.exists(),
+            detail=f"Found {paths.codex_home}" if paths.codex_home.exists() else f"Missing {paths.codex_home}",
+        )
+    )
+    checks.append(
+        DoctorCheck(
+            name="state_db",
+            ok=paths.state_db.exists(),
+            detail=f"Found {paths.state_db}" if paths.state_db.exists() else f"Missing {paths.state_db}",
+        )
+    )
+    checks.append(
+        DoctorCheck(
+            name="sessions_dir",
+            ok=paths.sessions_dir.exists(),
+            detail=f"Found {paths.sessions_dir}" if paths.sessions_dir.exists() else f"Missing {paths.sessions_dir}",
+        )
+    )
+    details = iter_session_details(paths) if paths.state_db.exists() else []
+    checks.append(
+        DoctorCheck(
+            name="session_count",
+            ok=bool(details),
+            detail=f"{len(details)} session(s) detected",
+        )
+    )
+    rollout_count = sum(1 for detail in details if detail.session.rollout_path.exists())
+    checks.append(
+        DoctorCheck(
+            name="rollout_files",
+            ok=rollout_count == len(details),
+            detail=f"{rollout_count}/{len(details)} rollout files present" if details else "No sessions to validate",
+        )
+    )
+    return checks
 
 
 def summarize_costs(paths: Paths, now: datetime | None = None) -> CostSummary:
