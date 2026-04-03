@@ -45,6 +45,21 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.command, "insights")
         self.assertTrue(args.json_output)
 
+    def test_global_days_and_color(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--days", "14", "--color", "never"])
+        self.assertEqual(args.days, 14)
+        self.assertEqual(args.color, "never")
+
+    def test_export_import_parsers(self) -> None:
+        parser = build_parser()
+        export_args = parser.parse_args(["export", "stats.json"])
+        import_args = parser.parse_args(["import", "stats.json", "--json"])
+        self.assertEqual(export_args.command, "export")
+        self.assertEqual(export_args.output, "stats.json")
+        self.assertEqual(import_args.command, "import")
+        self.assertTrue(import_args.json_output)
+
 
 if __name__ == "__main__":
     unittest.main()

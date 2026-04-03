@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .config import Paths
 from .display import (
@@ -12,23 +13,40 @@ from .display import (
     format_insights,
     format_session,
     format_summary,
+    resolve_format_options,
 )
 from .ingest import get_session, get_session_details
 from .metrics import (
+    details_for_last_days,
+    summarize_imported_details,
+    summarize_last_days,
     summarize_costs,
+    summarize_costs_from_details,
     summarize_history,
+    summarize_history_from_details,
     summarize_insights,
+    summarize_insights_from_details,
     summarize_models,
+    summarize_models_from_details,
     summarize_month,
     summarize_projects,
+    summarize_projects_from_details,
     summarize_today,
     summarize_week,
 )
+from .transfer import read_import, write_export
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-stats", description="Local usage analytics for Codex.")
     parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    parser.add_argument("--days", type=int, help="Show a rolling summary for the last N days.")
+    parser.add_argument(
+        "--color",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="Control ANSI color output.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     today_parser = subparsers.add_parser("today", help="Show today's usage summary.")
@@ -56,9 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     costs_parser = subparsers.add_parser("costs", help="Show estimated cost breakdown.")
     costs_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    costs_parser.add_argument("--days", type=int, help="Use the last N days for the projection basis.")
 
     insights_parser = subparsers.add_parser("insights", help="Show usage insights.")
     insights_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    insights_parser.add_argument("--days", type=int, help="Analyze the last N days.")
+
+    export_parser = subparsers.add_parser("export", help="Export normalized local stats to JSON.")
+    export_parser.add_argument("output", help="Output JSON file.")
+
+    import_parser = subparsers.add_parser("import", help="Read an exported stats JSON file.")
+    import_parser.add_argument("input", help="Input JSON file.")
+    import_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
     return parser
 
@@ -67,13 +94,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     paths = Paths.discover()
+    options = resolve_format_options(args.color)
 
     if args.command in (None, "today"):
-        summary = summarize_today(paths)
+        summary = summarize_last_days(paths, args.days) if args.days else summarize_today(paths)
         if args.json_output:
             print(as_json(summary.to_dict()))
         else:
-            print(format_summary(summary))
+            print(format_summary(summary, options))
         return 0
 
     if args.command == "week":
@@ -81,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json(summary.to_dict()))
         else:
-            print(format_summary(summary))
+            print(format_summary(summary, options))
         return 0
 
     if args.command == "month":
@@ -89,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json(summary.to_dict()))
         else:
-            print(format_summary(summary))
+            print(format_summary(summary, options))
         return 0
 
     if args.command == "session":
@@ -101,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json(details.to_dict()))
         else:
-            print(format_session(details))
+            print(format_session(details, options))
         return 0
 
     if args.command == "models":
@@ -109,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json({"models": [entry.to_dict() for entry in entries]}))
         else:
-            print(format_breakdown("Model Usage", entries))
+            print(format_breakdown("Model Usage", entries, options))
         return 0
 
     if args.command == "project":
@@ -117,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json({"projects": [entry.to_dict() for entry in entries]}))
         else:
-            print(format_breakdown("Project Usage", entries))
+            print(format_breakdown("Project Usage", entries, options))
         return 0
 
     if args.command == "history":
@@ -125,23 +153,58 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             print(as_json({"history": [entry.to_dict() for entry in entries]}))
         else:
-            print(format_history(entries))
+            print(format_history(entries, options))
         return 0
 
     if args.command == "costs":
-        costs = summarize_costs(paths)
+        if args.days:
+            details = details_for_last_days(paths, args.days)
+            summary = summarize_details_for_range(args.days, details)
+            costs = summarize_costs_from_details(details, today=summary, week=summary, month=summary)
+        else:
+            costs = summarize_costs(paths)
         if args.json_output:
             print(as_json(costs.to_dict()))
         else:
-            print(format_costs(costs))
+            print(format_costs(costs, options))
         return 0
 
     if args.command == "insights":
-        insights = summarize_insights(paths)
+        if args.days:
+            details = details_for_last_days(paths, args.days)
+            summary = summarize_details_for_range(args.days, details)
+            insights = summarize_insights_from_details(details, month=summary)
+        else:
+            insights = summarize_insights(paths)
         if args.json_output:
             print(as_json(insights.to_dict()))
         else:
-            print(format_insights(insights))
+            print(format_insights(insights, options))
+        return 0
+
+    if args.command == "export":
+        output_path = write_export(paths, Path(args.output).expanduser())
+        print(f"Exported stats to {output_path}")
+        return 0
+
+    if args.command == "import":
+        details = read_import(Path(args.input).expanduser())
+        summary = summarize_imported_details(details)
+        if args.json_output:
+            print(
+                as_json(
+                    {
+                        "summary": summary.to_dict(),
+                        "models": [entry.to_dict() for entry in summarize_models_from_details(details)],
+                        "projects": [entry.to_dict() for entry in summarize_projects_from_details(details)],
+                        "history": [entry.to_dict() for entry in summarize_history_from_details(details)],
+                        "costs": summarize_costs_from_details(details).to_dict(),
+                        "insights": summarize_insights_from_details(details).to_dict(),
+                    }
+                )
+            )
+        else:
+            print(format_summary(summary, options))
         return 0
 
     parser.print_help()
@@ -150,3 +213,7 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def summarize_details_for_range(days: int, details):
+    return summarize_imported_details(details, label=f"last {max(days, 1)} days")

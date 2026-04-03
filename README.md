@@ -5,9 +5,12 @@
 It reads your local Codex state from `~/.codex` and surfaces:
 
 - session summaries
-- today, week, and month usage totals
+- rolling usage totals across today, week, month, or the last `N` days
 - model and project breakdowns
+- recent session history
 - estimated token-based cost
+- basic usage insights
+- export and import for cross-device snapshots
 
 ## Install
 
@@ -35,6 +38,10 @@ codex-stats project
 codex-stats history
 codex-stats costs
 codex-stats insights
+codex-stats --days 14
+codex-stats --color always
+codex-stats export codex-stats-export.json
+codex-stats import codex-stats-export.json
 codex-stats --json
 ```
 
@@ -51,6 +58,8 @@ It reads local Codex artifacts, including:
 
 - Costs are estimates, not billing values.
 - Output depends on local Codex file formats remaining compatible.
+- `export` and `import` let you move normalized snapshots between machines.
+- `--color auto|always|never` controls ANSI styling.
 
 ## Development
 

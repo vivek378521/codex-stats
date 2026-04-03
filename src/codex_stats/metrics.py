@@ -34,6 +34,24 @@ def summarize_month(paths: Paths, now: datetime | None = None) -> TimeSummary:
     return summarize_period(paths, "month", start_day, end_day, current_time.tzinfo)
 
 
+def summarize_last_days(paths: Paths, days: int, now: datetime | None = None) -> TimeSummary:
+    details = details_for_last_days(paths, days, now=now)
+    safe_days = max(days, 1)
+    return summarize_details(f"last {safe_days} days", details)
+
+
+def details_for_last_days(paths: Paths, days: int, now: datetime | None = None) -> list[SessionDetails]:
+    current_time = now or datetime.now().astimezone()
+    safe_days = max(days, 1)
+    end_day = current_time.date()
+    start_day = end_day - timedelta(days=safe_days - 1)
+    return [
+        detail
+        for detail in iter_session_details(paths)
+        if start_day <= local_date(detail.session.created_at, current_time.tzinfo) <= end_day
+    ]
+
+
 def summarize_period(
     paths: Paths,
     label: str,
@@ -79,6 +97,10 @@ def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
     )
 
 
+def summarize_imported_details(details: list[SessionDetails], label: str = "imported") -> TimeSummary:
+    return summarize_details(label, details)
+
+
 def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
     target_timezone = timezone or value.astimezone().tzinfo
     return value.astimezone(target_timezone).date()
@@ -86,6 +108,10 @@ def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
 
 def summarize_models(paths: Paths) -> list[BreakdownEntry]:
     details = iter_session_details(paths)
+    return summarize_models_from_details(details)
+
+
+def summarize_models_from_details(details: list[SessionDetails]) -> list[BreakdownEntry]:
     grouped: dict[str, list[SessionDetails]] = defaultdict(list)
     for detail in details:
         grouped[detail.session.model or "unknown"].append(detail)
@@ -94,6 +120,10 @@ def summarize_models(paths: Paths) -> list[BreakdownEntry]:
 
 def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
     details = iter_session_details(paths)
+    return summarize_projects_from_details(details)
+
+
+def summarize_projects_from_details(details: list[SessionDetails]) -> list[BreakdownEntry]:
     grouped: dict[str, list[SessionDetails]] = defaultdict(list)
     for detail in details:
         grouped[detail.session.project_name].append(detail)
@@ -101,13 +131,18 @@ def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
 
 
 def summarize_history(paths: Paths, limit: int = 10) -> list[HistoryEntry]:
-    details = sorted(
-        iter_session_details(paths),
+    details = iter_session_details(paths)
+    return summarize_history_from_details(details, limit=limit)
+
+
+def summarize_history_from_details(details: list[SessionDetails], limit: int = 10) -> list[HistoryEntry]:
+    ordered = sorted(
+        details,
         key=lambda detail: detail.session.updated_at,
         reverse=True,
     )
     history: list[HistoryEntry] = []
-    for detail in details[:limit]:
+    for detail in ordered[:limit]:
         history.append(
             HistoryEntry(
                 session_id=detail.session.session_id,
@@ -128,6 +163,21 @@ def summarize_costs(paths: Paths, now: datetime | None = None) -> CostSummary:
     week = summarize_week(paths, now=current_time)
     month = summarize_month(paths, now=current_time)
     details = iter_session_details(paths)
+    return summarize_costs_from_details(details, today=today, week=week, month=month, now=current_time)
+
+
+def summarize_costs_from_details(
+    details: list[SessionDetails],
+    *,
+    today: TimeSummary | None = None,
+    week: TimeSummary | None = None,
+    month: TimeSummary | None = None,
+    now: datetime | None = None,
+) -> CostSummary:
+    current_time = now or datetime.now().astimezone()
+    today = today or summarize_details("today", details)
+    week = week or summarize_details("week", details)
+    month = month or summarize_details("month", details)
     month_start = current_time.date() - timedelta(days=29)
     active_days = {
         local_date(detail.session.created_at, current_time.tzinfo)
@@ -154,6 +204,17 @@ def summarize_insights(paths: Paths, now: datetime | None = None) -> InsightRepo
     current_time = now or datetime.now().astimezone()
     month = summarize_month(paths, now=current_time)
     details = iter_session_details(paths)
+    return summarize_insights_from_details(details, month=month, now=current_time)
+
+
+def summarize_insights_from_details(
+    details: list[SessionDetails],
+    *,
+    month: TimeSummary | None = None,
+    now: datetime | None = None,
+) -> InsightReport:
+    current_time = now or datetime.now().astimezone()
+    month = month or summarize_details("month", details)
     large_session_threshold = 100_000
     large_session_count = sum(1 for detail in details if detail.effective_total_tokens() >= large_session_threshold)
     cache_ratio = month.cache_ratio

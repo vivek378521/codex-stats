@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_stats.config import Paths
 from codex_stats.ingest import get_session, get_session_details
 from codex_stats.metrics import (
+    details_for_last_days,
     summarize_costs,
     summarize_history,
     summarize_insights,
@@ -22,6 +23,7 @@ from codex_stats.metrics import (
     summarize_today,
     summarize_week,
 )
+from codex_stats.transfer import export_payload, read_import
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -192,6 +194,19 @@ class MetricsTestCase(unittest.TestCase):
         self.assertGreater(costs.month_cost_usd, 0.0)
         self.assertEqual(insights.large_session_count, 0)
         self.assertGreater(insights.average_tokens_per_request, 0.0)
+
+    def test_export_and_import_round_trip(self) -> None:
+        payload = export_payload(self.paths)
+        export_path = Path(self.tmpdir.name) / "export.json"
+        export_path.write_text(json.dumps(payload), encoding="utf-8")
+        imported = read_import(export_path)
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0].session.project_name, "project")
+
+    def test_details_for_last_days(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = details_for_last_days(self.paths, 7, now=now)
+        self.assertEqual(len(details), 1)
 
 
 if __name__ == "__main__":

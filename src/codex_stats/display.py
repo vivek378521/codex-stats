@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import json
+import os
 import textwrap
 from datetime import UTC
+from dataclasses import dataclass
 
 from .models import BreakdownEntry, CostSummary, HistoryEntry, InsightReport, SessionDetails, TimeSummary
 
 
-def format_summary(summary: TimeSummary) -> str:
+@dataclass(frozen=True)
+class FormatOptions:
+    color: bool = False
+
+
+def resolve_format_options(color_mode: str = "auto") -> FormatOptions:
+    if color_mode == "always":
+        return FormatOptions(color=True)
+    if color_mode == "never":
+        return FormatOptions(color=False)
+    no_color = os.environ.get("NO_COLOR")
+    return FormatOptions(color=not bool(no_color) and os.isatty(1))
+
+
+def format_summary(summary: TimeSummary, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
     cache_ratio = _fmt_percent(summary.cache_ratio)
-    usage_bar = _bar(summary.cache_ratio or 0.0)
+    usage_bar = _bar(summary.cache_ratio or 0.0, options)
     rows = [
         ("Window", summary.label),
         ("Sessions", str(summary.sessions)),
@@ -21,10 +38,11 @@ def format_summary(summary: TimeSummary) -> str:
         ("Cache ratio", cache_ratio),
         ("Usage", usage_bar),
     ]
-    return _card("Codex Usage", rows)
+    return _card("Codex Usage", rows, options)
 
 
-def format_session(details: SessionDetails) -> str:
+def format_session(details: SessionDetails, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
     session = details.session
     rows = [
         ("Session ID", session.session_id),
@@ -40,44 +58,47 @@ def format_session(details: SessionDetails) -> str:
         ("Total tokens", f"{details.effective_total_tokens():,}"),
         ("Estimated cost", f"${details.effective_total_tokens() / 1000 * 0.01:.2f}"),
     ]
-    return _card("Session Summary", rows)
+    return _card("Session Summary", rows, options)
 
 
 def as_json(payload: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
-def format_breakdown(title: str, entries: list[BreakdownEntry]) -> str:
+def format_breakdown(title: str, entries: list[BreakdownEntry], options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
     if not entries:
-        return _card(title, [("Status", "No data")])
-    lines = [_box_top(title)]
+        return _card(title, [("Status", "No data")], options)
+    lines = [_box_top(title, options)]
     for index, entry in enumerate(entries):
         share = entry.total_tokens / entries[0].total_tokens if entries[0].total_tokens else 0.0
-        lines.append(_box_line(entry.name))
+        lines.append(_box_line(_accent(entry.name, options)))
         lines.append(_box_line(f"  Sessions: {entry.sessions}"))
         lines.append(_box_line(f"  Requests: {entry.requests}"))
         lines.append(_box_line(f"  Tokens:   {entry.total_tokens:,}"))
         lines.append(_box_line(f"  Cost:     ${entry.estimated_cost_usd:.2f}"))
-        lines.append(_box_line(f"  Share:    {_bar(share)}"))
+        lines.append(_box_line(f"  Share:    {_bar(share, options)}"))
         if index != len(entries) - 1:
             lines.append(_box_separator())
     lines.append(_box_bottom())
     return "\n".join(lines)
 
 
-def format_history(entries: list[HistoryEntry]) -> str:
+def format_history(entries: list[HistoryEntry], options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
     if not entries:
-        return _card("Recent Sessions", [("Status", "No data")])
-    lines = [_box_top("Recent Sessions")]
+        return _card("Recent Sessions", [("Status", "No data")], options)
+    lines = [_box_top("Recent Sessions", options)]
     for entry in entries:
         model = entry.model or "unknown"
-        lines.append(_box_line(f"{_fmt_short_dt(entry.updated_at)}  {entry.project_name}  {model}"))
+        lines.append(_box_line(f"{_fmt_short_dt(entry.updated_at)}  {_accent(entry.project_name, options)}  {model}"))
         lines.append(_box_line(f"  requests={entry.requests:<4} tokens={entry.total_tokens:,} cost=${entry.estimated_cost_usd:.2f}"))
     lines.append(_box_bottom())
     return "\n".join(lines)
 
 
-def format_costs(costs: CostSummary) -> str:
+def format_costs(costs: CostSummary, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
     rows = [
         ("Today", f"${costs.today_cost_usd:.2f}"),
         ("Week", f"${costs.week_cost_usd:.2f}"),
@@ -85,10 +106,11 @@ def format_costs(costs: CostSummary) -> str:
         ("Projected month", f"${costs.projected_monthly_cost_usd:.2f}"),
         ("Highest session", f"${costs.highest_session_cost_usd:.2f}"),
     ]
-    return _card("Cost Breakdown", rows)
+    return _card("Cost Breakdown", rows, options)
 
 
-def format_insights(insights: InsightReport) -> str:
+def format_insights(insights: InsightReport, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
     rows = [
         ("Avg/request", f"{insights.average_tokens_per_request:,.0f}"),
         ("Cache ratio", _fmt_percent(insights.cache_ratio)),
@@ -97,12 +119,12 @@ def format_insights(insights: InsightReport) -> str:
         ("Possible savings", f"${insights.possible_savings_usd:.2f}"),
         ("Suggestion", insights.suggestion),
     ]
-    return _card("Insights", rows)
+    return _card("Insights", rows, options)
 
 
-def _card(title: str, rows: list[tuple[str, str]]) -> str:
+def _card(title: str, rows: list[tuple[str, str]], options: FormatOptions) -> str:
     inner_width = 51
-    lines = [_box_top(title)]
+    lines = [_box_top(title, options)]
     key_width = max(len(key) for key, _ in rows)
     for key, value in rows:
         prefix = f"{key:<{key_width}}  "
@@ -116,7 +138,7 @@ def _card(title: str, rows: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _box_top(title: str) -> str:
+def _box_top(title: str, options: FormatOptions) -> str:
     width = 53
     title_text = f" {title} "
     fill = max(width - len(title_text) - 2, 0)
@@ -155,7 +177,18 @@ def _fmt_percent(value: float | None) -> str:
     return f"{value * 100:.1f}%"
 
 
-def _bar(value: float, width: int = 16) -> str:
+def _bar(value: float, options: FormatOptions, width: int = 16) -> str:
     safe_value = min(max(value, 0.0), 1.0)
     filled = round(safe_value * width)
-    return "█" * filled + "░" * (width - filled)
+    bar = "█" * filled + "░" * (width - filled)
+    return _tint(bar, "36", options) if options.color else bar
+
+
+def _accent(text: str, options: FormatOptions) -> str:
+    return _tint(text, "33", options)
+
+
+def _tint(text: str, code: str, options: FormatOptions) -> str:
+    if not options.color:
+        return text
+    return f"\033[{code}m{text}\033[0m"
