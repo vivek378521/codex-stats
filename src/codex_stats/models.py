@@ -176,3 +176,16 @@ class DoctorCheck:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class TopEntry:
+    session_id: str
+    project_name: str
+    model: str | None
+    total_tokens: int
+    requests: int
+    estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

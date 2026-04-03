@@ -16,6 +16,7 @@ from .models import (
     InsightReport,
     SessionDetails,
     TimeSummary,
+    TopEntry,
 )
 
 
@@ -170,6 +171,18 @@ def format_doctor(checks: list[DoctorCheck], options: FormatOptions | None = Non
     for check in checks:
         status = _tint("OK", "32", options) if check.ok else _tint("WARN", "31", options)
         lines.append(_box_line(f"{status:<4} {check.name:<14} {check.detail}"))
+    lines.append(_box_bottom())
+    return "\n".join(lines)
+
+
+def format_top(entries: list[TopEntry], options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    if not entries:
+        return _card("Top Sessions", [("Status", "No data")], options)
+    lines = [_box_top("Top Sessions", options)]
+    for index, entry in enumerate(entries, start=1):
+        lines.append(_box_line(f"{index}. {_accent(entry.project_name, options)}  {entry.model or 'unknown'}"))
+        lines.append(_box_line(f"   tokens={entry.total_tokens:,} requests={entry.requests} cost=${entry.estimated_cost_usd:.2f}"))
     lines.append(_box_bottom())
     return "\n".join(lines)
 

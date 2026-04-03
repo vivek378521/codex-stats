@@ -29,6 +29,17 @@ def read_import(input_path: Path) -> list[SessionDetails]:
     return [_session_detail_from_dict(item) for item in sessions]
 
 
+def read_imports(input_paths: list[Path]) -> list[SessionDetails]:
+    merged: dict[str, SessionDetails] = {}
+    for input_path in input_paths:
+        for detail in read_import(input_path):
+            session_id = detail.session.session_id
+            existing = merged.get(session_id)
+            if existing is None or detail.session.updated_at >= existing.session.updated_at:
+                merged[session_id] = detail
+    return sorted(merged.values(), key=lambda detail: detail.session.updated_at, reverse=True)
+
+
 def _session_detail_from_dict(payload: dict) -> SessionDetails:
     session_payload = payload["session"]
     session = SessionRecord(

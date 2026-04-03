@@ -71,6 +71,16 @@ class CliTestCase(unittest.TestCase):
         self.assertTrue(compare_args.json_output)
         self.assertEqual(doctor_args.command, "doctor")
 
+    def test_top_import_and_completions_parsers(self) -> None:
+        parser = build_parser()
+        top_args = parser.parse_args(["top", "--limit", "3"])
+        import_args = parser.parse_args(["import", "a.json", "b.json"])
+        completion_args = parser.parse_args(["completions", "zsh"])
+        self.assertEqual(top_args.command, "top")
+        self.assertEqual(top_args.limit, 3)
+        self.assertEqual(import_args.input, ["a.json", "b.json"])
+        self.assertEqual(completion_args.shell, "zsh")
+
 
 if __name__ == "__main__":
     unittest.main()

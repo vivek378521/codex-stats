@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import Paths
+from .completions import render_completion
+from .config import Paths, load_pricing_config
 from .display import (
     as_json,
     format_breakdown,
@@ -16,6 +17,7 @@ from .display import (
     format_insights,
     format_session,
     format_summary,
+    format_top,
     resolve_format_options,
 )
 from .ingest import get_session, get_session_details
@@ -38,9 +40,11 @@ from .metrics import (
     summarize_projects,
     summarize_projects_from_details,
     summarize_today,
+    summarize_top_sessions,
+    summarize_top_sessions_from_details,
     summarize_week,
 )
-from .transfer import read_import, write_export
+from .transfer import read_imports, write_export
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,6 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
     history_parser.add_argument("--limit", type=int, default=10, help="Maximum sessions to show.")
 
+    top_parser = subparsers.add_parser("top", help="Show the largest sessions.")
+    top_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+    top_parser.add_argument("--limit", type=int, default=5, help="Maximum sessions to show.")
+
     costs_parser = subparsers.add_parser("costs", help="Show estimated cost breakdown.")
     costs_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
     costs_parser.add_argument("--days", type=int, help="Use the last N days for the projection basis.")
@@ -98,11 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("output", help="Output JSON file.")
 
     import_parser = subparsers.add_parser("import", help="Read an exported stats JSON file.")
-    import_parser.add_argument("input", help="Input JSON file.")
+    import_parser.add_argument("input", nargs="+", help="One or more input JSON files.")
     import_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
     doctor_parser = subparsers.add_parser("doctor", help="Validate local Codex data sources.")
     doctor_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+
+    completions_parser = subparsers.add_parser("completions", help="Print shell completion script.")
+    completions_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell name.")
 
     return parser
 
@@ -189,6 +200,14 @@ def main(argv: list[str] | None = None) -> int:
             print(format_history(entries, options))
         return 0
 
+    if args.command == "top":
+        entries = summarize_top_sessions(paths, limit=args.limit)
+        if args.json_output:
+            print(as_json({"top": [entry.to_dict() for entry in entries]}))
+        else:
+            print(format_top(entries, options))
+        return 0
+
     if args.command == "costs":
         if args.days:
             details = details_for_last_days(paths, args.days)
@@ -221,18 +240,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "import":
-        details = read_import(Path(args.input).expanduser())
-        summary = summarize_imported_details(details)
+        pricing = load_pricing_config(paths)
+        details = read_imports([Path(input_path).expanduser() for input_path in args.input])
+        summary = summarize_imported_details(details, pricing=pricing)
         if args.json_output:
             print(
                 as_json(
                     {
                         "summary": summary.to_dict(),
-                        "models": [entry.to_dict() for entry in summarize_models_from_details(details)],
-                        "projects": [entry.to_dict() for entry in summarize_projects_from_details(details)],
-                        "history": [entry.to_dict() for entry in summarize_history_from_details(details)],
-                        "costs": summarize_costs_from_details(details).to_dict(),
-                        "insights": summarize_insights_from_details(details).to_dict(),
+                        "models": [entry.to_dict() for entry in summarize_models_from_details(details, pricing)],
+                        "projects": [entry.to_dict() for entry in summarize_projects_from_details(details, pricing)],
+                        "history": [entry.to_dict() for entry in summarize_history_from_details(details, pricing)],
+                        "top": [entry.to_dict() for entry in summarize_top_sessions_from_details(details, pricing)],
+                        "costs": summarize_costs_from_details(details, pricing=pricing).to_dict(),
+                        "insights": summarize_insights_from_details(details, pricing=pricing).to_dict(),
                     }
                 )
             )
@@ -246,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
             print(as_json({"checks": [check.to_dict() for check in checks]}))
         else:
             print(format_doctor(checks, options))
+        return 0
+
+    if args.command == "completions":
+        print(render_completion(args.shell), end="")
         return 0
 
     parser.print_help()

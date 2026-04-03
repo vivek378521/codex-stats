@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, tzinfo
 
-from .config import Paths
+from .config import Paths, PricingConfig, load_pricing_config
 from .ingest import get_session_details, iter_session_details
 from .models import (
     BreakdownEntry,
@@ -15,14 +15,15 @@ from .models import (
     InsightReport,
     SessionDetails,
     TimeSummary,
+    TopEntry,
 )
 
-# Conservative placeholder pricing. Replace with model-specific pricing later.
-DEFAULT_USD_PER_1K_TOKENS = 0.01
-
-
-def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float = DEFAULT_USD_PER_1K_TOKENS) -> float:
+def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float) -> float:
     return round((total_tokens / 1000.0) * usd_per_1k_tokens, 4)
+
+
+def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> float:
+    return estimate_cost_usd(detail.effective_total_tokens(), pricing.rate_for_model(detail.session.model))
 
 
 def summarize_today(paths: Paths, now: datetime | None = None) -> TimeSummary:
@@ -74,10 +75,12 @@ def summarize_period(
         for detail in iter_session_details(paths)
         if start_day <= local_date(detail.session.created_at, timezone) <= end_day
     ]
-    return summarize_details(label, details)
+    pricing = load_pricing_config(paths)
+    return summarize_details(label, details, pricing)
 
 
-def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
+def summarize_details(label: str, details: list[SessionDetails], pricing: PricingConfig | None = None) -> TimeSummary:
+    pricing = pricing or PricingConfig()
     sessions_count = len(details)
     requests = sum(detail.request_count for detail in details)
     input_tokens = sum(detail.input_tokens or 0 for detail in details)
@@ -99,7 +102,7 @@ def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
         cached_input_tokens=cached_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens,
         total_tokens=total_tokens,
-        estimated_cost_usd=estimate_cost_usd(total_tokens),
+        estimated_cost_usd=round(sum(estimate_detail_cost(detail, pricing) for detail in details), 4),
         top_model=top_model,
         average_tokens_per_request=average_tokens_per_request,
         cache_ratio=cache_ratio,
@@ -107,8 +110,12 @@ def summarize_details(label: str, details: list[SessionDetails]) -> TimeSummary:
     )
 
 
-def summarize_imported_details(details: list[SessionDetails], label: str = "imported") -> TimeSummary:
-    return summarize_details(label, details)
+def summarize_imported_details(
+    details: list[SessionDetails],
+    label: str = "imported",
+    pricing: PricingConfig | None = None,
+) -> TimeSummary:
+    return summarize_details(label, details, pricing)
 
 
 def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
@@ -118,34 +125,47 @@ def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
 
 def summarize_models(paths: Paths) -> list[BreakdownEntry]:
     details = iter_session_details(paths)
-    return summarize_models_from_details(details)
+    return summarize_models_from_details(details, load_pricing_config(paths))
 
 
-def summarize_models_from_details(details: list[SessionDetails]) -> list[BreakdownEntry]:
+def summarize_models_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+) -> list[BreakdownEntry]:
+    pricing = pricing or PricingConfig()
     grouped: dict[str, list[SessionDetails]] = defaultdict(list)
     for detail in details:
         grouped[detail.session.model or "unknown"].append(detail)
-    return _build_breakdown(grouped)
+    return _build_breakdown(grouped, pricing)
 
 
 def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
     details = iter_session_details(paths)
-    return summarize_projects_from_details(details)
+    return summarize_projects_from_details(details, load_pricing_config(paths))
 
 
-def summarize_projects_from_details(details: list[SessionDetails]) -> list[BreakdownEntry]:
+def summarize_projects_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+) -> list[BreakdownEntry]:
+    pricing = pricing or PricingConfig()
     grouped: dict[str, list[SessionDetails]] = defaultdict(list)
     for detail in details:
         grouped[detail.session.project_name].append(detail)
-    return _build_breakdown(grouped)
+    return _build_breakdown(grouped, pricing)
 
 
 def summarize_history(paths: Paths, limit: int = 10) -> list[HistoryEntry]:
     details = iter_session_details(paths)
-    return summarize_history_from_details(details, limit=limit)
+    return summarize_history_from_details(details, load_pricing_config(paths), limit=limit)
 
 
-def summarize_history_from_details(details: list[SessionDetails], limit: int = 10) -> list[HistoryEntry]:
+def summarize_history_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+    limit: int = 10,
+) -> list[HistoryEntry]:
+    pricing = pricing or PricingConfig()
     ordered = sorted(
         details,
         key=lambda detail: detail.session.updated_at,
@@ -161,7 +181,7 @@ def summarize_history_from_details(details: list[SessionDetails], limit: int = 1
                 updated_at=detail.session.updated_at,
                 total_tokens=detail.effective_total_tokens(),
                 requests=detail.request_count,
-                estimated_cost_usd=estimate_cost_usd(detail.effective_total_tokens()),
+                estimated_cost_usd=estimate_detail_cost(detail, pricing),
             )
         )
     return history
@@ -171,6 +191,7 @@ def summarize_daily(paths: Paths, days: int = 7, now: datetime | None = None) ->
     current_time = now or datetime.now().astimezone()
     safe_days = max(days, 1)
     details = details_for_last_days(paths, safe_days, now=current_time)
+    pricing = load_pricing_config(paths)
     day_map: dict[date, list[SessionDetails]] = defaultdict(list)
     for detail in details:
         day_map[local_date(detail.session.created_at, current_time.tzinfo)].append(detail)
@@ -179,7 +200,7 @@ def summarize_daily(paths: Paths, days: int = 7, now: datetime | None = None) ->
     for offset in range(safe_days):
         current_day = current_time.date() - timedelta(days=safe_days - 1 - offset)
         day_details = day_map.get(current_day, [])
-        summary = summarize_details(current_day.isoformat(), day_details)
+        summary = summarize_details(current_day.isoformat(), day_details, pricing)
         points.append(
             DailyPoint(
                 day=current_day.isoformat(),
@@ -194,11 +215,12 @@ def summarize_daily(paths: Paths, days: int = 7, now: datetime | None = None) ->
 def summarize_compare(paths: Paths, days: int = 7, now: datetime | None = None) -> CompareReport:
     current_time = now or datetime.now().astimezone()
     safe_days = max(days, 1)
+    pricing = load_pricing_config(paths)
     current_details = details_for_last_days(paths, safe_days, now=current_time)
     previous_end = current_time - timedelta(days=safe_days)
     previous_details = details_for_last_days(paths, safe_days, now=previous_end)
-    current_summary = summarize_details(f"last {safe_days} days", current_details)
-    previous_summary = summarize_details(f"prev {safe_days} days", previous_details)
+    current_summary = summarize_details(f"last {safe_days} days", current_details, pricing)
+    previous_summary = summarize_details(f"prev {safe_days} days", previous_details, pricing)
     total_tokens_delta = current_summary.total_tokens - previous_summary.total_tokens
     total_tokens_delta_pct = None
     if previous_summary.total_tokens:
@@ -257,25 +279,28 @@ def run_doctor(paths: Paths) -> list[DoctorCheck]:
 
 def summarize_costs(paths: Paths, now: datetime | None = None) -> CostSummary:
     current_time = now or datetime.now().astimezone()
+    pricing = load_pricing_config(paths)
     today = summarize_today(paths, now=current_time)
     week = summarize_week(paths, now=current_time)
     month = summarize_month(paths, now=current_time)
     details = iter_session_details(paths)
-    return summarize_costs_from_details(details, today=today, week=week, month=month, now=current_time)
+    return summarize_costs_from_details(details, pricing=pricing, today=today, week=week, month=month, now=current_time)
 
 
 def summarize_costs_from_details(
     details: list[SessionDetails],
     *,
+    pricing: PricingConfig | None = None,
     today: TimeSummary | None = None,
     week: TimeSummary | None = None,
     month: TimeSummary | None = None,
     now: datetime | None = None,
 ) -> CostSummary:
     current_time = now or datetime.now().astimezone()
-    today = today or summarize_details("today", details)
-    week = week or summarize_details("week", details)
-    month = month or summarize_details("month", details)
+    pricing = pricing or PricingConfig()
+    today = today or summarize_details("today", details, pricing)
+    week = week or summarize_details("week", details, pricing)
+    month = month or summarize_details("month", details, pricing)
     month_start = current_time.date() - timedelta(days=29)
     active_days = {
         local_date(detail.session.created_at, current_time.tzinfo)
@@ -283,7 +308,7 @@ def summarize_costs_from_details(
         if month_start <= local_date(detail.session.created_at, current_time.tzinfo) <= current_time.date()
     }
     highest_session_cost_usd = max(
-        (estimate_cost_usd(detail.effective_total_tokens()) for detail in details),
+        (estimate_detail_cost(detail, pricing) for detail in details),
         default=0.0,
     )
     projected_monthly = month.estimated_cost_usd
@@ -300,19 +325,22 @@ def summarize_costs_from_details(
 
 def summarize_insights(paths: Paths, now: datetime | None = None) -> InsightReport:
     current_time = now or datetime.now().astimezone()
+    pricing = load_pricing_config(paths)
     month = summarize_month(paths, now=current_time)
     details = iter_session_details(paths)
-    return summarize_insights_from_details(details, month=month, now=current_time)
+    return summarize_insights_from_details(details, pricing=pricing, month=month, now=current_time)
 
 
 def summarize_insights_from_details(
     details: list[SessionDetails],
     *,
+    pricing: PricingConfig | None = None,
     month: TimeSummary | None = None,
     now: datetime | None = None,
 ) -> InsightReport:
     current_time = now or datetime.now().astimezone()
-    month = month or summarize_details("month", details)
+    pricing = pricing or PricingConfig()
+    month = month or summarize_details("month", details, pricing)
     large_session_threshold = 100_000
     large_session_count = sum(1 for detail in details if detail.effective_total_tokens() >= large_session_threshold)
     cache_ratio = month.cache_ratio
@@ -338,7 +366,31 @@ def summarize_insights_from_details(
     )
 
 
-def _build_breakdown(grouped: dict[str, list[SessionDetails]]) -> list[BreakdownEntry]:
+def summarize_top_sessions(paths: Paths, limit: int = 5) -> list[TopEntry]:
+    return summarize_top_sessions_from_details(iter_session_details(paths), load_pricing_config(paths), limit=limit)
+
+
+def summarize_top_sessions_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+    limit: int = 5,
+) -> list[TopEntry]:
+    pricing = pricing or PricingConfig()
+    ordered = sorted(details, key=lambda detail: detail.effective_total_tokens(), reverse=True)
+    return [
+        TopEntry(
+            session_id=detail.session.session_id,
+            project_name=detail.session.project_name,
+            model=detail.session.model,
+            total_tokens=detail.effective_total_tokens(),
+            requests=detail.request_count,
+            estimated_cost_usd=estimate_detail_cost(detail, pricing),
+        )
+        for detail in ordered[:limit]
+    ]
+
+
+def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingConfig) -> list[BreakdownEntry]:
     entries: list[BreakdownEntry] = []
     for name, details in grouped.items():
         total_tokens = sum(detail.effective_total_tokens() for detail in details)
@@ -348,7 +400,7 @@ def _build_breakdown(grouped: dict[str, list[SessionDetails]]) -> list[Breakdown
                 sessions=len(details),
                 requests=sum(detail.request_count for detail in details),
                 total_tokens=total_tokens,
-                estimated_cost_usd=estimate_cost_usd(total_tokens),
+                estimated_cost_usd=round(sum(estimate_detail_cost(detail, pricing) for detail in details), 4),
             )
         )
     return sorted(entries, key=lambda entry: (-entry.total_tokens, entry.name))

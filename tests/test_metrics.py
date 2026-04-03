@@ -24,9 +24,10 @@ from codex_stats.metrics import (
     summarize_month,
     summarize_projects,
     summarize_today,
+    summarize_top_sessions,
     summarize_week,
 )
-from codex_stats.transfer import export_payload, read_import
+from codex_stats.transfer import export_payload, read_import, read_imports
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -151,6 +152,8 @@ class MetricsTestCase(unittest.TestCase):
             state_db=self.state_db,
             logs_db=codex_home / "logs_1.sqlite",
             sessions_dir=codex_home / "sessions",
+            config_dir=codex_home / "config",
+            config_file=codex_home / "config" / "config.toml",
         )
 
     def tearDown(self) -> None:
@@ -220,6 +223,17 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(daily[-1].total_tokens, 280)
         self.assertEqual(compare.current.total_tokens, 280)
         self.assertTrue(any(check.name == "state_db" and check.ok for check in checks))
+
+    def test_top_sessions_and_multi_import(self) -> None:
+        top = summarize_top_sessions(self.paths, limit=1)
+        self.assertEqual(top[0].project_name, "project")
+        payload = export_payload(self.paths)
+        export_path_a = Path(self.tmpdir.name) / "a.json"
+        export_path_b = Path(self.tmpdir.name) / "b.json"
+        export_path_a.write_text(json.dumps(payload), encoding="utf-8")
+        export_path_b.write_text(json.dumps(payload), encoding="utf-8")
+        merged = read_imports([export_path_a, export_path_b])
+        self.assertEqual(len(merged), 1)
 
 
 if __name__ == "__main__":
