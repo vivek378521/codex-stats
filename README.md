@@ -37,11 +37,15 @@ codex-stats models
 codex-stats project
 codex-stats daily
 codex-stats compare
+codex-stats compare today yesterday
 codex-stats history
 codex-stats top
 codex-stats costs
 codex-stats insights
 codex-stats doctor
+codex-stats init
+codex-stats report weekly
+codex-stats report weekly --format markdown
 codex-stats --days 14
 codex-stats --color always
 codex-stats export codex-stats-export.json
@@ -77,6 +81,12 @@ default_usd_per_1k_tokens = 0.01
 [pricing.model_usd_per_1k_tokens]
 gpt-5.4 = 0.02
 gpt-5-mini = 0.005
+```
+
+To create the config file automatically:
+
+```bash
+codex-stats init
 ```
 
 ## Development

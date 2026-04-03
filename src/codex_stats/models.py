@@ -189,3 +189,23 @@ class TopEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReportData:
+    period: str
+    summary: TimeSummary
+    projects: list[BreakdownEntry]
+    top_sessions: list[TopEntry]
+    costs: CostSummary
+    insights: InsightReport
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "period": self.period,
+            "summary": self.summary.to_dict(),
+            "projects": [entry.to_dict() for entry in self.projects],
+            "top_sessions": [entry.to_dict() for entry in self.top_sessions],
+            "costs": self.costs.to_dict(),
+            "insights": self.insights.to_dict(),
+        }

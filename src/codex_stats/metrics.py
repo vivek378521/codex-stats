@@ -16,6 +16,7 @@ from .models import (
     SessionDetails,
     TimeSummary,
     TopEntry,
+    ReportData,
 )
 
 def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float) -> float:
@@ -235,6 +236,25 @@ def summarize_compare(paths: Paths, days: int = 7, now: datetime | None = None) 
     )
 
 
+def summarize_compare_named(paths: Paths, current_label: str, previous_label: str, now: datetime | None = None) -> CompareReport:
+    current_time = now or datetime.now().astimezone()
+    pricing = load_pricing_config(paths)
+    current_summary = _summary_for_named_window(paths, current_label, current_time, pricing)
+    previous_summary = _summary_for_named_window(paths, previous_label, current_time, pricing)
+    total_tokens_delta = current_summary.total_tokens - previous_summary.total_tokens
+    total_tokens_delta_pct = None
+    if previous_summary.total_tokens:
+        total_tokens_delta_pct = (total_tokens_delta / previous_summary.total_tokens) * 100.0
+    return CompareReport(
+        current=current_summary,
+        previous=previous_summary,
+        total_tokens_delta=total_tokens_delta,
+        total_tokens_delta_pct=total_tokens_delta_pct,
+        requests_delta=current_summary.requests - previous_summary.requests,
+        cost_delta_usd=round(current_summary.estimated_cost_usd - previous_summary.estimated_cost_usd, 4),
+    )
+
+
 def run_doctor(paths: Paths) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     checks.append(
@@ -258,6 +278,13 @@ def run_doctor(paths: Paths) -> list[DoctorCheck]:
             detail=f"Found {paths.sessions_dir}" if paths.sessions_dir.exists() else f"Missing {paths.sessions_dir}",
         )
     )
+    checks.append(
+        DoctorCheck(
+            name="config_file",
+            ok=paths.config_file.exists(),
+            detail=f"Found {paths.config_file}" if paths.config_file.exists() else f"Missing {paths.config_file}",
+        )
+    )
     details = iter_session_details(paths) if paths.state_db.exists() else []
     checks.append(
         DoctorCheck(
@@ -274,6 +301,23 @@ def run_doctor(paths: Paths) -> list[DoctorCheck]:
             detail=f"{rollout_count}/{len(details)} rollout files present" if details else "No sessions to validate",
         )
     )
+    try:
+        pricing = load_pricing_config(paths)
+        checks.append(
+            DoctorCheck(
+                name="pricing_config",
+                ok=True,
+                detail=f"default={pricing.default_usd_per_1k_tokens:.4f}/1k, models={len(pricing.model_rates or {})}",
+            )
+        )
+    except Exception as exc:
+        checks.append(
+            DoctorCheck(
+                name="pricing_config",
+                ok=False,
+                detail=f"Invalid config: {exc}",
+            )
+        )
     return checks
 
 
@@ -390,6 +434,28 @@ def summarize_top_sessions_from_details(
     ]
 
 
+def build_report(paths: Paths, period: str = "weekly", now: datetime | None = None) -> ReportData:
+    current_time = now or datetime.now().astimezone()
+    pricing = load_pricing_config(paths)
+    if period == "weekly":
+        details = details_for_last_days(paths, 7, now=current_time)
+        summary = summarize_details("weekly", details, pricing)
+    elif period == "monthly":
+        details = details_for_last_days(paths, 30, now=current_time)
+        summary = summarize_details("monthly", details, pricing)
+    else:
+        raise ValueError(f"Unsupported period: {period}")
+
+    return ReportData(
+        period=period,
+        summary=summary,
+        projects=summarize_projects_from_details(details, pricing)[:5],
+        top_sessions=summarize_top_sessions_from_details(details, pricing, limit=5),
+        costs=summarize_costs_from_details(details, pricing=pricing, today=summary, week=summary, month=summary, now=current_time),
+        insights=summarize_insights_from_details(details, pricing=pricing, month=summary, now=current_time),
+    )
+
+
 def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingConfig) -> list[BreakdownEntry]:
     entries: list[BreakdownEntry] = []
     for name, details in grouped.items():
@@ -404,3 +470,31 @@ def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingC
             )
         )
     return sorted(entries, key=lambda entry: (-entry.total_tokens, entry.name))
+
+
+def _summary_for_named_window(
+    paths: Paths,
+    label: str,
+    now: datetime,
+    pricing: PricingConfig,
+) -> TimeSummary:
+    day = now.date()
+    if label == "today":
+        details = details_for_last_days(paths, 1, now=now)
+        return summarize_details("today", details, pricing)
+    if label == "yesterday":
+        details = details_for_last_days(paths, 1, now=now - timedelta(days=1))
+        return summarize_details("yesterday", details, pricing)
+    if label == "week":
+        details = details_for_last_days(paths, 7, now=now)
+        return summarize_details("week", details, pricing)
+    if label == "last-week":
+        details = details_for_last_days(paths, 7, now=now - timedelta(days=7))
+        return summarize_details("last-week", details, pricing)
+    if label == "month":
+        details = details_for_last_days(paths, 30, now=now)
+        return summarize_details("month", details, pricing)
+    if label == "last-month":
+        details = details_for_last_days(paths, 30, now=now - timedelta(days=30))
+        return summarize_details("last-month", details, pricing)
+    raise ValueError(f"Unsupported compare label: {label}")

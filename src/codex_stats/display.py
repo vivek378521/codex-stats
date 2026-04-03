@@ -17,6 +17,7 @@ from .models import (
     SessionDetails,
     TimeSummary,
     TopEntry,
+    ReportData,
 )
 
 
@@ -184,6 +185,64 @@ def format_top(entries: list[TopEntry], options: FormatOptions | None = None) ->
         lines.append(_box_line(f"{index}. {_accent(entry.project_name, options)}  {entry.model or 'unknown'}"))
         lines.append(_box_line(f"   tokens={entry.total_tokens:,} requests={entry.requests} cost=${entry.estimated_cost_usd:.2f}"))
     lines.append(_box_bottom())
+    return "\n".join(lines)
+
+
+def format_report(report: ReportData, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    lines = [
+        format_summary(report.summary, options),
+        "",
+        format_breakdown("Top Projects", report.projects, options),
+        "",
+        format_top(report.top_sessions, options),
+        "",
+        format_costs(report.costs, options),
+        "",
+        format_insights(report.insights, options),
+    ]
+    return "\n".join(lines)
+
+
+def format_report_markdown(report: ReportData) -> str:
+    lines = [
+        f"# Codex Stats {report.period.title()} Report",
+        "",
+        f"- Total tokens: `{report.summary.total_tokens:,}`",
+        f"- Requests: `{report.summary.requests}`",
+        f"- Estimated cost: `${report.summary.estimated_cost_usd:.2f}`",
+        f"- Top model: `{report.summary.top_model or 'unknown'}`",
+        "",
+        "## Top Projects",
+        "",
+    ]
+    if report.projects:
+        for entry in report.projects:
+            lines.append(f"- `{entry.name}`: `{entry.total_tokens:,}` tokens, `{entry.requests}` requests, `${entry.estimated_cost_usd:.2f}`")
+    else:
+        lines.append("- No data")
+    lines.extend(
+        [
+            "",
+            "## Top Sessions",
+            "",
+        ]
+    )
+    if report.top_sessions:
+        for entry in report.top_sessions:
+            lines.append(f"- `{entry.project_name}` / `{entry.model or 'unknown'}`: `{entry.total_tokens:,}` tokens, `{entry.requests}` requests")
+    else:
+        lines.append("- No data")
+    lines.extend(
+        [
+            "",
+            "## Insights",
+            "",
+            f"- Avg/request: `{report.insights.average_tokens_per_request:,.0f}`",
+            f"- Cache ratio: `{_fmt_percent(report.insights.cache_ratio)}`",
+            f"- Suggestion: {report.insights.suggestion}",
+        ]
+    )
     return "\n".join(lines)
 
 

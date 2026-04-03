@@ -17,7 +17,7 @@ def _bash_completion() -> str:
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local cmds="today week month session models project daily compare history costs insights top export import doctor"
+  local cmds="today week month session models project daily compare history costs insights top export import doctor init report"
   if [[ "${prev}" == "completions" ]]; then
     COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
     return 0
@@ -49,6 +49,8 @@ _codex_stats() {
     'export:Export stats'
     'import:Import stats'
     'doctor:Validate local data'
+    'init:Create config'
+    'report:Generate report'
   )
   _arguments '*:command:->cmds'
   case $state in
@@ -77,6 +79,8 @@ def _fish_completion() -> str:
         "export",
         "import",
         "doctor",
+        "init",
+        "report",
     ]
     lines = [f"complete -c codex-stats -f -a '{command}'" for command in commands]
     return "\n".join(lines) + "\n"

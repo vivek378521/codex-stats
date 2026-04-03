@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .completions import render_completion
 from .config import Paths, load_pricing_config
+from .config import init_config
 from .display import (
     as_json,
     format_breakdown,
@@ -15,6 +16,8 @@ from .display import (
     format_doctor,
     format_history,
     format_insights,
+    format_report,
+    format_report_markdown,
     format_session,
     format_summary,
     format_top,
@@ -24,6 +27,8 @@ from .ingest import get_session, get_session_details
 from .metrics import (
     details_for_last_days,
     run_doctor,
+    build_report,
+    summarize_compare_named,
     summarize_compare,
     summarize_daily,
     summarize_imported_details,
@@ -85,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser = subparsers.add_parser("compare", help="Compare the last N days to the previous N days.")
     compare_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
     compare_parser.add_argument("--days", type=int, default=7, help="Days per comparison window.")
+    compare_parser.add_argument("current", nargs="?", choices=["today", "week", "month"], help="Named current window.")
+    compare_parser.add_argument("previous", nargs="?", choices=["yesterday", "last-week", "last-month"], help="Named previous window.")
 
     history_parser = subparsers.add_parser("history", help="Show recent session history.")
     history_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
@@ -114,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     completions_parser = subparsers.add_parser("completions", help="Print shell completion script.")
     completions_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell name.")
+
+    init_parser = subparsers.add_parser("init", help="Create a default config file.")
+    init_parser.add_argument("--force", action="store_true", help="Overwrite an existing config.")
+
+    report_parser = subparsers.add_parser("report", help="Generate a shareable usage report.")
+    report_parser.add_argument("period", choices=["weekly", "monthly"], help="Report period.")
+    report_parser.add_argument("--format", choices=["text", "markdown", "json"], default="text", help="Output format.")
 
     return parser
 
@@ -185,7 +199,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "compare":
-        report = summarize_compare(paths, days=args.days)
+        if args.current and args.previous:
+            report = summarize_compare_named(paths, args.current, args.previous)
+        else:
+            report = summarize_compare(paths, days=args.days)
         if args.json_output:
             print(as_json(report.to_dict()))
         else:
@@ -269,8 +286,23 @@ def main(argv: list[str] | None = None) -> int:
             print(format_doctor(checks, options))
         return 0
 
+    if args.command == "init":
+        config_path = init_config(paths, force=args.force)
+        print(f"Initialized config at {config_path}")
+        return 0
+
     if args.command == "completions":
         print(render_completion(args.shell), end="")
+        return 0
+
+    if args.command == "report":
+        report = build_report(paths, period=args.period)
+        if args.format == "json":
+            print(as_json(report.to_dict()))
+        elif args.format == "markdown":
+            print(format_report_markdown(report))
+        else:
+            print(format_report(report, options))
         return 0
 
     parser.print_help()

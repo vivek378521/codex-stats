@@ -6,6 +6,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+DEFAULT_CONFIG_TEXT = """[pricing]
+default_usd_per_1k_tokens = 0.01
+
+[pricing.model_usd_per_1k_tokens]
+# gpt-5.4 = 0.02
+# gpt-5-mini = 0.005
+
+[display]
+color = "auto"
+history_limit = 10
+compare_days = 7
+"""
+
+
 @dataclass(frozen=True)
 class Paths:
     codex_home: Path
@@ -52,3 +66,11 @@ def load_pricing_config(paths: Paths) -> PricingConfig:
         for model, rate in pricing.get("model_usd_per_1k_tokens", {}).items()
     }
     return PricingConfig(default_usd_per_1k_tokens=default_rate, model_rates=model_rates)
+
+
+def init_config(paths: Paths, force: bool = False) -> Path:
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    if paths.config_file.exists() and not force:
+        return paths.config_file
+    paths.config_file.write_text(DEFAULT_CONFIG_TEXT, encoding="utf-8")
+    return paths.config_file

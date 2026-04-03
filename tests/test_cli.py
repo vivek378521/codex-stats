@@ -81,6 +81,18 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(import_args.input, ["a.json", "b.json"])
         self.assertEqual(completion_args.shell, "zsh")
 
+    def test_init_compare_named_and_report_parsers(self) -> None:
+        parser = build_parser()
+        init_args = parser.parse_args(["init", "--force"])
+        compare_args = parser.parse_args(["compare", "today", "yesterday"])
+        report_args = parser.parse_args(["report", "weekly", "--format", "markdown"])
+        self.assertEqual(init_args.command, "init")
+        self.assertTrue(init_args.force)
+        self.assertEqual(compare_args.current, "today")
+        self.assertEqual(compare_args.previous, "yesterday")
+        self.assertEqual(report_args.period, "weekly")
+        self.assertEqual(report_args.format, "markdown")
+
 
 if __name__ == "__main__":
     unittest.main()

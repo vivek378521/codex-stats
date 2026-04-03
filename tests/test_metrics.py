@@ -14,7 +14,9 @@ from codex_stats.config import Paths
 from codex_stats.ingest import get_session, get_session_details
 from codex_stats.metrics import (
     details_for_last_days,
+    build_report,
     run_doctor,
+    summarize_compare_named,
     summarize_compare,
     summarize_costs,
     summarize_daily,
@@ -234,6 +236,15 @@ class MetricsTestCase(unittest.TestCase):
         export_path_b.write_text(json.dumps(payload), encoding="utf-8")
         merged = read_imports([export_path_a, export_path_b])
         self.assertEqual(len(merged), 1)
+
+    def test_compare_named_and_report(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        report = summarize_compare_named(self.paths, "today", "yesterday", now=now)
+        weekly = build_report(self.paths, "weekly", now=now)
+        self.assertEqual(report.current.total_tokens, 280)
+        self.assertEqual(report.previous.total_tokens, 0)
+        self.assertEqual(weekly.period, "weekly")
+        self.assertEqual(weekly.summary.total_tokens, 280)
 
 
 if __name__ == "__main__":
