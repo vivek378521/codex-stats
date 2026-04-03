@@ -73,6 +73,8 @@ python3 -m pip install codex-stats
   Return a non-zero exit code if any doctor check fails.
 - `codex-stats init`
   Create a default config file under `~/.config/codex-stats/`.
+- `codex-stats config show`
+  Show the effective config, including pricing and display defaults.
 - `codex-stats report weekly`
   Generate a weekly shareable report.
 - `codex-stats report weekly --format markdown`
@@ -89,6 +91,8 @@ python3 -m pip install codex-stats
   Read one or more exported snapshots and summarize them.
 - `codex-stats merge merged.json laptop.json desktop.json`
   Merge multiple exported snapshots into one deduplicated file.
+- `codex-stats merge merged.json laptop.json desktop.json --json`
+  Merge snapshots and return a machine-readable merge summary.
 - `codex-stats completions zsh`
   Print shell completion setup for your shell.
 - `codex-stats --color always`
@@ -133,6 +137,26 @@ To create the config file automatically:
 ```bash
 codex-stats init
 ```
+
+To inspect the effective config:
+
+```bash
+codex-stats config show
+codex-stats config show --json
+```
+
+## JSON Schemas
+
+Machine-readable output is intended to stay stable across patch releases.
+
+- `summary` JSON: time-window totals such as sessions, requests, tokens, cost estimate, and top model
+- `report` JSON: period, optional project scope, summary, comparison, projects, top sessions, costs, and insights
+- `export` JSON: `schema_version`, `exported_at`, and normalized `sessions`
+- `doctor` JSON: a list of checks with `name`, `ok`, `detail`, and `severity`
+- `config` JSON: config path, whether the file exists, pricing defaults, overrides, and display defaults
+- `import` and `merge` JSON: import summary plus deduped session counts
+
+Full field documentation lives in [docs/json-schema.md](/Users/vivek/Desktop/Salad/codex_stats/docs/json-schema.md).
 
 ## Development
 

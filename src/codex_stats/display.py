@@ -11,11 +11,13 @@ from .metrics import estimate_detail_cost
 from .models import (
     BreakdownEntry,
     CompareReport,
+    ConfigView,
     CostSummary,
     DailyPoint,
     DoctorCheck,
     HistoryEntry,
     InsightReport,
+    ImportSummary,
     SessionDetails,
     TimeSummary,
     TopEntry,
@@ -184,7 +186,12 @@ def format_doctor(checks: list[DoctorCheck], options: FormatOptions | None = Non
     options = options or FormatOptions()
     lines = [_box_top("Doctor", options)]
     for check in checks:
-        status = _tint("OK", "32", options) if check.ok else _tint("WARN", "31", options)
+        if check.ok:
+            status = _tint("OK", "32", options)
+        elif check.severity == "warning":
+            status = _tint("WARN", "33", options)
+        else:
+            status = _tint("FAIL", "31", options)
         lines.append(_box_line(f"{status:<4} {check.name:<14} {check.detail}"))
     lines.append(_box_bottom())
     return "\n".join(lines)
@@ -200,6 +207,37 @@ def format_top(entries: list[TopEntry], options: FormatOptions | None = None) ->
         lines.append(_box_line(f"   tokens={entry.total_tokens:,} requests={entry.requests} cost=${entry.estimated_cost_usd:.2f}"))
     lines.append(_box_bottom())
     return "\n".join(lines)
+
+
+def format_config(config: ConfigView, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    rows = [
+        ("Config path", config.config_path),
+        ("Exists", "yes" if config.exists else "no"),
+        ("Default price", f"${config.pricing_default_usd_per_1k_tokens:.4f}/1k"),
+        ("Model overrides", str(len(config.pricing_model_overrides))),
+        ("Color", config.display.color),
+        ("History limit", str(config.display.history_limit)),
+        ("Compare days", str(config.display.compare_days)),
+    ]
+    lines = [_card("Config", rows, options)]
+    if config.pricing_model_overrides:
+        override_rows = [(model, f"${rate:.4f}/1k") for model, rate in sorted(config.pricing_model_overrides.items())]
+        lines.extend(["", _card("Pricing Overrides", override_rows, options)])
+    return "\n".join(lines)
+
+
+def format_import_summary(summary: ImportSummary, options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    rows = [
+        ("Files read", str(summary.files_read)),
+        ("Sessions loaded", str(summary.sessions_loaded)),
+        ("Duplicates removed", str(summary.duplicates_removed)),
+        ("Merged sessions", str(summary.merged_sessions)),
+        ("Newest session", summary.newest_session_at or "unknown"),
+        ("Oldest session", summary.oldest_session_at or "unknown"),
+    ]
+    return _card("Import Summary", rows, options)
 
 
 def format_report(report: ReportData, options: FormatOptions | None = None) -> str:

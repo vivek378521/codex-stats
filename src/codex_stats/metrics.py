@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, tzinfo
 import re
 
-from .config import Paths, PricingConfig, load_pricing_config
+from .config import Paths, PricingConfig, load_config, load_pricing_config
 from .ingest import get_session_details, iter_session_details
 from .models import (
     BreakdownEntry,
@@ -310,7 +310,8 @@ def run_doctor(paths: Paths) -> list[DoctorCheck]:
         DoctorCheck(
             name="config_file",
             ok=paths.config_file.exists(),
-            detail=f"Found {paths.config_file}" if paths.config_file.exists() else f"Missing {paths.config_file}",
+            detail=f"Found {paths.config_file}" if paths.config_file.exists() else f"Missing {paths.config_file}; using built-in defaults",
+            severity="warning",
         )
     )
     details = iter_session_details(paths) if paths.state_db.exists() else []
@@ -319,6 +320,7 @@ def run_doctor(paths: Paths) -> list[DoctorCheck]:
             name="session_count",
             ok=bool(details),
             detail=f"{len(details)} session(s) detected",
+            severity="warning",
         )
     )
     rollout_count = sum(1 for detail in details if detail.session.rollout_path.exists())
@@ -329,19 +331,42 @@ def run_doctor(paths: Paths) -> list[DoctorCheck]:
             detail=f"{rollout_count}/{len(details)} rollout files present" if details else "No sessions to validate",
         )
     )
+    token_snapshots = sum(1 for detail in details if detail.total_tokens_from_rollout is not None)
+    checks.append(
+        DoctorCheck(
+            name="token_snapshots",
+            ok=token_snapshots == len(details),
+            detail=f"{token_snapshots}/{len(details)} sessions have rollout token snapshots" if details else "No sessions to validate",
+            severity="warning",
+        )
+    )
     try:
-        pricing = load_pricing_config(paths)
+        app_config = load_config(paths)
         checks.append(
             DoctorCheck(
                 name="pricing_config",
                 ok=True,
-                detail=f"default={pricing.default_usd_per_1k_tokens:.4f}/1k, models={len(pricing.model_rates or {})}",
+                detail=f"default={app_config.pricing.default_usd_per_1k_tokens:.4f}/1k, models={len(app_config.pricing.model_rates or {})}",
+            )
+        )
+        checks.append(
+            DoctorCheck(
+                name="display_config",
+                ok=True,
+                detail=f"color={app_config.display.color}, history_limit={app_config.display.history_limit}, compare_days={app_config.display.compare_days}",
             )
         )
     except Exception as exc:
         checks.append(
             DoctorCheck(
                 name="pricing_config",
+                ok=False,
+                detail=f"Invalid config: {exc}",
+            )
+        )
+        checks.append(
+            DoctorCheck(
+                name="display_config",
                 ok=False,
                 detail=f"Invalid config: {exc}",
             )

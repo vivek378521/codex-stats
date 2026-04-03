@@ -51,6 +51,11 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.days, 14)
         self.assertEqual(args.color, "never")
 
+    def test_global_color_default_is_deferred(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        self.assertIsNone(args.color)
+
     def test_export_import_parsers(self) -> None:
         parser = build_parser()
         export_args = parser.parse_args(["export", "stats.json", "--since", "30d"])
@@ -72,6 +77,13 @@ class CliTestCase(unittest.TestCase):
         self.assertTrue(compare_args.json_output)
         self.assertEqual(doctor_args.command, "doctor")
         self.assertTrue(doctor_args.strict)
+
+    def test_compare_and_history_defaults_are_deferred(self) -> None:
+        parser = build_parser()
+        compare_args = parser.parse_args(["compare"])
+        history_args = parser.parse_args(["history"])
+        self.assertIsNone(compare_args.days)
+        self.assertIsNone(history_args.limit)
 
     def test_top_import_and_completions_parsers(self) -> None:
         parser = build_parser()
@@ -108,10 +120,18 @@ class CliTestCase(unittest.TestCase):
 
     def test_merge_parser(self) -> None:
         parser = build_parser()
-        args = parser.parse_args(["merge", "merged.json", "a.json", "b.json"])
+        args = parser.parse_args(["merge", "merged.json", "a.json", "b.json", "--json"])
         self.assertEqual(args.command, "merge")
         self.assertEqual(args.output, "merged.json")
         self.assertEqual(args.input, ["a.json", "b.json"])
+        self.assertTrue(args.json_output)
+
+    def test_config_show_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["config", "show", "--json"])
+        self.assertEqual(args.command, "config")
+        self.assertEqual(args.config_command, "show")
+        self.assertTrue(args.json_output)
 
 
 if __name__ == "__main__":

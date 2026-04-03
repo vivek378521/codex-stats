@@ -175,6 +175,7 @@ class DoctorCheck:
     name: str
     ok: bool
     detail: str
+    severity: str = "error"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -215,3 +216,44 @@ class ReportData:
             "costs": self.costs.to_dict(),
             "insights": self.insights.to_dict(),
         }
+
+
+@dataclass(frozen=True)
+class DisplayConfigView:
+    color: str
+    history_limit: int
+    compare_days: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ConfigView:
+    config_path: str
+    exists: bool
+    pricing_default_usd_per_1k_tokens: float
+    pricing_model_overrides: dict[str, float]
+    display: DisplayConfigView
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "config_path": self.config_path,
+            "exists": self.exists,
+            "pricing_default_usd_per_1k_tokens": self.pricing_default_usd_per_1k_tokens,
+            "pricing_model_overrides": self.pricing_model_overrides,
+            "display": self.display.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ImportSummary:
+    files_read: int
+    sessions_loaded: int
+    duplicates_removed: int
+    merged_sessions: int
+    oldest_session_at: str | None
+    newest_session_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

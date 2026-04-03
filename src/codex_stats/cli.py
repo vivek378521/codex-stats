@@ -5,16 +5,17 @@ import sys
 from pathlib import Path
 
 from .completions import render_completion
-from .config import Paths, load_pricing_config
-from .config import init_config
+from .config import DisplayConfig, Paths, init_config, load_config_view, load_display_config, load_pricing_config
 from .display import (
     as_json,
     format_breakdown,
     format_compare,
+    format_config,
     format_costs,
     format_daily,
     format_doctor,
     format_history,
+    format_import_summary,
     format_insights,
     format_report,
     format_report_markdown,
@@ -50,7 +51,7 @@ from .metrics import (
     summarize_top_sessions_from_details,
     summarize_week,
 )
-from .transfer import read_imports, write_export, write_merged_export
+from .transfer import read_imports_with_summary, write_export, write_merged_export
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--color",
         choices=["auto", "always", "never"],
-        default="auto",
+        default=None,
         help="Control ANSI color output.",
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -92,13 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     compare_parser = subparsers.add_parser("compare", help="Compare the last N days to the previous N days.")
     compare_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    compare_parser.add_argument("--days", type=int, default=7, help="Days per comparison window.")
+    compare_parser.add_argument("--days", type=int, help="Days per comparison window.")
     compare_parser.add_argument("current", nargs="?", choices=["today", "week", "month"], help="Named current window.")
     compare_parser.add_argument("previous", nargs="?", choices=["yesterday", "last-week", "last-month"], help="Named previous window.")
 
     history_parser = subparsers.add_parser("history", help="Show recent session history.")
     history_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    history_parser.add_argument("--limit", type=int, default=10, help="Maximum sessions to show.")
+    history_parser.add_argument("--limit", type=int, help="Maximum sessions to show.")
 
     top_parser = subparsers.add_parser("top", help="Show the largest sessions.")
     top_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
@@ -131,6 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Create a default config file.")
     init_parser.add_argument("--force", action="store_true", help="Overwrite an existing config.")
 
+    config_parser = subparsers.add_parser("config", help="Inspect effective codex-stats configuration.")
+    config_subparsers = config_parser.add_subparsers(dest="config_command")
+    config_show_parser = config_subparsers.add_parser("show", help="Show effective config values.")
+    config_show_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+
     report_parser = subparsers.add_parser("report", help="Generate a shareable usage report.")
     report_parser.add_argument("period", choices=["weekly", "monthly"], help="Report period.")
     report_parser.add_argument("--format", choices=["text", "markdown", "json"], default="text", help="Output format.")
@@ -140,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge_parser = subparsers.add_parser("merge", help="Merge one or more exported stats files into one snapshot.")
     merge_parser.add_argument("output", help="Merged output JSON file.")
     merge_parser.add_argument("input", nargs="+", help="Input export JSON files.")
+    merge_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
     return parser
 
@@ -148,7 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     paths = Paths.discover()
-    options = resolve_format_options(args.color)
+    try:
+        display_config = load_display_config(paths)
+    except Exception:
+        display_config = DisplayConfig()
+    options = resolve_format_options(args.color or display_config.color)
 
     if args.command in (None, "today"):
         summary = summarize_last_days(paths, args.days) if args.days else summarize_today(paths)
@@ -221,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.current and args.previous:
             report = summarize_compare_named(paths, args.current, args.previous)
         else:
-            report = summarize_compare(paths, days=args.days)
+            report = summarize_compare(paths, days=args.days or display_config.compare_days)
         if args.json_output:
             print(as_json(report.to_dict()))
         else:
@@ -229,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "history":
-        entries = summarize_history(paths, limit=args.limit)
+        entries = summarize_history(paths, limit=args.limit or display_config.history_limit)
         if args.json_output:
             print(as_json({"history": [entry.to_dict() for entry in entries]}))
         else:
@@ -287,12 +298,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "import":
         pricing = load_pricing_config(paths)
-        details = read_imports([Path(input_path).expanduser() for input_path in args.input])
+        details, import_summary = read_imports_with_summary([Path(input_path).expanduser() for input_path in args.input])
         summary = summarize_imported_details(details, pricing=pricing)
         if args.json_output:
             print(
                 as_json(
                     {
+                        "import_summary": import_summary.to_dict(),
                         "summary": summary.to_dict(),
                         "models": [entry.to_dict() for entry in summarize_models_from_details(details, pricing)],
                         "projects": [entry.to_dict() for entry in summarize_projects_from_details(details, pricing)],
@@ -304,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
+            print(format_import_summary(import_summary, options))
+            print()
             print(format_summary(summary, options))
         return 0
 
@@ -313,13 +327,21 @@ def main(argv: list[str] | None = None) -> int:
             print(as_json({"checks": [check.to_dict() for check in checks]}))
         else:
             print(format_doctor(checks, options))
-        if args.strict and any(not check.ok for check in checks):
+        if args.strict and any((not check.ok) and check.severity != "warning" for check in checks):
             return 1
         return 0
 
     if args.command == "init":
         config_path = init_config(paths, force=args.force)
         print(f"Initialized config at {config_path}")
+        return 0
+
+    if args.command == "config" and args.config_command == "show":
+        config_view = load_config_view(paths)
+        if args.json_output:
+            print(as_json(config_view.to_dict()))
+        else:
+            print(format_config(config_view, options))
         return 0
 
     if args.command == "completions":
@@ -344,11 +366,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "merge":
-        output_path = write_merged_export(
+        output_path, import_summary = write_merged_export(
             [Path(input_path).expanduser() for input_path in args.input],
             Path(args.output).expanduser(),
         )
-        print(f"Merged stats to {output_path}")
+        if args.json_output:
+            print(as_json({"output_path": str(output_path), "import_summary": import_summary.to_dict()}))
+        else:
+            print(format_import_summary(import_summary, options))
+            print()
+            print(f"Merged stats to {output_path}")
         return 0
 
     parser.print_help()

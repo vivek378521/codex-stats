@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .ingest import iter_session_details
 from .metrics import details_for_last_days, parse_since_days
-from .models import SessionDetails, SessionRecord
+from .models import ImportSummary, SessionDetails, SessionRecord
 
 
 def export_payload(paths, since: str | None = None) -> dict:
@@ -35,11 +35,12 @@ def write_export(paths, output_path: Path, since: str | None = None) -> Path:
     return output_path
 
 
-def write_merged_export(input_paths: list[Path], output_path: Path) -> Path:
-    payload = export_payload_from_details(read_imports(input_paths))
+def write_merged_export(input_paths: list[Path], output_path: Path) -> tuple[Path, ImportSummary]:
+    details, summary = read_imports_with_summary(input_paths)
+    payload = export_payload_from_details(details)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return output_path
+    return output_path, summary
 
 
 def read_import(input_path: Path) -> list[SessionDetails]:
@@ -49,14 +50,30 @@ def read_import(input_path: Path) -> list[SessionDetails]:
 
 
 def read_imports(input_paths: list[Path]) -> list[SessionDetails]:
+    return read_imports_with_summary(input_paths)[0]
+
+
+def read_imports_with_summary(input_paths: list[Path]) -> tuple[list[SessionDetails], ImportSummary]:
     merged: dict[str, SessionDetails] = {}
+    sessions_loaded = 0
     for input_path in input_paths:
         for detail in read_import(input_path):
+            sessions_loaded += 1
             session_id = detail.session.session_id
             existing = merged.get(session_id)
             if existing is None or detail.session.updated_at >= existing.session.updated_at:
                 merged[session_id] = detail
-    return sorted(merged.values(), key=lambda detail: detail.session.updated_at, reverse=True)
+    ordered = sorted(merged.values(), key=lambda detail: detail.session.updated_at, reverse=True)
+    timestamps = [detail.session.updated_at.isoformat() for detail in ordered]
+    summary = ImportSummary(
+        files_read=len(input_paths),
+        sessions_loaded=sessions_loaded,
+        duplicates_removed=max(sessions_loaded - len(ordered), 0),
+        merged_sessions=len(ordered),
+        oldest_session_at=timestamps[-1] if timestamps else None,
+        newest_session_at=timestamps[0] if timestamps else None,
+    )
+    return ordered, summary
 
 
 def _session_detail_from_dict(payload: dict) -> SessionDetails:

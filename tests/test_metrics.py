@@ -32,7 +32,7 @@ from codex_stats.metrics import (
     summarize_top_sessions,
     summarize_week,
 )
-from codex_stats.transfer import export_payload, read_import, read_imports, write_merged_export
+from codex_stats.transfer import export_payload, read_import, read_imports, read_imports_with_summary, write_merged_export
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -242,6 +242,11 @@ class MetricsTestCase(unittest.TestCase):
         export_path_b.write_text(json.dumps(payload), encoding="utf-8")
         merged = read_imports([export_path_a, export_path_b])
         self.assertEqual(len(merged), 1)
+        merged_with_summary, import_summary = read_imports_with_summary([export_path_a, export_path_b])
+        self.assertEqual(len(merged_with_summary), 1)
+        self.assertEqual(import_summary.files_read, 2)
+        self.assertEqual(import_summary.sessions_loaded, 2)
+        self.assertEqual(import_summary.duplicates_removed, 1)
 
     def test_compare_named_and_report(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -279,12 +284,13 @@ class MetricsTestCase(unittest.TestCase):
         export_path_out = Path(self.tmpdir.name) / "merged.json"
         export_path_a.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
         export_path_b.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
-        write_merged_export([export_path_a, export_path_b], export_path_out)
+        _, import_summary = write_merged_export([export_path_a, export_path_b], export_path_out)
         merged_payload = json.loads(export_path_out.read_text(encoding="utf-8"))
         self.assertEqual(report.project_name, "project")
         self.assertEqual(report.summary.total_tokens, 280)
         self.assertEqual(report.projects, [])
         self.assertEqual(len(merged_payload["sessions"]), 1)
+        self.assertEqual(import_summary.merged_sessions, 1)
 
 
 if __name__ == "__main__":
