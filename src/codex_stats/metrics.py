@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, tzinfo
+import re
 
 from .config import Paths, PricingConfig, load_pricing_config
 from .ingest import get_session_details, iter_session_details
@@ -62,6 +63,20 @@ def details_for_last_days(paths: Paths, days: int, now: datetime | None = None) 
         for detail in iter_session_details(paths)
         if start_day <= local_date(detail.session.created_at, current_time.tzinfo) <= end_day
     ]
+
+
+def filter_details_by_project(details: list[SessionDetails], project_name: str | None) -> list[SessionDetails]:
+    if not project_name:
+        return details
+    lowered = project_name.lower()
+    return [detail for detail in details if detail.session.project_name.lower() == lowered]
+
+
+def parse_since_days(value: str) -> int:
+    match = re.fullmatch(r"(\d+)d", value.strip().lower())
+    if not match:
+        raise ValueError("Expected --since in the form Nd, for example 30d")
+    return int(match.group(1))
 
 
 def summarize_period(
@@ -143,6 +158,19 @@ def summarize_models_from_details(
 def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
     details = iter_session_details(paths)
     return summarize_projects_from_details(details, load_pricing_config(paths))
+
+
+def summarize_project_drilldown(
+    paths: Paths,
+    project_name: str,
+    days: int | None = None,
+    now: datetime | None = None,
+) -> TimeSummary:
+    pricing = load_pricing_config(paths)
+    details = details_for_last_days(paths, days, now=now) if days else iter_session_details(paths)
+    filtered = filter_details_by_project(details, project_name)
+    label = project_name if days is None else f"{project_name} last {max(days, 1)} days"
+    return summarize_details(label, filtered, pricing)
 
 
 def summarize_projects_from_details(
@@ -390,15 +418,38 @@ def summarize_insights_from_details(
     cache_ratio = month.cache_ratio
     possible_savings_usd = 0.0
     suggestion = "Usage looks balanced."
+    anomalies: list[str] = []
+    recommendations: list[str] = []
+    highest_session_tokens = month.largest_session_tokens
+    if details:
+        session_totals = sorted((detail.effective_total_tokens() for detail in details), reverse=True)
+        total_tokens = sum(session_totals)
+        if total_tokens and session_totals[0] / total_tokens >= 0.6:
+            anomalies.append("Heavy cost concentration in one session")
+            recommendations.append("Split exploratory work into smaller sessions.")
+        if len(session_totals) >= 2 and session_totals[0] >= session_totals[1] * 3:
+            anomalies.append("Sudden usage spike relative to your other sessions")
+            recommendations.append("Review the largest session and reset context earlier.")
+    if highest_session_tokens >= 1_000_000:
+        anomalies.append("Oversized session detected")
+        recommendations.append("Break implementation and research into separate runs.")
     if cache_ratio is not None and cache_ratio < 0.25:
         possible_savings_usd = round(month.estimated_cost_usd * 0.15, 2)
         suggestion = "Cache reuse is low. Reuse context or break work into steadier sessions."
+        anomalies.append("Low cache efficiency")
+        recommendations.append("Reuse context and avoid restarting similar prompts.")
     elif month.average_tokens_per_request > 50_000:
         possible_savings_usd = round(month.estimated_cost_usd * 0.1, 2)
         suggestion = "Requests are very large. Reset context more aggressively between tasks."
+        anomalies.append("Requests are unusually large")
+        recommendations.append("Trim prompts and summarize progress between tasks.")
     elif large_session_count > 0:
         possible_savings_usd = round(month.estimated_cost_usd * 0.05, 2)
         suggestion = "Large sessions detected. Consider shorter task-focused runs."
+        recommendations.append("Use shorter, task-focused sessions.")
+
+    if not recommendations:
+        recommendations.append("Current usage patterns look healthy.")
 
     return InsightReport(
         average_tokens_per_request=month.average_tokens_per_request,
@@ -407,6 +458,8 @@ def summarize_insights_from_details(
         possible_savings_usd=possible_savings_usd,
         largest_session_tokens=month.largest_session_tokens,
         suggestion=suggestion,
+        anomalies=anomalies,
+        recommendations=recommendations,
     )
 
 
@@ -418,9 +471,11 @@ def summarize_top_sessions_from_details(
     details: list[SessionDetails],
     pricing: PricingConfig | None = None,
     limit: int = 5,
+    project_name: str | None = None,
 ) -> list[TopEntry]:
     pricing = pricing or PricingConfig()
-    ordered = sorted(details, key=lambda detail: detail.effective_total_tokens(), reverse=True)
+    filtered = filter_details_by_project(details, project_name)
+    ordered = sorted(filtered, key=lambda detail: detail.effective_total_tokens(), reverse=True)
     return [
         TopEntry(
             session_id=detail.session.session_id,
@@ -440,20 +495,24 @@ def build_report(paths: Paths, period: str = "weekly", now: datetime | None = No
     if period == "weekly":
         details = details_for_last_days(paths, 7, now=current_time)
         summary = summarize_details("weekly", details, pricing)
+        previous = summarize_compare_named(paths, "week", "last-week", now=current_time)
     elif period == "monthly":
         details = details_for_last_days(paths, 30, now=current_time)
         summary = summarize_details("monthly", details, pricing)
+        previous = summarize_compare_named(paths, "month", "last-month", now=current_time)
     else:
         raise ValueError(f"Unsupported period: {period}")
 
-    return ReportData(
+    report = ReportData(
         period=period,
         summary=summary,
+        comparison=previous,
         projects=summarize_projects_from_details(details, pricing)[:5],
         top_sessions=summarize_top_sessions_from_details(details, pricing, limit=5),
         costs=summarize_costs_from_details(details, pricing=pricing, today=summary, week=summary, month=summary, now=current_time),
         insights=summarize_insights_from_details(details, pricing=pricing, month=summary, now=current_time),
     )
+    return report
 
 
 def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingConfig) -> list[BreakdownEntry]:

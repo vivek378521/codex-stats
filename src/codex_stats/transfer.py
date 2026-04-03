@@ -5,11 +5,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .ingest import iter_session_details
+from .metrics import details_for_last_days, parse_since_days
 from .models import SessionDetails, SessionRecord
 
 
-def export_payload(paths) -> dict:
+def export_payload(paths, since: str | None = None) -> dict:
     details = iter_session_details(paths)
+    if since:
+        details = details_for_last_days(paths, parse_since_days(since))
     return {
         "schema_version": 1,
         "exported_at": datetime.now(tz=UTC).isoformat(),
@@ -17,8 +20,8 @@ def export_payload(paths) -> dict:
     }
 
 
-def write_export(paths, output_path: Path) -> Path:
-    payload = export_payload(paths)
+def write_export(paths, output_path: Path, since: str | None = None) -> Path:
+    payload = export_payload(paths, since=since)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return output_path
 

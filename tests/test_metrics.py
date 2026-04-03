@@ -13,19 +13,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_stats.config import Paths
 from codex_stats.ingest import get_session, get_session_details
 from codex_stats.metrics import (
-    details_for_last_days,
     build_report,
+    details_for_last_days,
+    parse_since_days,
     run_doctor,
-    summarize_compare_named,
     summarize_compare,
+    summarize_compare_named,
     summarize_costs,
     summarize_daily,
     summarize_history,
     summarize_insights,
     summarize_models,
     summarize_month,
+    summarize_project_drilldown,
     summarize_projects,
     summarize_today,
+    summarize_top_sessions_from_details,
     summarize_top_sessions,
     summarize_week,
 )
@@ -202,6 +205,9 @@ class MetricsTestCase(unittest.TestCase):
         self.assertGreater(costs.month_cost_usd, 0.0)
         self.assertEqual(insights.large_session_count, 0)
         self.assertGreater(insights.average_tokens_per_request, 0.0)
+        self.assertIn("Heavy cost concentration in one session", insights.anomalies)
+        self.assertIn("Low cache efficiency", insights.anomalies)
+        self.assertIn("Split exploratory work into smaller sessions.", insights.recommendations)
 
     def test_export_and_import_round_trip(self) -> None:
         payload = export_payload(self.paths)
@@ -245,6 +251,24 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(report.previous.total_tokens, 0)
         self.assertEqual(weekly.period, "weekly")
         self.assertEqual(weekly.summary.total_tokens, 280)
+        self.assertEqual(weekly.comparison.previous.total_tokens, 0)
+
+    def test_project_drilldown_and_filtered_top(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        summary = summarize_project_drilldown(self.paths, "project", days=30, now=now)
+        details = details_for_last_days(self.paths, 30, now=now)
+        top = summarize_top_sessions_from_details(details, limit=5, project_name="project")
+        self.assertEqual(summary.total_tokens, 280)
+        self.assertEqual(summary.requests, 2)
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0].project_name, "project")
+
+    def test_export_payload_since_and_parser(self) -> None:
+        payload = export_payload(self.paths, since="30d")
+        self.assertEqual(len(payload["sessions"]), 1)
+        self.assertEqual(parse_since_days("30d"), 30)
+        with self.assertRaises(ValueError):
+            parse_since_days("30")
 
 
 if __name__ == "__main__":

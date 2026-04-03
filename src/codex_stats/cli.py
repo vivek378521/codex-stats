@@ -23,25 +23,26 @@ from .display import (
     format_top,
     resolve_format_options,
 )
-from .ingest import get_session, get_session_details
+from .ingest import get_session, get_session_details, iter_session_details
 from .metrics import (
+    build_report,
     details_for_last_days,
     run_doctor,
-    build_report,
-    summarize_compare_named,
     summarize_compare,
-    summarize_daily,
-    summarize_imported_details,
-    summarize_last_days,
+    summarize_compare_named,
     summarize_costs,
     summarize_costs_from_details,
+    summarize_daily,
     summarize_history,
     summarize_history_from_details,
+    summarize_imported_details,
     summarize_insights,
     summarize_insights_from_details,
+    summarize_last_days,
     summarize_models,
     summarize_models_from_details,
     summarize_month,
+    summarize_project_drilldown,
     summarize_projects,
     summarize_projects_from_details,
     summarize_today,
@@ -80,7 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser = subparsers.add_parser("models", help="Show usage by model.")
     models_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
-    project_parser = subparsers.add_parser("project", help="Show usage by project.")
+    project_parser = subparsers.add_parser("project", help="Show usage by project or inspect a single project.")
+    project_parser.add_argument("name", nargs="?", help="Optional project name for a drilldown view.")
+    project_parser.add_argument("--days", type=int, help="Limit a project drilldown to the last N days.")
     project_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
 
     daily_parser = subparsers.add_parser("daily", help="Show per-day usage and a trend graph.")
@@ -100,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     top_parser = subparsers.add_parser("top", help="Show the largest sessions.")
     top_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
     top_parser.add_argument("--limit", type=int, default=5, help="Maximum sessions to show.")
+    top_parser.add_argument("--project", dest="project_name", help="Filter top sessions to one project.")
 
     costs_parser = subparsers.add_parser("costs", help="Show estimated cost breakdown.")
     costs_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
@@ -111,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export_parser = subparsers.add_parser("export", help="Export normalized local stats to JSON.")
     export_parser.add_argument("output", help="Output JSON file.")
+    export_parser.add_argument("--since", help="Only export the last Nd of sessions, for example 30d.")
 
     import_parser = subparsers.add_parser("import", help="Read an exported stats JSON file.")
     import_parser.add_argument("input", nargs="+", help="One or more input JSON files.")
@@ -183,11 +188,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "project":
-        entries = summarize_projects(paths)
-        if args.json_output:
-            print(as_json({"projects": [entry.to_dict() for entry in entries]}))
+        if args.name:
+            summary = summarize_project_drilldown(paths, args.name, days=args.days)
+            if args.json_output:
+                print(as_json(summary.to_dict()))
+            else:
+                print(format_summary(summary, options))
         else:
-            print(format_breakdown("Project Usage", entries, options))
+            entries = summarize_projects(paths)
+            if args.json_output:
+                print(as_json({"projects": [entry.to_dict() for entry in entries]}))
+            else:
+                print(format_breakdown("Project Usage", entries, options))
         return 0
 
     if args.command == "daily":
@@ -218,7 +230,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "top":
-        entries = summarize_top_sessions(paths, limit=args.limit)
+        if args.project_name:
+            pricing = load_pricing_config(paths)
+            details = iter_session_details(paths)
+            entries = summarize_top_sessions_from_details(
+                details,
+                pricing,
+                limit=args.limit,
+                project_name=args.project_name,
+            )
+        else:
+            entries = summarize_top_sessions(paths, limit=args.limit)
         if args.json_output:
             print(as_json({"top": [entry.to_dict() for entry in entries]}))
         else:
@@ -252,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "export":
-        output_path = write_export(paths, Path(args.output).expanduser())
+        output_path = write_export(paths, Path(args.output).expanduser(), since=args.since)
         print(f"Exported stats to {output_path}")
         return 0
 

@@ -7,10 +7,12 @@ It reads your local Codex state from `~/.codex` and surfaces:
 - session summaries
 - rolling usage totals across today, week, month, or the last `N` days
 - model and project breakdowns
+- project-specific drilldowns
 - recent session history
 - estimated token-based cost
-- basic usage insights
+- anomaly-aware usage insights and recommendations
 - export and import for cross-device snapshots
+- shareable weekly and monthly reports
 
 ## Install
 
@@ -35,11 +37,14 @@ codex-stats session
 codex-stats session --id <session_id>
 codex-stats models
 codex-stats project
+codex-stats project backend-api
+codex-stats project backend-api --days 30
 codex-stats daily
 codex-stats compare
 codex-stats compare today yesterday
 codex-stats history
 codex-stats top
+codex-stats top --project backend-api
 codex-stats costs
 codex-stats insights
 codex-stats doctor
@@ -49,6 +54,7 @@ codex-stats report weekly --format markdown
 codex-stats --days 14
 codex-stats --color always
 codex-stats export codex-stats-export.json
+codex-stats export codex-stats-export.json --since 30d
 codex-stats import laptop.json desktop.json
 codex-stats completions zsh
 codex-stats --json
@@ -68,6 +74,7 @@ It reads local Codex artifacts, including:
 - Costs are estimates, not billing values.
 - Output depends on local Codex file formats remaining compatible.
 - `export` and `import` let you move normalized snapshots between machines.
+- `export --since Nd` limits snapshots to a rolling window before sharing.
 - `--color auto|always|never` controls ANSI styling.
 
 ## Pricing Config

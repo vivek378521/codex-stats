@@ -53,10 +53,11 @@ class CliTestCase(unittest.TestCase):
 
     def test_export_import_parsers(self) -> None:
         parser = build_parser()
-        export_args = parser.parse_args(["export", "stats.json"])
+        export_args = parser.parse_args(["export", "stats.json", "--since", "30d"])
         import_args = parser.parse_args(["import", "stats.json", "--json"])
         self.assertEqual(export_args.command, "export")
         self.assertEqual(export_args.output, "stats.json")
+        self.assertEqual(export_args.since, "30d")
         self.assertEqual(import_args.command, "import")
         self.assertTrue(import_args.json_output)
 
@@ -73,11 +74,12 @@ class CliTestCase(unittest.TestCase):
 
     def test_top_import_and_completions_parsers(self) -> None:
         parser = build_parser()
-        top_args = parser.parse_args(["top", "--limit", "3"])
+        top_args = parser.parse_args(["top", "--limit", "3", "--project", "project"])
         import_args = parser.parse_args(["import", "a.json", "b.json"])
         completion_args = parser.parse_args(["completions", "zsh"])
         self.assertEqual(top_args.command, "top")
         self.assertEqual(top_args.limit, 3)
+        self.assertEqual(top_args.project_name, "project")
         self.assertEqual(import_args.input, ["a.json", "b.json"])
         self.assertEqual(completion_args.shell, "zsh")
 
@@ -92,6 +94,14 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(compare_args.previous, "yesterday")
         self.assertEqual(report_args.period, "weekly")
         self.assertEqual(report_args.format, "markdown")
+
+    def test_project_drilldown_parser(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["project", "project", "--days", "30", "--json"])
+        self.assertEqual(args.command, "project")
+        self.assertEqual(args.name, "project")
+        self.assertEqual(args.days, 30)
+        self.assertTrue(args.json_output)
 
 
 if __name__ == "__main__":

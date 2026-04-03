@@ -132,6 +132,8 @@ class InsightReport:
     possible_savings_usd: float
     largest_session_tokens: int
     suggestion: str
+    anomalies: list[str]
+    recommendations: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -195,6 +197,7 @@ class TopEntry:
 class ReportData:
     period: str
     summary: TimeSummary
+    comparison: CompareReport
     projects: list[BreakdownEntry]
     top_sessions: list[TopEntry]
     costs: CostSummary
@@ -204,6 +207,7 @@ class ReportData:
         return {
             "period": self.period,
             "summary": self.summary.to_dict(),
+            "comparison": self.comparison.to_dict(),
             "projects": [entry.to_dict() for entry in self.projects],
             "top_sessions": [entry.to_dict() for entry in self.top_sessions],
             "costs": self.costs.to_dict(),

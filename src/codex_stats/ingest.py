@@ -39,8 +39,11 @@ def iter_sessions(paths: Paths) -> Iterable[SessionRecord]:
         FROM threads
         ORDER BY updated_at DESC, created_at DESC
     """
-    with _connect_sqlite(paths.state_db) as connection:
+    connection = _connect_sqlite(paths.state_db)
+    try:
         rows = connection.execute(query).fetchall()
+    finally:
+        connection.close()
 
     sessions: list[SessionRecord] = []
     for row in rows:

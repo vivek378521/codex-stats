@@ -131,7 +131,14 @@ def format_insights(insights: InsightReport, options: FormatOptions | None = Non
         ("Possible savings", f"${insights.possible_savings_usd:.2f}"),
         ("Suggestion", insights.suggestion),
     ]
-    return _card("Insights", rows, options)
+    lines = [_card("Insights", rows, options)]
+    if insights.anomalies:
+        lines.append("")
+        lines.append(_card("Anomalies", [("Detected", "; ".join(insights.anomalies))], options))
+    if insights.recommendations:
+        lines.append("")
+        lines.append(_card("Next Steps", [("Do next", "; ".join(insights.recommendations))], options))
+    return "\n".join(lines)
 
 
 def format_daily(points: list[DailyPoint], options: FormatOptions | None = None) -> str:
@@ -193,6 +200,8 @@ def format_report(report: ReportData, options: FormatOptions | None = None) -> s
     lines = [
         format_summary(report.summary, options),
         "",
+        format_compare(report.comparison, options),
+        "",
         format_breakdown("Top Projects", report.projects, options),
         "",
         format_top(report.top_sessions, options),
@@ -205,6 +214,7 @@ def format_report(report: ReportData, options: FormatOptions | None = None) -> s
 
 
 def format_report_markdown(report: ReportData) -> str:
+    delta_pct = "n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%"
     lines = [
         f"# Codex Stats {report.period.title()} Report",
         "",
@@ -212,6 +222,7 @@ def format_report_markdown(report: ReportData) -> str:
         f"- Requests: `{report.summary.requests}`",
         f"- Estimated cost: `${report.summary.estimated_cost_usd:.2f}`",
         f"- Top model: `{report.summary.top_model or 'unknown'}`",
+        f"- Trend vs previous window: `{delta_pct}`",
         "",
         "## Top Projects",
         "",
@@ -240,9 +251,14 @@ def format_report_markdown(report: ReportData) -> str:
             "",
             f"- Avg/request: `{report.insights.average_tokens_per_request:,.0f}`",
             f"- Cache ratio: `{_fmt_percent(report.insights.cache_ratio)}`",
+            f"- Anomalies: {', '.join(report.insights.anomalies) if report.insights.anomalies else 'none'}",
             f"- Suggestion: {report.insights.suggestion}",
         ]
     )
+    if report.insights.recommendations:
+        lines.extend(["", "## Recommended Actions", ""])
+        for recommendation in report.insights.recommendations:
+            lines.append(f"- {recommendation}")
     return "\n".join(lines)
 
 
