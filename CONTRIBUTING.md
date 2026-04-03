@@ -24,7 +24,6 @@ python -m build
 
 ## Before publishing
 
-- replace placeholder GitHub URLs in `pyproject.toml`
 - bump the version in `pyproject.toml`
 - run tests
 - build the package locally

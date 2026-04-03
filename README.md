@@ -58,7 +58,7 @@ PYTHONPATH=src python3 -m codex_stats
 
 Recommended publish flow:
 
-1. Create a GitHub repository and replace the placeholder URLs in `pyproject.toml`.
+1. Create the GitHub repository `vivek378521/codex-stats`.
 2. Create a PyPI project named `codex-stats`.
 3. Configure PyPI Trusted Publishing for the GitHub repository.
 4. Push a version tag and publish a GitHub release.

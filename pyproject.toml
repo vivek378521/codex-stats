@@ -35,9 +35,9 @@ dev = [
 codex-stats = "codex_stats.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/<your-user>/codex-stats"
-Repository = "https://github.com/<your-user>/codex-stats"
-Issues = "https://github.com/<your-user>/codex-stats/issues"
+Homepage = "https://github.com/vivek378521/codex-stats"
+Repository = "https://github.com/vivek378521/codex-stats"
+Issues = "https://github.com/vivek378521/codex-stats/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
