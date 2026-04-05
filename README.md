@@ -83,7 +83,7 @@ python3 -m pip install codex-stats
 - `codex-stats report weekly --format html`
   Generate a standalone HTML report for sharing, including inline charts.
 - `codex-stats report weekly --format svg`
-  Generate a bundle of smaller standalone SVG assets in the current working directory, including a summary card plus graph-focused assets.
+  Generate a bundle of four smaller standalone SVG assets in the current working directory: summary, cost, focus, and project snapshots.
 - `codex-stats report weekly --project backend-api`
   Generate a weekly report for one project.
 - `codex-stats report weekly --format markdown --output weekly-report.md`

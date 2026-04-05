@@ -205,7 +205,7 @@ class CliTestCase(unittest.TestCase):
             self.assertIn("report.html", str(output_path))
         with tempfile.TemporaryDirectory() as tmpdir:
             svg_dir = _write_report_svg_assets(
-                {"summary-card": "<svg></svg>", "daily-tokens": "<svg></svg>"},
+                {"summary-card": "<svg></svg>", "cost-card": "<svg></svg>"},
                 tmpdir,
                 base_name="codex-stats-weekly",
             )
