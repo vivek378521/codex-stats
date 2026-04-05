@@ -60,11 +60,36 @@ class CliTestCase(unittest.TestCase):
         parser = build_parser()
         export_args = parser.parse_args(["export", "stats.json", "--since", "30d"])
         import_args = parser.parse_args(["import", "stats.json", "--json"])
+        otel_args = parser.parse_args(
+            [
+                "otel",
+                "--output",
+                "metrics.json",
+                "--endpoint",
+                "http://localhost:4318/v1/metrics",
+                "--since",
+                "30d",
+                "--daily-days",
+                "14",
+                "--resource-attr",
+                "deployment.environment=dev",
+                "--header",
+                "Authorization=Bearer test",
+                "--gzip",
+            ]
+        )
         self.assertEqual(export_args.command, "export")
         self.assertEqual(export_args.output, "stats.json")
         self.assertEqual(export_args.since, "30d")
         self.assertEqual(import_args.command, "import")
         self.assertTrue(import_args.json_output)
+        self.assertEqual(otel_args.command, "otel")
+        self.assertEqual(otel_args.output, "metrics.json")
+        self.assertEqual(otel_args.endpoint, "http://localhost:4318/v1/metrics")
+        self.assertEqual(otel_args.daily_days, 14)
+        self.assertEqual(otel_args.resource_attr, ["deployment.environment=dev"])
+        self.assertEqual(otel_args.header, ["Authorization=Bearer test"])
+        self.assertTrue(otel_args.gzip)
 
     def test_daily_compare_doctor_parsers(self) -> None:
         parser = build_parser()

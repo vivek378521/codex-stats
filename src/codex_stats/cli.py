@@ -51,6 +51,7 @@ from .metrics import (
     summarize_top_sessions_from_details,
     summarize_week,
 )
+from .otel import parse_key_value_pairs, post_otlp_metrics_json, write_otlp_metrics_json
 from .transfer import read_imports_with_summary, write_export, write_merged_export
 
 
@@ -147,6 +148,29 @@ def build_parser() -> argparse.ArgumentParser:
     merge_parser.add_argument("output", help="Merged output JSON file.")
     merge_parser.add_argument("input", nargs="+", help="Input export JSON files.")
     merge_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
+
+    otel_parser = subparsers.add_parser("otel", help="Build or push OTLP metrics from local Codex stats.")
+    otel_parser.add_argument("--output", help="Write OTLP JSON metrics to a file.")
+    otel_parser.add_argument("--endpoint", help="POST OTLP JSON metrics to an OTLP/HTTP metrics endpoint.")
+    otel_parser.add_argument("--since", help="Limit the exported session snapshot to the last Nd, for example 30d.")
+    otel_parser.add_argument("--daily-days", type=int, default=30, help="How many daily historical points to include.")
+    otel_parser.add_argument("--service-name", default="codex-stats", help="Resource service.name value.")
+    otel_parser.add_argument(
+        "--resource-attr",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Extra OTLP resource attribute. Repeat to set multiple values.",
+    )
+    otel_parser.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Extra HTTP header for OTLP export. Repeat to set multiple values.",
+    )
+    otel_parser.add_argument("--gzip", action="store_true", help="Gzip the OTLP HTTP request body.")
+    otel_parser.add_argument("--timeout", type=float, default=10.0, help="OTLP HTTP timeout in seconds.")
 
     return parser
 
@@ -376,6 +400,43 @@ def main(argv: list[str] | None = None) -> int:
             print(format_import_summary(import_summary, options))
             print()
             print(f"Merged stats to {output_path}")
+        return 0
+
+    if args.command == "otel":
+        if not args.output and not args.endpoint:
+            print("otel requires --output and/or --endpoint", file=sys.stderr)
+            return 1
+        try:
+            resource_attributes = parse_key_value_pairs(args.resource_attr)
+            headers = parse_key_value_pairs(args.header)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if args.output:
+            output_path = write_otlp_metrics_json(
+                paths,
+                Path(args.output).expanduser(),
+                since=args.since,
+                daily_days=args.daily_days,
+                service_name=args.service_name,
+                resource_attributes=resource_attributes,
+            )
+            print(f"Wrote OTLP metrics to {output_path}")
+        if args.endpoint:
+            status_code, body = post_otlp_metrics_json(
+                paths,
+                args.endpoint,
+                since=args.since,
+                daily_days=args.daily_days,
+                service_name=args.service_name,
+                resource_attributes=resource_attributes,
+                headers=headers,
+                gzip_payload=args.gzip,
+                timeout_seconds=args.timeout,
+            )
+            print(f"Posted OTLP metrics to {args.endpoint} (HTTP {status_code})")
+            if body.strip():
+                print(body)
         return 0
 
     parser.print_help()

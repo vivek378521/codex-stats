@@ -32,6 +32,7 @@ from codex_stats.metrics import (
     summarize_top_sessions,
     summarize_week,
 )
+from codex_stats.otel import build_otlp_metrics_payload, parse_key_value_pairs, write_otlp_metrics_json
 from codex_stats.transfer import export_payload, read_import, read_imports, read_imports_with_summary, write_merged_export
 
 
@@ -291,6 +292,53 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(report.projects, [])
         self.assertEqual(len(merged_payload["sessions"]), 1)
         self.assertEqual(import_summary.merged_sessions, 1)
+
+    def test_otlp_payload_and_write(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        payload = build_otlp_metrics_payload(
+            self.paths,
+            since="30d",
+            daily_days=7,
+            service_name="codex-stats-test",
+            resource_attributes={"deployment.environment": "test"},
+            now=now,
+        )
+        resource_metrics = payload["resourceMetrics"]
+        self.assertEqual(len(resource_metrics), 1)
+        scope_metrics = resource_metrics[0]["scopeMetrics"]
+        self.assertEqual(len(scope_metrics), 1)
+        metrics = scope_metrics[0]["metrics"]
+        metric_names = {metric["name"] for metric in metrics}
+        self.assertIn("codex_stats_tokens", metric_names)
+        self.assertIn("codex_stats_daily_tokens", metric_names)
+        self.assertIn("codex_stats_daily_requests", metric_names)
+        attributes = resource_metrics[0]["resource"]["attributes"]
+        attribute_map = {attribute["key"]: attribute["value"]["stringValue"] for attribute in attributes}
+        self.assertEqual(attribute_map["service.name"], "codex-stats-test")
+        self.assertEqual(attribute_map["deployment.environment"], "test")
+        self.assertEqual(attribute_map["codex.stats.window"], "30d")
+
+        tokens_metric = next(metric for metric in metrics if metric["name"] == "codex_stats_tokens")
+        self.assertFalse(tokens_metric["sum"]["isMonotonic"])
+        total_point = next(point for point in tokens_metric["sum"]["dataPoints"] if not point["attributes"])
+        project_point = next(
+            point
+            for point in tokens_metric["sum"]["dataPoints"]
+            if any(attribute["key"] == "project" and attribute["value"]["stringValue"] == "project" for attribute in point["attributes"])
+        )
+        self.assertEqual(total_point["asInt"], "280")
+        self.assertEqual(project_point["asInt"], "280")
+
+        output_path = Path(self.tmpdir.name) / "otlp-metrics.json"
+        write_otlp_metrics_json(self.paths, output_path, since="30d", daily_days=7, now=now)
+        written_payload = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(written_payload["resourceMetrics"][0]["scopeMetrics"][0]["scope"]["name"], "codex-stats")
+
+    def test_parse_key_value_pairs(self) -> None:
+        pairs = parse_key_value_pairs(["a=1", "b=two"])
+        self.assertEqual(pairs, {"a": "1", "b": "two"})
+        with self.assertRaises(ValueError):
+            parse_key_value_pairs(["broken"])
 
 
 if __name__ == "__main__":

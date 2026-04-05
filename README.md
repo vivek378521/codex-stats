@@ -13,6 +13,7 @@ It reads your local Codex state from `~/.codex` and surfaces:
 - anomaly-aware usage insights and recommendations
 - export and import for cross-device snapshots
 - merged export snapshots for multi-device rollups
+- OTLP metrics export for Grafana and OpenTelemetry collectors
 - shareable weekly and monthly reports
 
 ## Install
@@ -93,6 +94,12 @@ python3 -m pip install codex-stats
   Merge multiple exported snapshots into one deduplicated file.
 - `codex-stats merge merged.json laptop.json desktop.json --json`
   Merge snapshots and return a machine-readable merge summary.
+- `codex-stats otel --output otlp-metrics.json`
+  Write OTLP JSON metrics derived from local Codex session data.
+- `codex-stats otel --endpoint http://localhost:4318/v1/metrics`
+  Push OTLP JSON metrics directly to an OTLP/HTTP collector endpoint.
+- `codex-stats otel --since 30d --daily-days 14 --resource-attr deployment.environment=dev`
+  Export a rolling window plus daily history with additional resource metadata.
 - `codex-stats completions zsh`
   Print shell completion setup for your shell.
 - `codex-stats --color always`
@@ -116,8 +123,37 @@ It reads local Codex artifacts, including:
 - `export` and `import` let you move normalized snapshots between machines.
 - `merge` lets you deduplicate and combine exported snapshots into one file.
 - `export --since Nd` limits snapshots to a rolling window before sharing.
+- `otel` emits OTLP/HTTP JSON metrics, including aggregate token counters and daily historical gauges.
 - `doctor --strict` is useful in scripts and CI because it returns a non-zero exit code on failed checks.
 - `--color auto|always|never` controls ANSI styling.
+
+## OpenTelemetry Export
+
+The `otel` command converts local Codex session data into OTLP JSON metrics so you can feed them into Grafana, Grafana Alloy, or any OTLP/HTTP collector.
+
+Write the payload to disk:
+
+```bash
+codex-stats otel --output otlp-metrics.json
+```
+
+Push directly to an OTLP/HTTP endpoint:
+
+```bash
+codex-stats otel --endpoint http://localhost:4318/v1/metrics
+```
+
+Add resource metadata or restrict the export window:
+
+```bash
+codex-stats otel \
+  --since 30d \
+  --daily-days 14 \
+  --resource-attr deployment.environment=dev \
+  --resource-attr service.namespace=developer-tools
+```
+
+Exported metrics include aggregate sums such as `codex_stats_tokens`, `codex_stats_requests`, and `codex_stats_estimated_cost_usd`, plus daily gauges such as `codex_stats_daily_tokens`.
 
 ## Pricing Config
 
