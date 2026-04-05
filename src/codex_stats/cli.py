@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 import time
+import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -155,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--format", choices=["text", "markdown", "html", "json"], default="text", help="Output format.")
     report_parser.add_argument("--project", dest="project_name", help="Generate the report for one project.")
     report_parser.add_argument("--output", help="Write the report to a file instead of stdout.")
+    report_parser.add_argument("--render", action="store_true", help="Open an HTML report in the default browser.")
 
     merge_parser = subparsers.add_parser("merge", help="Merge one or more exported stats files into one snapshot.")
     merge_parser.add_argument("output", help="Merged output JSON file.")
@@ -398,20 +401,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "report":
+        if args.render and args.format != "html":
+            print("--render requires --format html", file=sys.stderr)
+            return 1
         report = build_report(paths, period=args.period, project_name=args.project_name)
         if args.format == "json":
             content = as_json(report.to_dict())
         elif args.format == "html":
-            content = format_report_html(report)
+            report_days = 7 if args.period == "weekly" else 30
+            report_details = filter_details_by_project(details_for_last_days(paths, report_days), args.project_name)
+            daily_points = summarize_daily_from_details(report_details, days=report_days)
+            content = format_report_html(report, daily_points=daily_points)
         elif args.format == "markdown":
             content = format_report_markdown(report)
         else:
             content = format_report(report, options)
-        if args.output:
-            output_path = Path(args.output).expanduser()
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
+        if args.output or args.render:
+            output_path = _write_report_output(content, args.output, html_mode=args.format == "html")
             print(f"Wrote report to {output_path}")
+            if args.render:
+                _open_report_in_browser(output_path)
+                print(f"Opened report in browser: {output_path}")
         else:
             print(content)
         return 0
@@ -585,10 +595,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.print_help()
     return 1
 
+def summarize_details_for_range(days: int, details):
+    return summarize_imported_details(details, label=f"last {max(days, 1)} days")
+
+
+def _write_report_output(content: str, output: str | None, *, html_mode: bool) -> Path:
+    if output:
+        output_path = Path(output).expanduser()
+    elif html_mode:
+        handle = tempfile.NamedTemporaryFile(prefix="codex-stats-report-", suffix=".html", delete=False)
+        handle.close()
+        output_path = Path(handle.name)
+    else:
+        raise ValueError("output path is required for non-HTML rendered reports")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
+    return output_path
+
+
+def _open_report_in_browser(path: Path) -> None:
+    webbrowser.open(path.resolve().as_uri())
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-def summarize_details_for_range(days: int, details):
-    return summarize_imported_details(details, label=f"last {max(days, 1)} days")

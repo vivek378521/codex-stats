@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_stats.cli import build_parser
+from codex_stats.cli import _open_report_in_browser, _write_report_output, build_parser
 
 
 class CliTestCase(unittest.TestCase):
@@ -155,7 +157,7 @@ class CliTestCase(unittest.TestCase):
         parser = build_parser()
         init_args = parser.parse_args(["init", "--force"])
         compare_args = parser.parse_args(["compare", "today", "yesterday"])
-        report_args = parser.parse_args(["report", "weekly", "--format", "html", "--project", "project", "--output", "weekly.html"])
+        report_args = parser.parse_args(["report", "weekly", "--format", "html", "--project", "project", "--output", "weekly.html", "--render"])
         self.assertEqual(init_args.command, "init")
         self.assertTrue(init_args.force)
         self.assertEqual(compare_args.current, "today")
@@ -164,6 +166,7 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(report_args.format, "html")
         self.assertEqual(report_args.project_name, "project")
         self.assertEqual(report_args.output, "weekly.html")
+        self.assertTrue(report_args.render)
 
     def test_project_drilldown_parser(self) -> None:
         parser = build_parser()
@@ -187,6 +190,17 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.command, "config")
         self.assertEqual(args.config_command, "show")
         self.assertTrue(args.json_output)
+
+    def test_write_report_output_and_browser_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = _write_report_output("<html></html>", str(Path(tmpdir) / "report.html"), html_mode=True)
+            self.assertTrue(output_path.exists())
+            self.assertIn("report.html", str(output_path))
+        temp_output = _write_report_output("<html></html>", None, html_mode=True)
+        self.assertTrue(temp_output.exists())
+        with mock.patch("codex_stats.cli.webbrowser.open") as open_mock:
+            _open_report_in_browser(temp_output)
+        open_mock.assert_called_once()
 
 
 if __name__ == "__main__":

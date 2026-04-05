@@ -308,12 +308,13 @@ def format_report_markdown(report: ReportData) -> str:
     return "\n".join(lines)
 
 
-def format_report_html(report: ReportData) -> str:
+def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None = None) -> str:
     title = f"Codex Stats {report.period.title()} Report"
     if report.project_name:
         title = f"{title}: {report.project_name}"
     delta_pct = "n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%"
     delta_color = "var(--warn)" if delta_pct.startswith("+") else "var(--good)"
+    daily_points = daily_points or []
     projects_html = ""
     if report.project_name is None:
         if report.projects:
@@ -371,6 +372,30 @@ def format_report_html(report: ReportData) -> str:
 
     anomalies_html = "".join(f"<li>{escape(item)}</li>" for item in report.insights.anomalies) or "<li>none</li>"
     recommendations_html = "".join(f"<li>{escape(item)}</li>" for item in report.insights.recommendations) or "<li>none</li>"
+    token_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.total_tokens)) for point in daily_points],
+        stroke="#0f766e",
+        fill="rgba(15, 118, 110, 0.12)",
+        value_formatter=lambda value: f"{int(value):,}",
+    )
+    cost_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.estimated_cost_usd)) for point in daily_points],
+        stroke="#b45309",
+        fill="rgba(180, 83, 9, 0.14)",
+        value_formatter=lambda value: f"${value:.2f}",
+    )
+    project_share_svg = _svg_bar_chart(
+        [(entry.name, float(entry.total_tokens)) for entry in report.projects[:5]],
+        bar_color="#0f766e",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No project breakdown for this scoped report.",
+    )
+    session_share_svg = _svg_bar_chart(
+        [(f"{entry.project_name} / {entry.model or 'unknown'}", float(entry.total_tokens)) for entry in report.top_sessions[:5]],
+        bar_color="#b45309",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No top session data available.",
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -572,6 +597,31 @@ def format_report_html(report: ReportData) -> str:
     .table-wrap {{
       overflow-x: auto;
     }}
+    .chart-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    .chart-card {{
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+    }}
+    .chart-card h3 {{
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }}
+    .chart-svg {{
+      width: 100%;
+      height: auto;
+      display: block;
+    }}
+    .chart-empty {{
+      color: var(--muted);
+      font-size: 0.95rem;
+      padding: 12px 0 6px;
+    }}
     .list-grid {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -592,7 +642,7 @@ def format_report_html(report: ReportData) -> str:
       text-align: right;
     }}
     @media (max-width: 900px) {{
-      .hero-grid, .split, .list-grid, .metrics {{ grid-template-columns: 1fr; }}
+      .hero-grid, .split, .list-grid, .metrics, .chart-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -646,6 +696,30 @@ def format_report_html(report: ReportData) -> str:
           <div class="kpi"><strong>{report.comparison.requests_delta:+d}</strong><span>Request delta</span></div>
           <div class="kpi"><strong>${report.comparison.cost_delta_usd:+.2f}</strong><span>Cost delta</span></div>
           <div class="kpi"><strong>{escape(report.summary.top_model or "unknown")}</strong><span>Most used model</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Charts</h2>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h3>Daily Token Trend</h3>
+            {token_trend_svg}
+          </div>
+          <div class="chart-card">
+            <h3>Daily Cost Trend</h3>
+            {cost_trend_svg}
+          </div>
+          <div class="chart-card">
+            <h3>Project Share</h3>
+            {project_share_svg}
+          </div>
+          <div class="chart-card">
+            <h3>Top Sessions by Tokens</h3>
+            {session_share_svg}
+          </div>
         </div>
       </section>
 
@@ -712,6 +786,90 @@ def format_report_html(report: ReportData) -> str:
 </body>
 </html>
 """
+
+
+def _svg_line_chart(
+    points: list[tuple[str, float]],
+    *,
+    stroke: str,
+    fill: str,
+    value_formatter,
+) -> str:
+    if not points:
+        return '<div class="chart-empty">No data available.</div>'
+    width = 760
+    height = 240
+    padding_left = 48
+    padding_right = 20
+    padding_top = 20
+    padding_bottom = 38
+    values = [value for _, value in points]
+    max_value = max(values) if max(values) > 0 else 1.0
+    inner_width = width - padding_left - padding_right
+    inner_height = height - padding_top - padding_bottom
+
+    def point_x(index: int) -> float:
+        if len(points) == 1:
+            return padding_left + inner_width / 2
+        return padding_left + (index / (len(points) - 1)) * inner_width
+
+    def point_y(value: float) -> float:
+        return padding_top + inner_height - (value / max_value) * inner_height
+
+    line_points = " ".join(f"{point_x(index):.1f},{point_y(value):.1f}" for index, (_, value) in enumerate(points))
+    area_points = f"{padding_left:.1f},{padding_top + inner_height:.1f} {line_points} {padding_left + inner_width:.1f},{padding_top + inner_height:.1f}"
+    labels = "".join(
+        f'<text x="{point_x(index):.1f}" y="{height - 12}" text-anchor="middle" font-size="11" fill="#6d645d">{escape(label)}</text>'
+        for index, (label, _) in enumerate(points)
+    )
+    dots = "".join(
+        f'<circle cx="{point_x(index):.1f}" cy="{point_y(value):.1f}" r="4" fill="{stroke}"><title>{escape(label)}: {escape(value_formatter(value))}</title></circle>'
+        for index, (label, value) in enumerate(points)
+    )
+    grid = "".join(
+        f'<line x1="{padding_left}" y1="{padding_top + step * (inner_height / 3):.1f}" x2="{width - padding_right}" y2="{padding_top + step * (inner_height / 3):.1f}" stroke="rgba(72,53,36,0.12)" stroke-dasharray="4 6" />'
+        for step in range(4)
+    )
+    y_labels = "".join(
+        f'<text x="{padding_left - 8}" y="{padding_top + inner_height - step * (inner_height / 3) + 4:.1f}" text-anchor="end" font-size="11" fill="#6d645d">{escape(value_formatter((max_value / 3) * step))}</text>'
+        for step in range(4)
+    )
+    return (
+        f'<svg class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Trend chart">'
+        f'{grid}'
+        f'<polygon points="{area_points}" fill="{fill}" />'
+        f'<polyline points="{line_points}" fill="none" stroke="{stroke}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />'
+        f'{dots}{labels}{y_labels}</svg>'
+    )
+
+
+def _svg_bar_chart(
+    bars: list[tuple[str, float]],
+    *,
+    bar_color: str,
+    value_formatter,
+    empty_label: str,
+) -> str:
+    if not bars:
+        return f'<div class="chart-empty">{escape(empty_label)}</div>'
+    width = 760
+    row_height = 34
+    padding = 18
+    label_width = 170
+    bar_max_width = width - (padding * 2) - label_width - 90
+    height = padding * 2 + row_height * len(bars)
+    max_value = max(value for _, value in bars) if max(value for _, value in bars) > 0 else 1.0
+    rows = []
+    for index, (label, value) in enumerate(bars):
+        y = padding + index * row_height
+        bar_width = (value / max_value) * bar_max_width
+        rows.append(
+            f'<text x="{padding}" y="{y + 20}" font-size="12" fill="#1f1a17">{escape(label)}</text>'
+            f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_max_width:.1f}" height="16" rx="8" fill="rgba(72,53,36,0.08)" />'
+            f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_width:.1f}" height="16" rx="8" fill="{bar_color}" />'
+            f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'
+        )
+    return f'<svg class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
 
 
 def format_watch_dashboard(

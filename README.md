@@ -81,13 +81,15 @@ python3 -m pip install codex-stats
 - `codex-stats report weekly --format markdown`
   Generate a weekly report in Markdown.
 - `codex-stats report weekly --format html`
-  Generate a standalone HTML report for sharing.
+  Generate a standalone HTML report for sharing, including inline charts.
 - `codex-stats report weekly --project backend-api`
   Generate a weekly report for one project.
 - `codex-stats report weekly --format markdown --output weekly-report.md`
   Write a formatted report to a file.
 - `codex-stats report weekly --format html --output weekly-report.html`
   Write a polished standalone HTML report to a file.
+- `codex-stats report weekly --format html --render`
+  Generate an HTML report, write it to a temp file, and open it in the default browser.
 - `codex-stats export codex-stats-export.json`
   Export normalized local stats to JSON.
 - `codex-stats export codex-stats-export.json --since 30d`
