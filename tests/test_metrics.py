@@ -5,35 +5,46 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.config import Paths
+from codex_stats.display import format_report_html, format_watch_dashboard
 from codex_stats.ingest import get_session, get_session_details
 from codex_stats.metrics import (
+    apply_watch_state,
+    build_watch_alerts,
     build_report,
     details_for_last_days,
+    filter_details_by_project,
     parse_since_days,
     run_doctor,
     summarize_compare,
+    summarize_compare_from_details,
     summarize_compare_named,
     summarize_costs,
     summarize_daily,
+    summarize_daily_from_details,
     summarize_history,
+    summarize_history_from_details,
     summarize_insights,
+    summarize_insights_from_details,
     summarize_models,
     summarize_month,
     summarize_project_drilldown,
     summarize_projects,
+    summarize_details,
     summarize_today,
     summarize_top_sessions_from_details,
     summarize_top_sessions,
     summarize_week,
 )
+from codex_stats.models import WatchAlert
 from codex_stats.otel import build_otlp_metrics_payload, parse_key_value_pairs, write_otlp_metrics_json
 from codex_stats.transfer import export_payload, read_import, read_imports, read_imports_with_summary, write_merged_export
+from codex_stats.watch_state import build_watch_scope_key, load_watch_state, save_watch_state
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -160,6 +171,7 @@ class MetricsTestCase(unittest.TestCase):
             sessions_dir=codex_home / "sessions",
             config_dir=codex_home / "config",
             config_file=codex_home / "config" / "config.toml",
+            watch_state_file=codex_home / "config" / "watch-state.json",
         )
 
     def tearDown(self) -> None:
@@ -339,6 +351,106 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(pairs, {"a": "1", "b": "two"})
         with self.assertRaises(ValueError):
             parse_key_value_pairs(["broken"])
+
+    def test_watch_dashboard_helpers(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        pricing = None
+        current_details = filter_details_by_project(details_for_last_days(self.paths, 7, now=now), "project")
+        previous_details = filter_details_by_project(details_for_last_days(self.paths, 7, now=now - timedelta(days=7)), "project")
+        summary = summarize_details("last 7 days", current_details)
+        compare = summarize_compare_from_details(
+            current_details,
+            previous_details,
+            current_label="last 7 days",
+            previous_label="prev 7 days",
+            pricing=pricing,
+        )
+        daily = summarize_daily_from_details(current_details, days=7, now=now)
+        history = summarize_history_from_details(current_details, limit=3)
+        top = summarize_top_sessions_from_details(current_details, limit=3)
+        insights = summarize_insights_from_details(current_details, month=summary, now=now)
+        alerts = build_watch_alerts(
+            summary,
+            compare,
+            insights,
+            cost_threshold_usd=0.001,
+            token_threshold=100,
+            request_threshold=1,
+            delta_pct_threshold=10.0,
+        )
+        rendered = format_watch_dashboard(
+            summary,
+            compare,
+            daily,
+            top,
+            history,
+            insights,
+            alerts,
+            now=now,
+            interval_seconds=2.0,
+            scope_label="project",
+        )
+        self.assertIn("Codex Stats Watch [project]", rendered)
+        self.assertIn("Press Ctrl-C to stop.", rendered)
+        self.assertIn("Daily Usage", rendered)
+        self.assertIn("Alerts", rendered)
+        self.assertTrue(any(alert.name == "cost_threshold" for alert in alerts))
+        self.assertTrue(any(alert.name == "token_threshold" for alert in alerts))
+
+    def test_apply_watch_state_marks_new_alerts_after_baseline(self) -> None:
+        session = get_session(self.paths, "session-1")
+        assert session is not None
+        details = [get_session_details(self.paths, session)]
+        baseline_alerts = build_watch_alerts(
+            summarize_details("last 7 days", details),
+            summarize_compare_from_details(details, [], current_label="last 7 days", previous_label="prev 7 days"),
+            summarize_insights_from_details(details, month=summarize_details("last 7 days", details)),
+            token_threshold=100,
+        )
+        alerts, seen_sessions, seen_alerts = apply_watch_state(details, baseline_alerts, baseline_ready=False)
+        self.assertTrue(all(not alert.is_new for alert in alerts))
+
+        follow_up_alerts = baseline_alerts + [WatchAlert(severity="warning", name="manual_test", detail="new condition")]
+        updated, _, _ = apply_watch_state(
+            details,
+            follow_up_alerts,
+            seen_session_ids=seen_sessions,
+            seen_alert_keys=seen_alerts,
+            baseline_ready=True,
+        )
+        self.assertTrue(any(alert.name == "manual_test" and alert.is_new for alert in updated))
+
+    def test_watch_state_persists_by_scope(self) -> None:
+        scope_key = build_watch_scope_key(
+            days=7,
+            project_name="project",
+            cost_threshold_usd=10.0,
+            token_threshold=1000,
+            request_threshold=5,
+            delta_pct_threshold=50.0,
+        )
+        save_watch_state(
+            self.paths,
+            scope_key,
+            seen_session_ids={"session-1"},
+            seen_alert_keys={("token_threshold", "Total tokens exceeded")},
+        )
+        loaded = load_watch_state(self.paths, scope_key)
+        self.assertEqual(loaded.seen_session_ids, {"session-1"})
+        self.assertEqual(loaded.seen_alert_keys, {("token_threshold", "Total tokens exceeded")})
+        other_scope = load_watch_state(self.paths, "days=30|project=other")
+        self.assertEqual(other_scope.seen_session_ids, set())
+        self.assertEqual(other_scope.seen_alert_keys, set())
+
+    def test_report_html_output(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        report = build_report(self.paths, "weekly", now=now)
+        html = format_report_html(report)
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("Codex Stats Weekly Report", html)
+        self.assertIn("Top Sessions", html)
+        self.assertIn("Top Projects", html)
+        self.assertIn("Generated by codex-stats", html)
 
 
 if __name__ == "__main__":

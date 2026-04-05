@@ -18,6 +18,7 @@ from .models import (
     TimeSummary,
     TopEntry,
     ReportData,
+    WatchAlert,
 )
 
 def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float) -> float:
@@ -221,6 +222,19 @@ def summarize_daily(paths: Paths, days: int = 7, now: datetime | None = None) ->
     safe_days = max(days, 1)
     details = details_for_last_days(paths, safe_days, now=current_time)
     pricing = load_pricing_config(paths)
+    return summarize_daily_from_details(details, days=safe_days, now=current_time, pricing=pricing)
+
+
+def summarize_daily_from_details(
+    details: list[SessionDetails],
+    *,
+    days: int,
+    now: datetime | None = None,
+    pricing: PricingConfig | None = None,
+) -> list[DailyPoint]:
+    current_time = now or datetime.now().astimezone()
+    safe_days = max(days, 1)
+    pricing = pricing or PricingConfig()
     day_map: dict[date, list[SessionDetails]] = defaultdict(list)
     for detail in details:
         day_map[local_date(detail.session.created_at, current_time.tzinfo)].append(detail)
@@ -248,8 +262,26 @@ def summarize_compare(paths: Paths, days: int = 7, now: datetime | None = None) 
     current_details = details_for_last_days(paths, safe_days, now=current_time)
     previous_end = current_time - timedelta(days=safe_days)
     previous_details = details_for_last_days(paths, safe_days, now=previous_end)
-    current_summary = summarize_details(f"last {safe_days} days", current_details, pricing)
-    previous_summary = summarize_details(f"prev {safe_days} days", previous_details, pricing)
+    return summarize_compare_from_details(
+        current_details,
+        previous_details,
+        current_label=f"last {safe_days} days",
+        previous_label=f"prev {safe_days} days",
+        pricing=pricing,
+    )
+
+
+def summarize_compare_from_details(
+    current_details: list[SessionDetails],
+    previous_details: list[SessionDetails],
+    *,
+    current_label: str,
+    previous_label: str,
+    pricing: PricingConfig | None = None,
+) -> CompareReport:
+    pricing = pricing or PricingConfig()
+    current_summary = summarize_details(current_label, current_details, pricing)
+    previous_summary = summarize_details(previous_label, previous_details, pricing)
     total_tokens_delta = current_summary.total_tokens - previous_summary.total_tokens
     total_tokens_delta_pct = None
     if previous_summary.total_tokens:
@@ -486,6 +518,151 @@ def summarize_insights_from_details(
         anomalies=anomalies,
         recommendations=recommendations,
     )
+
+
+def build_watch_alerts(
+    summary: TimeSummary,
+    compare: CompareReport,
+    insights: InsightReport,
+    *,
+    cost_threshold_usd: float | None = None,
+    token_threshold: int | None = None,
+    request_threshold: int | None = None,
+    delta_pct_threshold: float | None = None,
+) -> list[WatchAlert]:
+    alerts: list[WatchAlert] = []
+
+    if cost_threshold_usd is not None and summary.estimated_cost_usd >= cost_threshold_usd:
+        alerts.append(
+            WatchAlert(
+                severity="critical",
+                name="cost_threshold",
+                detail=f"Estimated cost ${summary.estimated_cost_usd:.2f} exceeded threshold ${cost_threshold_usd:.2f}.",
+            )
+        )
+    if token_threshold is not None and summary.total_tokens >= token_threshold:
+        alerts.append(
+            WatchAlert(
+                severity="critical",
+                name="token_threshold",
+                detail=f"Total tokens {summary.total_tokens:,} exceeded threshold {token_threshold:,}.",
+            )
+        )
+    if request_threshold is not None and summary.requests >= request_threshold:
+        alerts.append(
+            WatchAlert(
+                severity="warning",
+                name="request_threshold",
+                detail=f"Requests {summary.requests} exceeded threshold {request_threshold}.",
+            )
+        )
+    if (
+        delta_pct_threshold is not None
+        and compare.total_tokens_delta_pct is not None
+        and compare.total_tokens_delta_pct >= delta_pct_threshold
+    ):
+        alerts.append(
+            WatchAlert(
+                severity="warning",
+                name="token_delta",
+                detail=f"Token usage increased {compare.total_tokens_delta_pct:.1f}% versus the previous window.",
+            )
+        )
+    if compare.total_tokens_delta_pct is not None and compare.total_tokens_delta_pct >= 200.0:
+        alerts.append(
+            WatchAlert(
+                severity="critical",
+                name="token_spike",
+                detail=f"Token usage spiked {compare.total_tokens_delta_pct:.1f}% versus the previous window.",
+            )
+        )
+    elif compare.total_tokens_delta_pct is not None and compare.total_tokens_delta_pct >= 50.0:
+        alerts.append(
+            WatchAlert(
+                severity="warning",
+                name="token_spike",
+                detail=f"Token usage rose {compare.total_tokens_delta_pct:.1f}% versus the previous window.",
+            )
+        )
+
+    anomaly_severity = {
+        "Oversized session detected": "critical",
+        "Requests are unusually large": "critical",
+        "Heavy cost concentration in one session": "warning",
+        "Sudden usage spike relative to your other sessions": "warning",
+        "Low cache efficiency": "warning",
+    }
+    for anomaly in insights.anomalies:
+        alerts.append(
+            WatchAlert(
+                severity=anomaly_severity.get(anomaly, "warning"),
+                name="insight_anomaly",
+                detail=anomaly,
+            )
+        )
+
+    if insights.large_session_count >= 3:
+        alerts.append(
+            WatchAlert(
+                severity="warning",
+                name="large_sessions",
+                detail=f"{insights.large_session_count} large sessions detected in the current window.",
+            )
+        )
+
+    deduped: dict[tuple[str, str], WatchAlert] = {}
+    for alert in alerts:
+        key = (alert.name, alert.detail)
+        existing = deduped.get(key)
+        if existing is None or existing.severity == "warning" and alert.severity == "critical":
+            deduped[key] = alert
+    return list(deduped.values())
+
+
+def apply_watch_state(
+    details: list[SessionDetails],
+    alerts: list[WatchAlert],
+    *,
+    seen_session_ids: set[str] | None = None,
+    seen_alert_keys: set[tuple[str, str]] | None = None,
+    baseline_ready: bool = False,
+) -> tuple[list[WatchAlert], set[str], set[tuple[str, str]]]:
+    seen_session_ids = set(seen_session_ids or set())
+    seen_alert_keys = set(seen_alert_keys or set())
+    current_session_ids = {detail.session.session_id for detail in details}
+    current_alert_keys = {(alert.name, alert.detail) for alert in alerts}
+
+    new_session_alerts: list[WatchAlert] = []
+    if baseline_ready:
+        new_session_ids = sorted(current_session_ids - seen_session_ids)
+        for session_id in new_session_ids:
+            detail = next(detail for detail in details if detail.session.session_id == session_id)
+            new_session_alerts.append(
+                WatchAlert(
+                    severity="warning",
+                    name="new_session",
+                    detail=(
+                        f"New session in {detail.session.project_name} using {detail.session.model or 'unknown'} "
+                        f"with {detail.effective_total_tokens():,} tokens so far."
+                    ),
+                    is_new=True,
+                )
+            )
+
+    enriched_alerts: list[WatchAlert] = []
+    for alert in alerts:
+        key = (alert.name, alert.detail)
+        enriched_alerts.append(
+            WatchAlert(
+                severity=alert.severity,
+                name=alert.name,
+                detail=alert.detail,
+                is_new=baseline_ready and key not in seen_alert_keys,
+            )
+        )
+
+    updated_alerts = new_session_alerts + enriched_alerts
+    return updated_alerts, current_session_ids, current_alert_keys | {(alert.name, alert.detail) for alert in new_session_alerts}
 
 
 def summarize_top_sessions(paths: Paths, limit: int = 5) -> list[TopEntry]:

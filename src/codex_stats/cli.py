@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .completions import render_completion
@@ -18,22 +21,29 @@ from .display import (
     format_import_summary,
     format_insights,
     format_report,
+    format_report_html,
     format_report_markdown,
     format_session,
     format_summary,
     format_top,
+    format_watch_dashboard,
     resolve_format_options,
 )
 from .ingest import get_session, get_session_details, iter_session_details
 from .metrics import (
     build_report,
+    apply_watch_state,
     details_for_last_days,
+    filter_details_by_project,
     run_doctor,
+    build_watch_alerts,
     summarize_compare,
+    summarize_compare_from_details,
     summarize_compare_named,
     summarize_costs,
     summarize_costs_from_details,
     summarize_daily,
+    summarize_daily_from_details,
     summarize_history,
     summarize_history_from_details,
     summarize_imported_details,
@@ -46,6 +56,7 @@ from .metrics import (
     summarize_project_drilldown,
     summarize_projects,
     summarize_projects_from_details,
+    summarize_details,
     summarize_today,
     summarize_top_sessions,
     summarize_top_sessions_from_details,
@@ -53,6 +64,7 @@ from .metrics import (
 )
 from .otel import parse_key_value_pairs, post_otlp_metrics_json, write_otlp_metrics_json
 from .transfer import read_imports_with_summary, write_export, write_merged_export
+from .watch_state import build_watch_scope_key, load_watch_state, save_watch_state
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     report_parser = subparsers.add_parser("report", help="Generate a shareable usage report.")
     report_parser.add_argument("period", choices=["weekly", "monthly"], help="Report period.")
-    report_parser.add_argument("--format", choices=["text", "markdown", "json"], default="text", help="Output format.")
+    report_parser.add_argument("--format", choices=["text", "markdown", "html", "json"], default="text", help="Output format.")
     report_parser.add_argument("--project", dest="project_name", help="Generate the report for one project.")
     report_parser.add_argument("--output", help="Write the report to a file instead of stdout.")
 
@@ -171,6 +183,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     otel_parser.add_argument("--gzip", action="store_true", help="Gzip the OTLP HTTP request body.")
     otel_parser.add_argument("--timeout", type=float, default=10.0, help="OTLP HTTP timeout in seconds.")
+
+    watch_parser = subparsers.add_parser("watch", help="Live dashboard that refreshes Codex usage summaries.")
+    watch_parser.add_argument("--days", type=int, default=7, help="Rolling window size for the watch dashboard.")
+    watch_parser.add_argument("--interval", type=float, default=5.0, help="Refresh interval in seconds.")
+    watch_parser.add_argument("--history-limit", type=int, default=5, help="Recent sessions to display.")
+    watch_parser.add_argument("--top-limit", type=int, default=5, help="Top sessions to display.")
+    watch_parser.add_argument("--project", dest="project_name", help="Restrict the dashboard to one project.")
+    watch_parser.add_argument("--alert-cost-usd", type=float, help="Raise an alert when estimated cost meets this threshold.")
+    watch_parser.add_argument("--alert-tokens", type=int, help="Raise an alert when total tokens meet this threshold.")
+    watch_parser.add_argument("--alert-requests", type=int, help="Raise an alert when request count meets this threshold.")
+    watch_parser.add_argument("--alert-delta-pct", type=float, help="Raise an alert when token growth versus the previous window meets this percent.")
+    watch_parser.add_argument("--reset-state", action="store_true", help="Ignore saved watch state and rebuild the alert baseline.")
+    watch_parser.add_argument("--once", action="store_true", help="Render one snapshot and exit.")
 
     return parser
 
@@ -376,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
         report = build_report(paths, period=args.period, project_name=args.project_name)
         if args.format == "json":
             content = as_json(report.to_dict())
+        elif args.format == "html":
+            content = format_report_html(report)
         elif args.format == "markdown":
             content = format_report_markdown(report)
         else:
@@ -438,6 +465,122 @@ def main(argv: list[str] | None = None) -> int:
             if body.strip():
                 print(body)
         return 0
+
+    if args.command == "watch":
+        if args.json_output and not args.once:
+            print("watch only supports --json with --once", file=sys.stderr)
+            return 1
+        interval = max(args.interval, 0.2)
+        scope_key = build_watch_scope_key(
+            days=max(args.days, 1),
+            project_name=args.project_name,
+            cost_threshold_usd=args.alert_cost_usd,
+            token_threshold=args.alert_tokens,
+            request_threshold=args.alert_requests,
+            delta_pct_threshold=args.alert_delta_pct,
+        )
+        if args.reset_state:
+            seen_session_ids = set()
+            seen_alert_keys = set()
+            baseline_ready = False
+        else:
+            try:
+                persisted_state = load_watch_state(paths, scope_key)
+                seen_session_ids = set(persisted_state.seen_session_ids)
+                seen_alert_keys = set(persisted_state.seen_alert_keys)
+                baseline_ready = bool(seen_session_ids or seen_alert_keys)
+            except OSError:
+                seen_session_ids = set()
+                seen_alert_keys = set()
+                baseline_ready = False
+        while True:
+            current_time = datetime.now().astimezone()
+            pricing = load_pricing_config(paths)
+            current_details = filter_details_by_project(
+                details_for_last_days(paths, args.days, now=current_time),
+                args.project_name,
+            )
+            previous_details = filter_details_by_project(
+                details_for_last_days(paths, args.days, now=current_time - timedelta(days=max(args.days, 1))),
+                args.project_name,
+            )
+            summary = summarize_details(f"last {max(args.days, 1)} days", current_details, pricing)
+            compare = summarize_compare_from_details(
+                current_details,
+                previous_details,
+                current_label=f"last {max(args.days, 1)} days",
+                previous_label=f"prev {max(args.days, 1)} days",
+                pricing=pricing,
+            )
+            daily = summarize_daily_from_details(current_details, days=max(args.days, 1), now=current_time, pricing=pricing)
+            history = summarize_history_from_details(current_details, pricing, limit=args.history_limit)
+            top = summarize_top_sessions_from_details(current_details, pricing, limit=args.top_limit)
+            insights = summarize_insights_from_details(current_details, pricing=pricing, month=summary, now=current_time)
+            alerts = build_watch_alerts(
+                summary,
+                compare,
+                insights,
+                cost_threshold_usd=args.alert_cost_usd,
+                token_threshold=args.alert_tokens,
+                request_threshold=args.alert_requests,
+                delta_pct_threshold=args.alert_delta_pct,
+            )
+            alerts, seen_session_ids, seen_alert_keys = apply_watch_state(
+                current_details,
+                alerts,
+                seen_session_ids=seen_session_ids,
+                seen_alert_keys=seen_alert_keys,
+                baseline_ready=baseline_ready,
+            )
+            baseline_ready = True
+            try:
+                save_watch_state(
+                    paths,
+                    scope_key,
+                    seen_session_ids=seen_session_ids,
+                    seen_alert_keys=seen_alert_keys,
+                )
+            except OSError:
+                pass
+            if args.json_output:
+                print(
+                    as_json(
+                        {
+                            "refreshed_at": current_time.isoformat(),
+                            "summary": summary.to_dict(),
+                            "comparison": compare.to_dict(),
+                            "daily": [point.to_dict() for point in daily],
+                            "top": [entry.to_dict() for entry in top],
+                            "history": [entry.to_dict() for entry in history],
+                            "insights": insights.to_dict(),
+                            "alerts": [alert.to_dict() for alert in alerts],
+                        }
+                    )
+                )
+                return 0
+            frame = format_watch_dashboard(
+                summary,
+                compare,
+                daily,
+                top,
+                history,
+                insights,
+                alerts,
+                now=current_time,
+                interval_seconds=interval,
+                scope_label=args.project_name or f"last {max(args.days, 1)} days",
+                options=options,
+            )
+            if os.isatty(1):
+                print("\033[2J\033[H", end="")
+            print(frame)
+            if args.once or not os.isatty(1):
+                return 0
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                print()
+                return 0
 
     parser.print_help()
     return 1

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import textwrap
-from datetime import UTC
+from datetime import UTC, datetime
 from dataclasses import dataclass
+from html import escape
 
 from .config import PricingConfig
 from .metrics import estimate_detail_cost
@@ -22,6 +23,7 @@ from .models import (
     TimeSummary,
     TopEntry,
     ReportData,
+    WatchAlert,
 )
 
 
@@ -303,6 +305,472 @@ def format_report_markdown(report: ReportData) -> str:
         lines.extend(["", "## Recommended Actions", ""])
         for recommendation in report.insights.recommendations:
             lines.append(f"- {recommendation}")
+    return "\n".join(lines)
+
+
+def format_report_html(report: ReportData) -> str:
+    title = f"Codex Stats {report.period.title()} Report"
+    if report.project_name:
+        title = f"{title}: {report.project_name}"
+    delta_pct = "n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%"
+    delta_color = "var(--warn)" if delta_pct.startswith("+") else "var(--good)"
+    projects_html = ""
+    if report.project_name is None:
+        if report.projects:
+            project_rows = "".join(
+                f"""
+                <tr>
+                  <td>{escape(entry.name)}</td>
+                  <td>{entry.sessions}</td>
+                  <td>{entry.requests}</td>
+                  <td>{entry.total_tokens:,}</td>
+                  <td>${entry.estimated_cost_usd:.2f}</td>
+                </tr>
+                """
+                for entry in report.projects
+            )
+        else:
+            project_rows = '<tr><td colspan="5">No data</td></tr>'
+        projects_html = f"""
+        <section class="panel">
+          <div class="section-header">
+            <h2>Top Projects</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Sessions</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>{project_rows}</tbody>
+            </table>
+          </div>
+        </section>
+        """
+
+    if report.top_sessions:
+        top_rows = "".join(
+            f"""
+            <tr>
+              <td>{escape(entry.project_name)}</td>
+              <td>{escape(entry.model or 'unknown')}</td>
+              <td>{entry.requests}</td>
+              <td>{entry.total_tokens:,}</td>
+              <td>${entry.estimated_cost_usd:.2f}</td>
+            </tr>
+            """
+            for entry in report.top_sessions
+        )
+    else:
+        top_rows = '<tr><td colspan="5">No data</td></tr>'
+
+    anomalies_html = "".join(f"<li>{escape(item)}</li>" for item in report.insights.anomalies) or "<li>none</li>"
+    recommendations_html = "".join(f"<li>{escape(item)}</li>" for item in report.insights.recommendations) or "<li>none</li>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <style>
+    :root {{
+      --bg: #f3efe7;
+      --panel: rgba(255, 252, 247, 0.92);
+      --panel-strong: #fffaf1;
+      --ink: #1f1a17;
+      --muted: #6d645d;
+      --line: rgba(72, 53, 36, 0.16);
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --good: #166534;
+      --warn: #b45309;
+      --shadow: 0 20px 60px rgba(75, 56, 40, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.15), transparent 32%),
+        radial-gradient(circle at top right, rgba(180, 83, 9, 0.14), transparent 28%),
+        linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+      min-height: 100vh;
+    }}
+    .page {{
+      width: min(1120px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+    }}
+    .hero {{
+      background: linear-gradient(135deg, rgba(255,255,255,0.85), rgba(255,248,238,0.92));
+      border: 1px solid rgba(72, 53, 36, 0.12);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 32px;
+      position: relative;
+      overflow: hidden;
+    }}
+    .hero::after {{
+      content: "";
+      position: absolute;
+      inset: auto -90px -90px auto;
+      width: 240px;
+      height: 240px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(15,118,110,0.20), rgba(15,118,110,0));
+    }}
+    .eyebrow {{
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-size: 0.75rem;
+      color: var(--accent);
+      margin-bottom: 12px;
+      font-weight: 700;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3.7rem);
+      line-height: 0.98;
+      max-width: 11ch;
+    }}
+    .hero-grid {{
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 24px;
+      margin-top: 28px;
+      align-items: end;
+    }}
+    .lede {{
+      margin: 0;
+      max-width: 58ch;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.65;
+    }}
+    .hero-meta {{
+      display: grid;
+      gap: 12px;
+      justify-items: start;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.7);
+      font-size: 0.95rem;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+      margin-top: 20px;
+    }}
+    .panel {{
+      grid-column: span 12;
+      background: var(--panel);
+      border: 1px solid rgba(72, 53, 36, 0.12);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 22px;
+      backdrop-filter: blur(10px);
+    }}
+    .metrics {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }}
+    .metric {{
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+    }}
+    .metric .label {{
+      color: var(--muted);
+      font-size: 0.84rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .metric .value {{
+      display: block;
+      margin-top: 8px;
+      font-size: clamp(1.35rem, 2vw, 2.2rem);
+      line-height: 1.05;
+    }}
+    .metric .hint {{
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
+    .split {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    .section-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }}
+    h2 {{
+      margin: 0;
+      font-size: 1.35rem;
+    }}
+    .delta {{
+      font-weight: 700;
+      color: {delta_color};
+    }}
+    .kpis {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .kpi {{
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }}
+    .kpi strong {{
+      display: block;
+      font-size: 1.05rem;
+      margin-bottom: 4px;
+    }}
+    .kpi span {{
+      color: var(--muted);
+      font-size: 0.92rem;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }}
+    th {{
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    .table-wrap {{
+      overflow-x: auto;
+    }}
+    .list-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 1.1rem;
+    }}
+    li {{
+      margin: 0 0 10px;
+      line-height: 1.5;
+    }}
+    .footer {{
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: right;
+    }}
+    @media (max-width: 900px) {{
+      .hero-grid, .split, .list-grid, .metrics {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Codex Stats</div>
+      <h1>{escape(title)}</h1>
+      <div class="hero-grid">
+        <p class="lede">A standalone usage snapshot for {escape(report.project_name or "all tracked projects")}, covering token volume, cost pressure, top sessions, and the most actionable insights from the current reporting window.</p>
+        <div class="hero-meta">
+          <div class="pill"><strong>Period</strong> <span>{escape(report.period.title())}</span></div>
+          <div class="pill"><strong>Top model</strong> <span>{escape(report.summary.top_model or "unknown")}</span></div>
+          <div class="pill"><strong>Trend</strong> <span>{escape(delta_pct)}</span></div>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric">
+          <span class="label">Total Tokens</span>
+          <strong class="value">{report.summary.total_tokens:,}</strong>
+          <span class="hint">{report.summary.requests} requests across {report.summary.sessions} sessions</span>
+        </div>
+        <div class="metric">
+          <span class="label">Estimated Cost</span>
+          <strong class="value">${report.summary.estimated_cost_usd:.2f}</strong>
+          <span class="hint">Projected month ${report.costs.projected_monthly_cost_usd:.2f}</span>
+        </div>
+        <div class="metric">
+          <span class="label">Avg per Request</span>
+          <strong class="value">{report.summary.average_tokens_per_request:,.0f}</strong>
+          <span class="hint">Largest session {report.summary.largest_session_tokens:,} tokens</span>
+        </div>
+        <div class="metric">
+          <span class="label">Cache Ratio</span>
+          <strong class="value">{escape(_fmt_percent(report.summary.cache_ratio))}</strong>
+          <span class="hint">Possible savings ${report.insights.possible_savings_usd:.2f}</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="section-header">
+          <h2>Window Comparison</h2>
+          <span class="delta">{escape(delta_pct)}</span>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><strong>{report.comparison.current.total_tokens:,}</strong><span>Current window tokens</span></div>
+          <div class="kpi"><strong>{report.comparison.previous.total_tokens:,}</strong><span>Previous window tokens</span></div>
+          <div class="kpi"><strong>{report.comparison.total_tokens_delta:+,}</strong><span>Token delta</span></div>
+          <div class="kpi"><strong>{report.comparison.requests_delta:+d}</strong><span>Request delta</span></div>
+          <div class="kpi"><strong>${report.comparison.cost_delta_usd:+.2f}</strong><span>Cost delta</span></div>
+          <div class="kpi"><strong>{escape(report.summary.top_model or "unknown")}</strong><span>Most used model</span></div>
+        </div>
+      </section>
+
+      {projects_html}
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Top Sessions</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Model</th>
+                <th>Requests</th>
+                <th>Tokens</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>{top_rows}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Costs</h2>
+        </div>
+        <div class="split">
+          <div class="kpis">
+            <div class="kpi"><strong>${report.costs.today_cost_usd:.2f}</strong><span>Today</span></div>
+            <div class="kpi"><strong>${report.costs.week_cost_usd:.2f}</strong><span>Week</span></div>
+            <div class="kpi"><strong>${report.costs.month_cost_usd:.2f}</strong><span>Month</span></div>
+            <div class="kpi"><strong>${report.costs.highest_session_cost_usd:.2f}</strong><span>Highest session</span></div>
+          </div>
+          <div class="metric">
+            <span class="label">Recommendation</span>
+            <strong class="value">{escape(report.insights.suggestion)}</strong>
+            <span class="hint">Based on observed cache reuse, request size, and session concentration.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Insights</h2>
+        </div>
+        <div class="list-grid">
+          <div>
+            <h3>Anomalies</h3>
+            <ul>{anomalies_html}</ul>
+          </div>
+          <div>
+            <h3>Recommended Actions</h3>
+            <ul>{recommendations_html}</ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="footer">Generated by codex-stats</div>
+  </main>
+</body>
+</html>
+"""
+
+
+def format_watch_dashboard(
+    summary: TimeSummary,
+    compare: CompareReport,
+    daily: list[DailyPoint],
+    top: list[TopEntry],
+    history: list[HistoryEntry],
+    insights: InsightReport,
+    alerts: list[WatchAlert],
+    *,
+    now: datetime | None = None,
+    interval_seconds: float = 5.0,
+    scope_label: str | None = None,
+    options: FormatOptions | None = None,
+) -> str:
+    options = options or FormatOptions()
+    current_time = now or datetime.now().astimezone()
+    title = "Codex Stats Watch"
+    if scope_label:
+        title = f"{title} [{scope_label}]"
+    lines = [
+        title,
+        f"Refreshed {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')} every {interval_seconds:g}s. Press Ctrl-C to stop.",
+        "",
+        format_summary(summary, options),
+        "",
+        format_compare(compare, options),
+        "",
+        format_watch_alerts(alerts, options),
+        "",
+        format_daily(daily, options),
+        "",
+        format_top(top, options),
+        "",
+        format_history(history, options),
+        "",
+        format_insights(insights, options),
+    ]
+    return "\n".join(lines)
+
+
+def format_watch_alerts(alerts: list[WatchAlert], options: FormatOptions | None = None) -> str:
+    options = options or FormatOptions()
+    if not alerts:
+        return _card("Alerts", [("Status", "No active alerts")], options)
+    lines = [_box_top("Alerts", options)]
+    for alert in alerts:
+        severity = alert.severity.upper()
+        if alert.severity == "critical":
+            severity = _tint(severity, "31", options)
+        elif alert.severity == "warning":
+            severity = _tint(severity, "33", options)
+        new_marker = _tint("NEW", "36", options) if alert.is_new else "   "
+        lines.append(_box_line(f"{severity:<8} {new_marker:<3} {alert.name}"))
+        wrapped = textwrap.wrap(alert.detail, width=41) or [""]
+        for chunk in wrapped:
+            lines.append(_box_line(f"         {chunk}"))
+    lines.append(_box_bottom())
     return "\n".join(lines)
 
 

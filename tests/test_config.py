@@ -21,6 +21,7 @@ class ConfigTestCase(unittest.TestCase):
             sessions_dir=root / ".codex" / "sessions",
             config_dir=root / ".config" / "codex-stats",
             config_file=root / ".config" / "codex-stats" / "config.toml",
+            watch_state_file=root / ".config" / "codex-stats" / "watch-state.json",
         )
 
     def tearDown(self) -> None:

@@ -96,12 +96,42 @@ class CliTestCase(unittest.TestCase):
         daily_args = parser.parse_args(["daily", "--days", "14"])
         compare_args = parser.parse_args(["compare", "--days", "14", "--json"])
         doctor_args = parser.parse_args(["doctor", "--strict"])
+        watch_args = parser.parse_args(
+            [
+                "watch",
+                "--days",
+                "14",
+                "--interval",
+                "2",
+                "--project",
+                "project",
+                "--alert-cost-usd",
+                "10",
+                "--alert-tokens",
+                "1000",
+                "--alert-requests",
+                "5",
+                "--alert-delta-pct",
+                "50",
+                "--reset-state",
+                "--once",
+            ]
+        )
         self.assertEqual(daily_args.command, "daily")
         self.assertEqual(daily_args.days, 14)
         self.assertEqual(compare_args.command, "compare")
         self.assertTrue(compare_args.json_output)
         self.assertEqual(doctor_args.command, "doctor")
         self.assertTrue(doctor_args.strict)
+        self.assertEqual(watch_args.command, "watch")
+        self.assertEqual(watch_args.interval, 2)
+        self.assertEqual(watch_args.project_name, "project")
+        self.assertEqual(watch_args.alert_cost_usd, 10)
+        self.assertEqual(watch_args.alert_tokens, 1000)
+        self.assertEqual(watch_args.alert_requests, 5)
+        self.assertEqual(watch_args.alert_delta_pct, 50)
+        self.assertTrue(watch_args.reset_state)
+        self.assertTrue(watch_args.once)
 
     def test_compare_and_history_defaults_are_deferred(self) -> None:
         parser = build_parser()
@@ -125,15 +155,15 @@ class CliTestCase(unittest.TestCase):
         parser = build_parser()
         init_args = parser.parse_args(["init", "--force"])
         compare_args = parser.parse_args(["compare", "today", "yesterday"])
-        report_args = parser.parse_args(["report", "weekly", "--format", "markdown", "--project", "project", "--output", "weekly.md"])
+        report_args = parser.parse_args(["report", "weekly", "--format", "html", "--project", "project", "--output", "weekly.html"])
         self.assertEqual(init_args.command, "init")
         self.assertTrue(init_args.force)
         self.assertEqual(compare_args.current, "today")
         self.assertEqual(compare_args.previous, "yesterday")
         self.assertEqual(report_args.period, "weekly")
-        self.assertEqual(report_args.format, "markdown")
+        self.assertEqual(report_args.format, "html")
         self.assertEqual(report_args.project_name, "project")
-        self.assertEqual(report_args.output, "weekly.md")
+        self.assertEqual(report_args.output, "weekly.html")
 
     def test_project_drilldown_parser(self) -> None:
         parser = build_parser()

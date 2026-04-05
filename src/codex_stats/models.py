@@ -182,6 +182,17 @@ class DoctorCheck:
 
 
 @dataclass(frozen=True)
+class WatchAlert:
+    severity: str
+    name: str
+    detail: str
+    is_new: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class TopEntry:
     session_id: str
     project_name: str

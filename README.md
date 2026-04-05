@@ -80,10 +80,14 @@ python3 -m pip install codex-stats
   Generate a weekly shareable report.
 - `codex-stats report weekly --format markdown`
   Generate a weekly report in Markdown.
+- `codex-stats report weekly --format html`
+  Generate a standalone HTML report for sharing.
 - `codex-stats report weekly --project backend-api`
   Generate a weekly report for one project.
 - `codex-stats report weekly --format markdown --output weekly-report.md`
   Write a formatted report to a file.
+- `codex-stats report weekly --format html --output weekly-report.html`
+  Write a polished standalone HTML report to a file.
 - `codex-stats export codex-stats-export.json`
   Export normalized local stats to JSON.
 - `codex-stats export codex-stats-export.json --since 30d`
@@ -100,6 +104,14 @@ python3 -m pip install codex-stats
   Push OTLP JSON metrics directly to an OTLP/HTTP collector endpoint.
 - `codex-stats otel --since 30d --daily-days 14 --resource-attr deployment.environment=dev`
   Export a rolling window plus daily history with additional resource metadata.
+- `codex-stats watch`
+  Run a live terminal dashboard that refreshes usage summaries continuously.
+- `codex-stats watch --project backend-api --days 14 --interval 2`
+  Watch one project with a shorter refresh interval and a custom rolling window.
+- `codex-stats watch --alert-cost-usd 20 --alert-tokens 500000 --alert-delta-pct 50`
+  Raise live alerts when the rolling window crosses your chosen thresholds.
+- `codex-stats watch --reset-state`
+  Ignore the saved watch baseline for this scope and rebuild it from the current snapshot.
 - `codex-stats completions zsh`
   Print shell completion setup for your shell.
 - `codex-stats --color always`
@@ -124,6 +136,8 @@ It reads local Codex artifacts, including:
 - `merge` lets you deduplicate and combine exported snapshots into one file.
 - `export --since Nd` limits snapshots to a rolling window before sharing.
 - `otel` emits OTLP/HTTP JSON metrics, including aggregate token counters and daily historical gauges.
+- `watch` is intended for interactive terminals and exits cleanly on `Ctrl-C`.
+- `watch` persists alert/session baseline state under the config directory so `NEW` markers survive restarts unless you pass `--reset-state`.
 - `doctor --strict` is useful in scripts and CI because it returns a non-zero exit code on failed checks.
 - `--color auto|always|never` controls ANSI styling.
 
@@ -154,6 +168,49 @@ codex-stats otel \
 ```
 
 Exported metrics include aggregate sums such as `codex_stats_tokens`, `codex_stats_requests`, and `codex_stats_estimated_cost_usd`, plus daily gauges such as `codex_stats_daily_tokens`.
+
+## Grafana Starter Kit
+
+This repo now includes starter assets under [examples/grafana/codex-stats-dashboard.json](/Users/vivek/Desktop/Salad/codex_stats/examples/grafana/codex-stats-dashboard.json) and [examples/grafana/grafana-alloy.alloy](/Users/vivek/Desktop/Salad/codex_stats/examples/grafana/grafana-alloy.alloy).
+
+Quick local loop:
+
+```bash
+alloy run examples/grafana/grafana-alloy.alloy
+codex-stats otel --endpoint http://localhost:4318/v1/metrics --since 30d
+```
+
+Then import the dashboard JSON into Grafana and point it at your Prometheus-compatible datasource. The dashboard includes:
+
+- topline stats for tokens, requests, sessions, and estimated cost
+- daily token, request, and cost charts
+- table views for token usage by project and estimated cost by model
+
+## Roadmap
+
+The current priority list lives in [docs/roadmap.md](/Users/vivek/Desktop/Salad/codex_stats/docs/roadmap.md).
+
+## Watch Alerts
+
+`watch` can surface live warnings and critical alerts directly in the terminal dashboard.
+
+Example:
+
+```bash
+codex-stats watch \
+  --days 7 \
+  --alert-cost-usd 20 \
+  --alert-tokens 500000 \
+  --alert-requests 20 \
+  --alert-delta-pct 50
+```
+
+Alerts currently cover:
+
+- explicit cost, token, request, and delta thresholds
+- large usage spikes versus the previous window
+- anomaly conditions already detected by the insights engine
+- stateful marking of newly triggered conditions and newly observed sessions across watch restarts for the same scope
 
 ## Pricing Config
 

@@ -30,6 +30,7 @@ class Paths:
     sessions_dir: Path
     config_dir: Path
     config_file: Path
+    watch_state_file: Path
 
     @classmethod
     def discover(cls) -> "Paths":
@@ -42,6 +43,7 @@ class Paths:
             sessions_dir=codex_home / "sessions",
             config_dir=config_dir,
             config_file=config_dir / "config.toml",
+            watch_state_file=config_dir / "watch-state.json",
         )
 
 

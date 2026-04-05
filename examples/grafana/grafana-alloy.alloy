@@ -1,0 +1,30 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+otelcol.receiver.otlp "codex_stats" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.codex_stats.input]
+  }
+}
+
+otelcol.processor.batch "codex_stats" {
+  output {
+    metrics = [otelcol.exporter.prometheus.codex_stats.input]
+  }
+}
+
+otelcol.exporter.prometheus "codex_stats" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "http://localhost:9009/api/prom/push"
+  }
+}
