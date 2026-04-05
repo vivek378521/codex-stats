@@ -788,6 +788,112 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
 """
 
 
+def format_report_svg(report: ReportData, daily_points: list[DailyPoint] | None = None) -> str:
+    title = f"Codex Stats {report.period.title()} Report"
+    if report.project_name:
+        title = f"{title}: {report.project_name}"
+    daily_points = daily_points or []
+    token_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.total_tokens)) for point in daily_points],
+        stroke="#0f766e",
+        fill="rgba(15, 118, 110, 0.14)",
+        value_formatter=lambda value: f"{int(value):,}",
+    )
+    project_share_svg = _svg_bar_chart(
+        [(entry.name, float(entry.total_tokens)) for entry in report.projects[:4]],
+        bar_color="#b45309",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No project breakdown for this scoped report.",
+    )
+    anomalies = report.insights.anomalies[:3] or ["No active anomalies"]
+    recommendations = report.insights.recommendations[:3] or ["Usage looks healthy."]
+    top_sessions = report.top_sessions[:3]
+    top_sessions_text = "".join(
+        f'<text x="64" y="{776 + index * 30}" font-size="18" fill="#1f1a17">{index + 1}. {escape(entry.project_name)} / {escape(entry.model or "unknown")}  {entry.total_tokens:,} tokens</text>'
+        for index, entry in enumerate(top_sessions)
+    ) or '<text x="64" y="776" font-size="18" fill="#1f1a17">No top sessions available.</text>'
+    anomaly_badges = "".join(
+        f'<rect x="{64 + index * 250}" y="846" width="220" height="44" rx="22" fill="rgba(180,83,9,0.12)" />'
+        f'<text x="{174 + index * 250}" y="874" text-anchor="middle" font-size="16" fill="#8a4b0f">{escape(item)}</text>'
+        for index, item in enumerate(anomalies)
+    )
+    recommendation_lines = "".join(
+        f'<text x="64" y="{948 + index * 28}" font-size="18" fill="#4b4036">{escape(item)}</text>'
+        for index, item in enumerate(recommendations)
+    )
+
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" role="img" aria-label="{escape(title)}">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f9f3ea"/>
+      <stop offset="100%" stop-color="#efe6d8"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0%" cy="0%" r="90%">
+      <stop offset="0%" stop-color="rgba(15,118,110,0.24)"/>
+      <stop offset="100%" stop-color="rgba(15,118,110,0)"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="100%" cy="0%" r="90%">
+      <stop offset="0%" stop-color="rgba(180,83,9,0.18)"/>
+      <stop offset="100%" stop-color="rgba(180,83,9,0)"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="rgba(66,41,18,0.14)"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="1200" fill="url(#bg)"/>
+  <rect width="1200" height="1200" fill="url(#glowA)"/>
+  <rect width="1200" height="1200" fill="url(#glowB)"/>
+
+  <rect x="38" y="34" width="1124" height="1132" rx="36" fill="rgba(255,250,241,0.88)" stroke="rgba(72,53,36,0.10)" filter="url(#shadow)"/>
+
+  <text x="64" y="90" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
+  <text x="64" y="154" font-size="52" font-weight="700" fill="#1f1a17">{escape(title)}</text>
+  <text x="64" y="194" font-size="22" fill="#6d645d">Standalone shareable report asset</text>
+  <text x="64" y="240" font-size="22" fill="#4b4036">Top model: {escape(report.summary.top_model or "unknown")}  •  Trend: {escape("n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%")}  •  Cache ratio: {escape(_fmt_percent(report.summary.cache_ratio))}</text>
+
+  <rect x="64" y="282" width="240" height="128" rx="24" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
+  <text x="88" y="320" font-size="16" letter-spacing="2" fill="#6d645d">TOKENS</text>
+  <text x="88" y="372" font-size="44" font-weight="700" fill="#1f1a17">{report.summary.total_tokens:,}</text>
+  <text x="88" y="398" font-size="18" fill="#6d645d">{report.summary.requests} requests</text>
+
+  <rect x="320" y="282" width="240" height="128" rx="24" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
+  <text x="344" y="320" font-size="16" letter-spacing="2" fill="#6d645d">EST. COST</text>
+  <text x="344" y="372" font-size="44" font-weight="700" fill="#1f1a17">${report.summary.estimated_cost_usd:.2f}</text>
+  <text x="344" y="398" font-size="18" fill="#6d645d">Projected ${report.costs.projected_monthly_cost_usd:.2f}</text>
+
+  <rect x="576" y="282" width="240" height="128" rx="24" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
+  <text x="600" y="320" font-size="16" letter-spacing="2" fill="#6d645d">AVG / REQUEST</text>
+  <text x="600" y="372" font-size="44" font-weight="700" fill="#1f1a17">{report.summary.average_tokens_per_request:,.0f}</text>
+  <text x="600" y="398" font-size="18" fill="#6d645d">Largest {report.summary.largest_session_tokens:,}</text>
+
+  <rect x="832" y="282" width="304" height="128" rx="24" fill="#0f766e" opacity="0.96"/>
+  <text x="856" y="320" font-size="16" letter-spacing="2" fill="#d8f3ef">RECOMMENDATION</text>
+  <text x="856" y="360" font-size="24" font-weight="700" fill="#ffffff">{escape(report.insights.suggestion[:34])}</text>
+  <text x="856" y="390" font-size="18" fill="#d8f3ef">{escape(report.insights.suggestion[34:68])}</text>
+
+  <rect x="64" y="442" width="520" height="310" rx="28" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
+  <text x="88" y="480" font-size="24" font-weight="700" fill="#1f1a17">Daily Token Trend</text>
+  <g transform="translate(0 10)">{token_trend_svg}</g>
+
+  <rect x="616" y="442" width="520" height="310" rx="28" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
+  <text x="640" y="480" font-size="24" font-weight="700" fill="#1f1a17">Project Share</text>
+  <g transform="translate(0 28)">{project_share_svg}</g>
+
+  <rect x="64" y="782" width="1072" height="110" rx="28" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
+  <text x="88" y="820" font-size="24" font-weight="700" fill="#1f1a17">Top Sessions</text>
+  {top_sessions_text}
+
+  <text x="64" y="930" font-size="24" font-weight="700" fill="#1f1a17">Anomalies</text>
+  {anomaly_badges}
+
+  <text x="64" y="1036" font-size="24" font-weight="700" fill="#1f1a17">Recommended Actions</text>
+  {recommendation_lines}
+
+  <text x="1136" y="1134" text-anchor="end" font-size="18" fill="#6d645d">Generated by codex-stats</text>
+</svg>
+"""
+
+
 def _svg_line_chart(
     points: list[tuple[str, float]],
     *,

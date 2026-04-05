@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_stats.cli import _open_report_in_browser, _write_report_output, build_parser
+from codex_stats.cli import _default_report_filename, _open_report_in_browser, _write_report_output, build_parser
 
 
 class CliTestCase(unittest.TestCase):
@@ -157,15 +157,15 @@ class CliTestCase(unittest.TestCase):
         parser = build_parser()
         init_args = parser.parse_args(["init", "--force"])
         compare_args = parser.parse_args(["compare", "today", "yesterday"])
-        report_args = parser.parse_args(["report", "weekly", "--format", "html", "--project", "project", "--output", "weekly.html", "--render"])
+        report_args = parser.parse_args(["report", "weekly", "--format", "svg", "--project", "project", "--output", "weekly.svg", "--render"])
         self.assertEqual(init_args.command, "init")
         self.assertTrue(init_args.force)
         self.assertEqual(compare_args.current, "today")
         self.assertEqual(compare_args.previous, "yesterday")
         self.assertEqual(report_args.period, "weekly")
-        self.assertEqual(report_args.format, "html")
+        self.assertEqual(report_args.format, "svg")
         self.assertEqual(report_args.project_name, "project")
-        self.assertEqual(report_args.output, "weekly.html")
+        self.assertEqual(report_args.output, "weekly.svg")
         self.assertTrue(report_args.render)
 
     def test_project_drilldown_parser(self) -> None:
@@ -193,14 +193,21 @@ class CliTestCase(unittest.TestCase):
 
     def test_write_report_output_and_browser_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = _write_report_output("<html></html>", str(Path(tmpdir) / "report.html"), html_mode=True)
+            output_path = _write_report_output("<html></html>", str(Path(tmpdir) / "report.html"), suffix=".html")
             self.assertTrue(output_path.exists())
             self.assertIn("report.html", str(output_path))
-        temp_output = _write_report_output("<html></html>", None, html_mode=True)
-        self.assertTrue(temp_output.exists())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch("pathlib.Path.cwd", return_value=Path(tmpdir)):
+                svg_output = _write_report_output("<svg></svg>", None, suffix=".svg", default_name="codex-stats-weekly.svg")
+            self.assertTrue(svg_output.exists())
+            self.assertEqual(svg_output, Path(tmpdir) / "codex-stats-weekly.svg")
         with mock.patch("codex_stats.cli.webbrowser.open") as open_mock:
-            _open_report_in_browser(temp_output)
+            _open_report_in_browser(svg_output)
         open_mock.assert_called_once()
+
+    def test_default_report_filename(self) -> None:
+        self.assertEqual(_default_report_filename("weekly", None, "svg"), "codex-stats-weekly.svg")
+        self.assertEqual(_default_report_filename("monthly", "Backend API", "svg"), "codex-stats-monthly-backend-api.svg")
 
 
 if __name__ == "__main__":

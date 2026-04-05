@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="codex-stats share card">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#faf4eb"/>
+      <stop offset="100%" stop-color="#efe4d1"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0%" cy="0%" r="90%">
+      <stop offset="0%" stop-color="#99f6e4" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#99f6e4" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="100%" cy="0%" r="85%">
+      <stop offset="0%" stop-color="#fdba74" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#fdba74" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glowA)"/>
+  <rect width="1200" height="630" fill="url(#glowB)"/>
+
+  <rect x="38" y="34" width="1124" height="562" rx="34" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+
+  <text x="74" y="96" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
+  <text x="74" y="172" font-size="68" font-weight="700" fill="#1f1a17">Local usage analytics</text>
+  <text x="74" y="240" font-size="68" font-weight="700" fill="#1f1a17">for Codex sessions</text>
+  <text x="74" y="296" font-size="28" fill="#6d645d">Shareable HTML reports, poster-style SVG assets, OTLP export, and live watch dashboards.</text>
+
+  <rect x="74" y="352" width="236" height="118" rx="24" fill="#0f766e"/>
+  <text x="98" y="392" font-size="16" letter-spacing="2" fill="#d8f3ef">REPORTS</text>
+  <text x="98" y="438" font-size="38" font-weight="700" fill="#ffffff">HTML + SVG</text>
+
+  <rect x="334" y="352" width="236" height="118" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="358" y="392" font-size="16" letter-spacing="2" fill="#6d645d">OBSERVABILITY</text>
+  <text x="358" y="438" font-size="38" font-weight="700" fill="#1f1a17">OTLP Export</text>
+
+  <rect x="594" y="352" width="236" height="118" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="618" y="392" font-size="16" letter-spacing="2" fill="#6d645d">LIVE MODE</text>
+  <text x="618" y="438" font-size="38" font-weight="700" fill="#1f1a17">Watch + Alerts</text>
+
+  <rect x="854" y="352" width="236" height="118" rx="24" fill="#b45309"/>
+  <text x="878" y="392" font-size="16" letter-spacing="2" fill="#ffedd5">SHARE</text>
+  <text x="878" y="438" font-size="38" font-weight="700" fill="#ffffff">Portable assets</text>
+
+  <path d="M 760 128 C 850 60, 1000 60, 1082 138 S 1150 318, 1048 350 C 970 375, 930 326, 866 334 C 780 346, 704 428, 614 408 C 540 392, 502 318, 528 254 C 558 184, 650 212, 720 180 C 739 171, 748 152, 760 128 Z" fill="rgba(255,255,255,0.74)" stroke="rgba(66,48,31,0.10)"/>
+  <polyline points="628,332 706,258 786,274 858,194 940,226 1036,146" fill="none" stroke="#0f766e" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="628" cy="332" r="10" fill="#0f766e"/>
+  <circle cx="706" cy="258" r="10" fill="#0f766e"/>
+  <circle cx="786" cy="274" r="10" fill="#0f766e"/>
+  <circle cx="858" cy="194" r="10" fill="#0f766e"/>
+  <circle cx="940" cy="226" r="10" fill="#0f766e"/>
+  <circle cx="1036" cy="146" r="10" fill="#0f766e"/>
+
+  <text x="74" y="546" font-size="22" fill="#6d645d">github.com/vivek378521/codex-stats</text>
+</svg>

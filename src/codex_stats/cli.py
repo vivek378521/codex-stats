@@ -25,6 +25,7 @@ from .display import (
     format_report,
     format_report_html,
     format_report_markdown,
+    format_report_svg,
     format_session,
     format_summary,
     format_top,
@@ -154,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     report_parser = subparsers.add_parser("report", help="Generate a shareable usage report.")
     report_parser.add_argument("period", choices=["weekly", "monthly"], help="Report period.")
-    report_parser.add_argument("--format", choices=["text", "markdown", "html", "json"], default="text", help="Output format.")
+    report_parser.add_argument("--format", choices=["text", "markdown", "html", "svg", "json"], default="text", help="Output format.")
     report_parser.add_argument("--project", dest="project_name", help="Generate the report for one project.")
     report_parser.add_argument("--output", help="Write the report to a file instead of stdout.")
     report_parser.add_argument("--render", action="store_true", help="Open an HTML report in the default browser.")
@@ -401,23 +402,32 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "report":
-        if args.render and args.format != "html":
-            print("--render requires --format html", file=sys.stderr)
+        if args.render and args.format not in {"html", "svg"}:
+            print("--render requires --format html or --format svg", file=sys.stderr)
             return 1
         report = build_report(paths, period=args.period, project_name=args.project_name)
-        if args.format == "json":
-            content = as_json(report.to_dict())
-        elif args.format == "html":
+        daily_points = None
+        if args.format in {"html", "svg"}:
             report_days = 7 if args.period == "weekly" else 30
             report_details = filter_details_by_project(details_for_last_days(paths, report_days), args.project_name)
             daily_points = summarize_daily_from_details(report_details, days=report_days)
+        if args.format == "json":
+            content = as_json(report.to_dict())
+        elif args.format == "html":
             content = format_report_html(report, daily_points=daily_points)
+        elif args.format == "svg":
+            content = format_report_svg(report, daily_points=daily_points)
         elif args.format == "markdown":
             content = format_report_markdown(report)
         else:
             content = format_report(report, options)
-        if args.output or args.render:
-            output_path = _write_report_output(content, args.output, html_mode=args.format == "html")
+        if args.output or args.render or args.format == "svg":
+            output_path = _write_report_output(
+                content,
+                args.output,
+                suffix=f".{args.format}" if args.format in {"html", "svg"} else ".txt",
+                default_name=_default_report_filename(args.period, args.project_name, args.format) if args.format == "svg" else None,
+            )
             print(f"Wrote report to {output_path}")
             if args.render:
                 _open_report_in_browser(output_path)
@@ -599,15 +609,15 @@ def summarize_details_for_range(days: int, details):
     return summarize_imported_details(details, label=f"last {max(days, 1)} days")
 
 
-def _write_report_output(content: str, output: str | None, *, html_mode: bool) -> Path:
+def _write_report_output(content: str, output: str | None, *, suffix: str, default_name: str | None = None) -> Path:
     if output:
         output_path = Path(output).expanduser()
-    elif html_mode:
-        handle = tempfile.NamedTemporaryFile(prefix="codex-stats-report-", suffix=".html", delete=False)
+    elif default_name:
+        output_path = Path.cwd() / default_name
+    else:
+        handle = tempfile.NamedTemporaryFile(prefix="codex-stats-report-", suffix=suffix, delete=False)
         handle.close()
         output_path = Path(handle.name)
-    else:
-        raise ValueError("output path is required for non-HTML rendered reports")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
     return output_path
@@ -615,6 +625,14 @@ def _write_report_output(content: str, output: str | None, *, html_mode: bool) -
 
 def _open_report_in_browser(path: Path) -> None:
     webbrowser.open(path.resolve().as_uri())
+
+
+def _default_report_filename(period: str, project_name: str | None, fmt: str) -> str:
+    if project_name:
+        safe_project = "".join(char.lower() if char.isalnum() else "-" for char in project_name).strip("-")
+        safe_project = safe_project or "project"
+        return f"codex-stats-{period}-{safe_project}.{fmt}"
+    return f"codex-stats-{period}.{fmt}"
 
 
 if __name__ == "__main__":
