@@ -25,6 +25,7 @@ from .display import (
     format_report,
     format_report_html,
     format_report_markdown,
+    format_report_svg_assets,
     format_report_svg,
     format_session,
     format_summary,
@@ -416,17 +417,27 @@ def main(argv: list[str] | None = None) -> int:
         elif args.format == "html":
             content = format_report_html(report, daily_points=daily_points)
         elif args.format == "svg":
-            content = format_report_svg(report, daily_points=daily_points)
+            assets = format_report_svg_assets(report, daily_points=daily_points)
+            output_dir = _write_report_svg_assets(
+                assets,
+                args.output,
+                base_name=_default_report_basename(args.period, args.project_name),
+            )
+            print(f"Wrote SVG assets to {output_dir}")
+            if args.render:
+                summary_path = output_dir / f"{_default_report_basename(args.period, args.project_name)}-summary-card.svg"
+                _open_report_in_browser(summary_path)
+                print(f"Opened report in browser: {summary_path}")
+            return 0
         elif args.format == "markdown":
             content = format_report_markdown(report)
         else:
             content = format_report(report, options)
-        if args.output or args.render or args.format == "svg":
+        if args.output or args.render:
             output_path = _write_report_output(
                 content,
                 args.output,
                 suffix=f".{args.format}" if args.format in {"html", "svg"} else ".txt",
-                default_name=_default_report_filename(args.period, args.project_name, args.format) if args.format == "svg" else None,
             )
             print(f"Wrote report to {output_path}")
             if args.render:
@@ -633,6 +644,23 @@ def _default_report_filename(period: str, project_name: str | None, fmt: str) ->
         safe_project = safe_project or "project"
         return f"codex-stats-{period}-{safe_project}.{fmt}"
     return f"codex-stats-{period}.{fmt}"
+
+
+def _default_report_basename(period: str, project_name: str | None) -> str:
+    if project_name:
+        safe_project = "".join(char.lower() if char.isalnum() else "-" for char in project_name).strip("-")
+        safe_project = safe_project or "project"
+        return f"codex-stats-{period}-{safe_project}"
+    return f"codex-stats-{period}"
+
+
+def _write_report_svg_assets(assets: dict[str, str], output: str | None, *, base_name: str) -> Path:
+    output_dir = Path(output).expanduser() if output else Path.cwd()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for asset_name, content in assets.items():
+        asset_path = output_dir / f"{base_name}-{asset_name}.svg"
+        asset_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
+    return output_dir
 
 
 if __name__ == "__main__":

@@ -8,7 +8,14 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_stats.cli import _default_report_filename, _open_report_in_browser, _write_report_output, build_parser
+from codex_stats.cli import (
+    _default_report_basename,
+    _default_report_filename,
+    _open_report_in_browser,
+    _write_report_output,
+    _write_report_svg_assets,
+    build_parser,
+)
 
 
 class CliTestCase(unittest.TestCase):
@@ -197,10 +204,14 @@ class CliTestCase(unittest.TestCase):
             self.assertTrue(output_path.exists())
             self.assertIn("report.html", str(output_path))
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("pathlib.Path.cwd", return_value=Path(tmpdir)):
-                svg_output = _write_report_output("<svg></svg>", None, suffix=".svg", default_name="codex-stats-weekly.svg")
+            svg_dir = _write_report_svg_assets(
+                {"summary-card": "<svg></svg>", "daily-tokens": "<svg></svg>"},
+                tmpdir,
+                base_name="codex-stats-weekly",
+            )
+            self.assertEqual(svg_dir, Path(tmpdir))
+            svg_output = Path(tmpdir) / "codex-stats-weekly-summary-card.svg"
             self.assertTrue(svg_output.exists())
-            self.assertEqual(svg_output, Path(tmpdir) / "codex-stats-weekly.svg")
         with mock.patch("codex_stats.cli.webbrowser.open") as open_mock:
             _open_report_in_browser(svg_output)
         open_mock.assert_called_once()
@@ -208,6 +219,8 @@ class CliTestCase(unittest.TestCase):
     def test_default_report_filename(self) -> None:
         self.assertEqual(_default_report_filename("weekly", None, "svg"), "codex-stats-weekly.svg")
         self.assertEqual(_default_report_filename("monthly", "Backend API", "svg"), "codex-stats-monthly-backend-api.svg")
+        self.assertEqual(_default_report_basename("weekly", None), "codex-stats-weekly")
+        self.assertEqual(_default_report_basename("monthly", "Backend API"), "codex-stats-monthly-backend-api")
 
 
 if __name__ == "__main__":

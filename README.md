@@ -83,15 +83,15 @@ python3 -m pip install codex-stats
 - `codex-stats report weekly --format html`
   Generate a standalone HTML report for sharing, including inline charts.
 - `codex-stats report weekly --format svg`
-  Generate a poster-style SVG asset for sharing in docs, social posts, or release notes. By default it writes `codex-stats-weekly.svg` in the current working directory.
+  Generate a bundle of smaller standalone SVG assets in the current working directory, including a summary card plus graph-focused assets.
 - `codex-stats report weekly --project backend-api`
   Generate a weekly report for one project.
 - `codex-stats report weekly --format markdown --output weekly-report.md`
   Write a formatted report to a file.
 - `codex-stats report weekly --format html --output weekly-report.html`
   Write a polished standalone HTML report to a file.
-- `codex-stats report weekly --format svg --output weekly-report.svg`
-  Write a standalone SVG share card to a file.
+- `codex-stats report weekly --format svg --output weekly-report-assets`
+  Write the SVG asset bundle into the output directory you provide.
 - `codex-stats report weekly --format html --render`
   Generate an HTML report, write it to a temp file, and open it in the default browser.
 - `codex-stats report weekly --format svg --render`
@@ -200,7 +200,7 @@ The current priority list lives in [docs/roadmap.md](/Users/vivek/Desktop/Salad/
 
 ## Shareable Assets
 
-Share-ready assets now live under [docs/assets/codex-stats-share-card.svg](/Users/vivek/Desktop/Salad/codex_stats/docs/assets/codex-stats-share-card.svg), and `report --format svg` can generate poster-style report visuals directly from local usage data.
+Share-ready assets now live under [docs/assets/codex-stats-share-card.svg](/Users/vivek/Desktop/Salad/codex_stats/docs/assets/codex-stats-share-card.svg), and `report --format svg` can generate a full bundle of report assets directly from local usage data.
 
 ## Watch Alerts
 

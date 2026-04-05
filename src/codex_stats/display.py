@@ -788,110 +788,59 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
 """
 
 
-def format_report_svg(report: ReportData, daily_points: list[DailyPoint] | None = None) -> str:
+def format_report_svg_assets(report: ReportData, daily_points: list[DailyPoint] | None = None) -> dict[str, str]:
     title = f"Codex Stats {report.period.title()} Report"
     if report.project_name:
         title = f"{title}: {report.project_name}"
     daily_points = daily_points or []
-    token_trend_svg = _svg_line_chart(
-        [(point.day[5:], float(point.total_tokens)) for point in daily_points],
-        stroke="#0f766e",
-        fill="rgba(15, 118, 110, 0.14)",
-        value_formatter=lambda value: f"{int(value):,}",
-    )
-    project_share_svg = _svg_bar_chart(
-        [(entry.name, float(entry.total_tokens)) for entry in report.projects[:4]],
-        bar_color="#b45309",
-        value_formatter=lambda value: f"{int(value):,}",
-        empty_label="No project breakdown for this scoped report.",
-    )
-    anomalies = report.insights.anomalies[:3] or ["No active anomalies"]
-    recommendations = report.insights.recommendations[:3] or ["Usage looks healthy."]
-    top_sessions = report.top_sessions[:3]
-    top_sessions_text = "".join(
-        f'<text x="64" y="{776 + index * 30}" font-size="18" fill="#1f1a17">{index + 1}. {escape(entry.project_name)} / {escape(entry.model or "unknown")}  {entry.total_tokens:,} tokens</text>'
-        for index, entry in enumerate(top_sessions)
-    ) or '<text x="64" y="776" font-size="18" fill="#1f1a17">No top sessions available.</text>'
-    anomaly_badges = "".join(
-        f'<rect x="{64 + index * 250}" y="846" width="220" height="44" rx="22" fill="rgba(180,83,9,0.12)" />'
-        f'<text x="{174 + index * 250}" y="874" text-anchor="middle" font-size="16" fill="#8a4b0f">{escape(item)}</text>'
-        for index, item in enumerate(anomalies)
-    )
-    recommendation_lines = "".join(
-        f'<text x="64" y="{948 + index * 28}" font-size="18" fill="#4b4036">{escape(item)}</text>'
-        for index, item in enumerate(recommendations)
-    )
+    assets = {
+        "summary-card": _format_summary_card_svg(report, title),
+        "daily-tokens": _wrap_chart_svg(
+            title="Daily Token Trend",
+            subtitle=title,
+            chart_svg=_svg_line_chart(
+                [(point.day[5:], float(point.total_tokens)) for point in daily_points],
+                stroke="#0f766e",
+                fill="rgba(15, 118, 110, 0.14)",
+                value_formatter=lambda value: f"{int(value):,}",
+            ),
+        ),
+        "daily-cost": _wrap_chart_svg(
+            title="Daily Cost Trend",
+            subtitle=title,
+            chart_svg=_svg_line_chart(
+                [(point.day[5:], float(point.estimated_cost_usd)) for point in daily_points],
+                stroke="#b45309",
+                fill="rgba(180, 83, 9, 0.14)",
+                value_formatter=lambda value: f"${value:.2f}",
+            ),
+        ),
+        "project-share": _wrap_chart_svg(
+            title="Project Share",
+            subtitle=title,
+            chart_svg=_svg_bar_chart(
+                [(entry.name, float(entry.total_tokens)) for entry in report.projects[:5]],
+                bar_color="#0f766e",
+                value_formatter=lambda value: f"{int(value):,}",
+                empty_label="No project breakdown for this scoped report.",
+            ),
+        ),
+        "top-sessions": _wrap_chart_svg(
+            title="Top Sessions",
+            subtitle=title,
+            chart_svg=_svg_bar_chart(
+                [(f"{entry.project_name} / {entry.model or 'unknown'}", float(entry.total_tokens)) for entry in report.top_sessions[:5]],
+                bar_color="#b45309",
+                value_formatter=lambda value: f"{int(value):,}",
+                empty_label="No top session data available.",
+            ),
+        ),
+    }
+    return assets
 
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" role="img" aria-label="{escape(title)}">
-  <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f9f3ea"/>
-      <stop offset="100%" stop-color="#efe6d8"/>
-    </linearGradient>
-    <radialGradient id="glowA" cx="0%" cy="0%" r="90%">
-      <stop offset="0%" stop-color="rgba(15,118,110,0.24)"/>
-      <stop offset="100%" stop-color="rgba(15,118,110,0)"/>
-    </radialGradient>
-    <radialGradient id="glowB" cx="100%" cy="0%" r="90%">
-      <stop offset="0%" stop-color="rgba(180,83,9,0.18)"/>
-      <stop offset="100%" stop-color="rgba(180,83,9,0)"/>
-    </radialGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="rgba(66,41,18,0.14)"/>
-    </filter>
-  </defs>
-  <rect width="1200" height="1200" fill="url(#bg)"/>
-  <rect width="1200" height="1200" fill="url(#glowA)"/>
-  <rect width="1200" height="1200" fill="url(#glowB)"/>
 
-  <rect x="38" y="34" width="1124" height="1132" rx="36" fill="rgba(255,250,241,0.88)" stroke="rgba(72,53,36,0.10)" filter="url(#shadow)"/>
-
-  <text x="64" y="90" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
-  <text x="64" y="154" font-size="52" font-weight="700" fill="#1f1a17">{escape(title)}</text>
-  <text x="64" y="194" font-size="22" fill="#6d645d">Standalone shareable report asset</text>
-  <text x="64" y="240" font-size="22" fill="#4b4036">Top model: {escape(report.summary.top_model or "unknown")}  •  Trend: {escape("n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%")}  •  Cache ratio: {escape(_fmt_percent(report.summary.cache_ratio))}</text>
-
-  <rect x="64" y="282" width="240" height="128" rx="24" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
-  <text x="88" y="320" font-size="16" letter-spacing="2" fill="#6d645d">TOKENS</text>
-  <text x="88" y="372" font-size="44" font-weight="700" fill="#1f1a17">{report.summary.total_tokens:,}</text>
-  <text x="88" y="398" font-size="18" fill="#6d645d">{report.summary.requests} requests</text>
-
-  <rect x="320" y="282" width="240" height="128" rx="24" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
-  <text x="344" y="320" font-size="16" letter-spacing="2" fill="#6d645d">EST. COST</text>
-  <text x="344" y="372" font-size="44" font-weight="700" fill="#1f1a17">${report.summary.estimated_cost_usd:.2f}</text>
-  <text x="344" y="398" font-size="18" fill="#6d645d">Projected ${report.costs.projected_monthly_cost_usd:.2f}</text>
-
-  <rect x="576" y="282" width="240" height="128" rx="24" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
-  <text x="600" y="320" font-size="16" letter-spacing="2" fill="#6d645d">AVG / REQUEST</text>
-  <text x="600" y="372" font-size="44" font-weight="700" fill="#1f1a17">{report.summary.average_tokens_per_request:,.0f}</text>
-  <text x="600" y="398" font-size="18" fill="#6d645d">Largest {report.summary.largest_session_tokens:,}</text>
-
-  <rect x="832" y="282" width="304" height="128" rx="24" fill="#0f766e" opacity="0.96"/>
-  <text x="856" y="320" font-size="16" letter-spacing="2" fill="#d8f3ef">RECOMMENDATION</text>
-  <text x="856" y="360" font-size="24" font-weight="700" fill="#ffffff">{escape(report.insights.suggestion[:34])}</text>
-  <text x="856" y="390" font-size="18" fill="#d8f3ef">{escape(report.insights.suggestion[34:68])}</text>
-
-  <rect x="64" y="442" width="520" height="310" rx="28" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
-  <text x="88" y="480" font-size="24" font-weight="700" fill="#1f1a17">Daily Token Trend</text>
-  <g transform="translate(0 10)">{token_trend_svg}</g>
-
-  <rect x="616" y="442" width="520" height="310" rx="28" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
-  <text x="640" y="480" font-size="24" font-weight="700" fill="#1f1a17">Project Share</text>
-  <g transform="translate(0 28)">{project_share_svg}</g>
-
-  <rect x="64" y="782" width="1072" height="110" rx="28" fill="#fffaf1" stroke="rgba(72,53,36,0.10)"/>
-  <text x="88" y="820" font-size="24" font-weight="700" fill="#1f1a17">Top Sessions</text>
-  {top_sessions_text}
-
-  <text x="64" y="930" font-size="24" font-weight="700" fill="#1f1a17">Anomalies</text>
-  {anomaly_badges}
-
-  <text x="64" y="1036" font-size="24" font-weight="700" fill="#1f1a17">Recommended Actions</text>
-  {recommendation_lines}
-
-  <text x="1136" y="1134" text-anchor="end" font-size="18" fill="#6d645d">Generated by codex-stats</text>
-</svg>
-"""
+def format_report_svg(report: ReportData, daily_points: list[DailyPoint] | None = None) -> str:
+    return format_report_svg_assets(report, daily_points)["summary-card"]
 
 
 def _svg_line_chart(
@@ -941,7 +890,7 @@ def _svg_line_chart(
         for step in range(4)
     )
     return (
-        f'<svg class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Trend chart">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Trend chart">'
         f'{grid}'
         f'<polygon points="{area_points}" fill="{fill}" />'
         f'<polyline points="{line_points}" fill="none" stroke="{stroke}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />'
@@ -975,7 +924,96 @@ def _svg_bar_chart(
             f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_width:.1f}" height="16" rx="8" fill="{bar_color}" />'
             f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'
         )
-    return f'<svg class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
+    return f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
+
+
+def _format_summary_card_svg(report: ReportData, title: str) -> str:
+    delta_text = "n/a" if report.comparison.total_tokens_delta_pct is None else f"{report.comparison.total_tokens_delta_pct:+.1f}%"
+    anomalies = report.insights.anomalies[:2] or ["No active anomalies"]
+    recommendations = report.insights.recommendations[:2] or ["Usage looks healthy."]
+    first_action = recommendations[0]
+    second_action = recommendations[1] if len(recommendations) > 1 else recommendations[0]
+    first_anomaly = anomalies[0]
+    second_anomaly = anomalies[1] if len(anomalies) > 1 else anomalies[0]
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="{escape(title)}">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbf5ec"/>
+      <stop offset="100%" stop-color="#efe2cf"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#115e59"/>
+      <stop offset="100%" stop-color="#0f766e"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b45309"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="34" y="28" width="1132" height="574" rx="32" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+
+  <circle cx="1056" cy="126" r="118" fill="rgba(15,118,110,0.10)"/>
+  <circle cx="1116" cy="206" r="72" fill="rgba(217,119,6,0.10)"/>
+  <circle cx="1012" cy="214" r="18" fill="#0f766e"/>
+  <circle cx="1066" cy="164" r="18" fill="#d97706"/>
+  <circle cx="1120" cy="114" r="18" fill="#0f766e"/>
+
+  <text x="74" y="86" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
+  <text x="74" y="150" font-size="60" font-weight="700" fill="#1f1a17">{escape(title)}</text>
+  <text x="74" y="194" font-size="24" fill="#6d645d">Compact share card for release notes, README embeds, and social posts.</text>
+
+  <rect x="74" y="226" width="336" height="52" rx="26" fill="rgba(15,118,110,0.08)"/>
+  <text x="102" y="258" font-size="20" fill="#134e4a">Top model {escape(report.summary.top_model or "unknown")}</text>
+  <rect x="426" y="226" width="190" height="52" rx="26" fill="rgba(180,83,9,0.10)"/>
+  <text x="454" y="258" font-size="20" fill="#92400e">Trend {escape(delta_text)}</text>
+  <rect x="632" y="226" width="214" height="52" rx="26" fill="rgba(66,48,31,0.06)"/>
+  <text x="660" y="258" font-size="20" fill="#4b4036">Cache {escape(_fmt_percent(report.summary.cache_ratio))}</text>
+
+  <rect x="74" y="314" width="240" height="120" rx="24" fill="url(#teal)"/>
+  <text x="98" y="350" font-size="16" letter-spacing="2" fill="#d7faf5">TOKENS</text>
+  <text x="98" y="397" font-size="40" font-weight="700" fill="#ffffff">{report.summary.total_tokens:,}</text>
+  <text x="98" y="423" font-size="18" fill="#d7faf5">{report.summary.sessions} sessions</text>
+
+  <rect x="334" y="314" width="220" height="120" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="358" y="350" font-size="16" letter-spacing="2" fill="#6d645d">EST. COST</text>
+  <text x="358" y="397" font-size="40" font-weight="700" fill="#1f1a17">${report.summary.estimated_cost_usd:.2f}</text>
+  <text x="358" y="423" font-size="18" fill="#6d645d">Projected ${report.costs.projected_monthly_cost_usd:.2f}</text>
+
+  <rect x="574" y="314" width="220" height="120" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="598" y="350" font-size="16" letter-spacing="2" fill="#6d645d">REQUESTS</text>
+  <text x="598" y="397" font-size="40" font-weight="700" fill="#1f1a17">{report.summary.requests}</text>
+  <text x="598" y="423" font-size="18" fill="#6d645d">Largest {report.summary.largest_session_tokens:,}</text>
+
+  <rect x="814" y="314" width="312" height="120" rx="24" fill="url(#amber)"/>
+  <text x="838" y="350" font-size="16" letter-spacing="2" fill="#ffedd5">AVG / REQUEST</text>
+  <text x="838" y="397" font-size="40" font-weight="700" fill="#ffffff">{report.summary.average_tokens_per_request:,.0f}</text>
+  <text x="838" y="423" font-size="18" fill="#ffedd5">{escape(report.insights.suggestion[:34])}</text>
+
+  <rect x="74" y="466" width="492" height="94" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="98" y="500" font-size="18" letter-spacing="2" fill="#8a4b0f">ANOMALIES</text>
+  <text x="98" y="530" font-size="20" fill="#8a4b0f">• {escape(first_anomaly)}</text>
+  <text x="98" y="556" font-size="20" fill="#8a4b0f">• {escape(second_anomaly)}</text>
+
+  <rect x="592" y="466" width="534" height="94" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="616" y="500" font-size="18" letter-spacing="2" fill="#4b4036">DO NEXT</text>
+  <text x="616" y="530" font-size="20" fill="#4b4036">• {escape(first_action)}</text>
+  <text x="616" y="556" font-size="20" fill="#4b4036">• {escape(second_action)}</text>
+
+  <text x="1128" y="590" text-anchor="end" font-size="18" fill="#6d645d">Generated by codex-stats</text>
+</svg>"""
+
+
+def _wrap_chart_svg(title: str, subtitle: str, chart_svg: str) -> str:
+    chart_body = chart_svg.strip()
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-label="{escape(title)}">
+  <rect width="1200" height="720" fill="#f6efe4"/>
+  <rect x="40" y="36" width="1120" height="648" rx="30" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="72" y="94" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
+  <text x="72" y="148" font-size="42" font-weight="700" fill="#1f1a17">{escape(title)}</text>
+  <text x="72" y="184" font-size="22" fill="#6d645d">{escape(subtitle)}</text>
+  <g transform="translate(72 220)">{chart_body}</g>
+</svg>"""
 
 
 def format_watch_dashboard(
