@@ -739,20 +739,20 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
                 <strong>Download PDF</strong>
                 <span>Best for printing or sending the active view as a full report.</span>
               </button>
-              <button class="export-item" type="button" data-svg="summary-card">
-                <strong>Summary SVG</strong>
+              <button class="export-item" type="button" data-jpg="summary-card">
+                <strong>Summary JPG</strong>
                 <span>Best for a quick share card with headline metrics.</span>
               </button>
-              <button class="export-item" type="button" data-svg="cost-card">
-                <strong>Cost SVG</strong>
+              <button class="export-item" type="button" data-jpg="cost-card">
+                <strong>Cost JPG</strong>
                 <span>Best for cost reviews and spend snapshots.</span>
               </button>
-              <button class="export-item" type="button" data-svg="focus-card">
-                <strong>Focus SVG</strong>
+              <button class="export-item" type="button" data-jpg="focus-card">
+                <strong>Focus JPG</strong>
                 <span>Best for showing anomalies and next steps.</span>
               </button>
-              <button class="export-item" type="button" data-svg="projects-card">
-                <strong>Projects SVG</strong>
+              <button class="export-item" type="button" data-jpg="projects-card">
+                <strong>Projects JPG</strong>
                 <span>Best for README embeds and project-share summaries.</span>
               </button>
             </div>
@@ -786,20 +786,45 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       exportMenu?.classList.remove("is-open");
     }}
 
-    function downloadSvg(assetKey) {{
+    async function downloadJpg(assetKey) {{
       const content = dashboardAssets[activeWindow]?.[assetKey];
       if (!content) {{
         return;
       }}
       const blob = new Blob([content], {{ type: "image/svg+xml;charset=utf-8" }});
       const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `codex-stats-${{activeWindow}}-${{assetKey}}.svg`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      try {{
+        const image = new Image();
+        const loaded = new Promise((resolve, reject) => {{
+          image.onload = resolve;
+          image.onerror = reject;
+        }});
+        image.src = url;
+        await loaded;
+
+        const canvas = document.createElement("canvas");
+        const width = image.naturalWidth || 1200;
+        const height = image.naturalHeight || 630;
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {{
+          return;
+        }}
+        context.fillStyle = "#fffaf2";
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+
+        const jpgUrl = canvas.toDataURL("image/jpeg", 0.94);
+        const link = document.createElement("a");
+        link.href = jpgUrl;
+        link.download = `codex-stats-${{activeWindow}}-${{assetKey}}.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }} finally {{
+        URL.revokeObjectURL(url);
+      }}
     }}
 
     tabs.forEach((button) => {{
@@ -812,10 +837,10 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       exportMenu?.classList.remove("is-open");
       window.print();
     }});
-    document.querySelectorAll("[data-svg]").forEach((button) => {{
-      button.addEventListener("click", () => {{
+    document.querySelectorAll("[data-jpg]").forEach((button) => {{
+      button.addEventListener("click", async () => {{
         exportMenu?.classList.remove("is-open");
-        downloadSvg(button.dataset.svg);
+        await downloadJpg(button.dataset.jpg);
       }});
     }});
     document.querySelectorAll("[data-toggle-details]").forEach((button) => {{

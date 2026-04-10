@@ -473,6 +473,7 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("Codex usage at a glance.", html)
         self.assertIn("The selected tab updates the full page.", html)
         self.assertIn("Download PDF", html)
+        self.assertIn("Summary JPG", html)
         self.assertIn('data-window="day"', html)
         self.assertIn('data-window="week"', html)
         self.assertIn('data-window="month"', html)
