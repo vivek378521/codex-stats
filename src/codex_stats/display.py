@@ -267,8 +267,14 @@ def format_report(report: ReportData, options: FormatOptions | None = None) -> s
 
 def format_dashboard_html(dashboard: DashboardData) -> str:
     generated_at = dashboard.generated_at.strftime("%Y-%m-%d %H:%M %Z")
+    tab_label_overrides = {
+        "day": "Today",
+        "week": "Last 7 Days",
+        "month": "Last 30 Days",
+        "all": "All Time",
+    }
     tab_buttons = "".join(
-        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-window="{escape(window.key)}">{escape(window.label)}</button>'
+        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-window="{escape(window.key)}">{escape(tab_label_overrides.get(window.key, window.label))}</button>'
         for index, window in enumerate(dashboard.windows)
     )
     window_sections = "".join(
@@ -325,6 +331,18 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       background: linear-gradient(135deg, rgba(255,255,255,0.88), rgba(255,247,236,0.94));
       border: 1px solid rgba(72, 53, 36, 0.12);
       box-shadow: var(--shadow);
+      position: relative;
+    }}
+    .hero::after {{
+      content: "";
+      position: absolute;
+      right: -56px;
+      top: -46px;
+      width: 220px;
+      height: 220px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(15,118,110,0.16), rgba(15,118,110,0));
+      pointer-events: none;
     }}
     .eyebrow {{
       margin: 0 0 12px;
@@ -336,16 +354,38 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     }}
     h1 {{
       margin: 0;
-      font-size: clamp(2.2rem, 4vw, 4rem);
+      font-size: clamp(2rem, 3.5vw, 3.4rem);
       line-height: 0.95;
-      max-width: 10ch;
+      max-width: 12ch;
     }}
     .lede {{
-      margin: 14px 0 0;
+      margin: 12px 0 0;
       color: var(--muted);
-      max-width: 60ch;
-      line-height: 1.6;
-      font-size: 1rem;
+      max-width: 44ch;
+      line-height: 1.55;
+      font-size: 0.98rem;
+    }}
+    .hero-grid {{
+      display: grid;
+      grid-template-columns: 1.5fr 0.8fr;
+      gap: 18px;
+      align-items: end;
+    }}
+    .hero-summary {{
+      background: rgba(255,255,255,0.66);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+    }}
+    .hero-summary strong {{
+      display: block;
+      font-size: 1.02rem;
+      margin-bottom: 4px;
+    }}
+    .hero-summary p {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
     }}
     .toolbar {{
       display: flex;
@@ -369,10 +409,11 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
     }}
     .tab-button {{
-      padding: 12px 18px;
+      padding: 13px 20px;
       background: rgba(255,255,255,0.74);
       color: var(--ink);
       border: 1px solid var(--line);
+      font-weight: 700;
     }}
     .tab-button.is-active {{
       background: var(--accent);
@@ -388,6 +429,47 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     .action-button.primary {{
       background: var(--accent-2);
       color: #fff;
+    }}
+    .export-wrap {{
+      position: relative;
+    }}
+    .export-menu {{
+      position: absolute;
+      right: 0;
+      top: calc(100% + 10px);
+      width: min(290px, 82vw);
+      background: rgba(255, 250, 242, 0.98);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 10px;
+      display: none;
+      z-index: 10;
+    }}
+    .export-menu.is-open {{
+      display: block;
+    }}
+    .export-item {{
+      width: 100%;
+      text-align: left;
+      padding: 12px 13px;
+      border-radius: 14px;
+      background: transparent;
+      border: 0;
+      color: var(--ink);
+    }}
+    .export-item:hover {{
+      background: rgba(15,118,110,0.08);
+    }}
+    .export-item strong {{
+      display: block;
+      font-size: 0.95rem;
+      margin-bottom: 2px;
+    }}
+    .export-item span {{
+      color: var(--muted);
+      font-size: 0.87rem;
+      line-height: 1.4;
     }}
     button:hover {{
       transform: translateY(-1px);
@@ -422,6 +504,14 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     .panel.hero-panel {{
       padding-bottom: 26px;
     }}
+    .section-kicker {{
+      margin: 0 0 10px;
+      color: var(--accent-2);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.72rem;
+      font-weight: 700;
+    }}
     .window-title {{
       display: flex;
       flex-wrap: wrap;
@@ -448,6 +538,26 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 16px;
       margin-top: 20px;
+    }}
+    .headline-band {{
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px;
+      background: linear-gradient(135deg, rgba(15,118,110,0.10), rgba(180,83,9,0.08));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+    }}
+    .headline-band strong {{
+      font-size: 1.08rem;
+      line-height: 1.35;
+    }}
+    .headline-band span {{
+      color: var(--muted);
+      font-size: 0.92rem;
     }}
     .metric {{
       background: var(--panel-strong);
@@ -494,6 +604,16 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
+    }}
+    .detail-toggle {{
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.74);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      font-size: 0.92rem;
+    }}
+    .detail-section[hidden] {{
+      display: none;
     }}
     .kpi {{
       border-top: 1px solid var(--line);
@@ -568,7 +688,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       text-align: right;
     }}
     @media (max-width: 960px) {{
-      .metric-grid, .split, .chart-grid, .kpi-grid {{ grid-template-columns: 1fr; }}
+      .hero-grid, .metric-grid, .split, .chart-grid, .kpi-grid {{ grid-template-columns: 1fr; }}
     }}
     @media print {{
       body {{
@@ -583,7 +703,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         backdrop-filter: none;
         break-inside: avoid;
       }}
-      .tabs, .actions, .toolbar-note {{
+      .tabs, .actions, .toolbar-note, .detail-toggle {{
         display: none;
       }}
       .window {{
@@ -599,18 +719,46 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
   <main class="page">
     <section class="hero">
       <p class="eyebrow">Codex Stats</p>
-      <h1>Usage dashboard in the browser.</h1>
-      <p class="lede">This page opens automatically from <code>codex-stats</code> and keeps day, week, month, and all-time views in one place. Print the active tab to PDF or download shareable SVG cards from the action bar.</p>
+      <div class="hero-grid">
+        <div>
+          <h1>Codex usage at a glance.</h1>
+          <p class="lede">Switch ranges, review the stats, and export the active view if you need to share it.</p>
+        </div>
+        <div class="hero-summary">
+          <strong>Range</strong>
+          <p>The selected tab updates the full page.</p>
+        </div>
+      </div>
       <div class="toolbar">
         <div class="tabs">{tab_buttons}</div>
         <div class="actions">
-          <button class="action-button primary" type="button" data-action="pdf">Download PDF</button>
-          <button class="action-button" type="button" data-svg="summary-card">Summary SVG</button>
-          <button class="action-button" type="button" data-svg="cost-card">Cost SVG</button>
-          <button class="action-button" type="button" data-svg="focus-card">Focus SVG</button>
-          <button class="action-button" type="button" data-svg="projects-card">Projects SVG</button>
+          <div class="export-wrap">
+            <button class="action-button primary" type="button" data-action="toggle-export">Export</button>
+            <div class="export-menu" data-export-menu>
+              <button class="export-item" type="button" data-action="pdf">
+                <strong>Download PDF</strong>
+                <span>Best for printing or sending the active view as a full report.</span>
+              </button>
+              <button class="export-item" type="button" data-svg="summary-card">
+                <strong>Summary SVG</strong>
+                <span>Best for a quick share card with headline metrics.</span>
+              </button>
+              <button class="export-item" type="button" data-svg="cost-card">
+                <strong>Cost SVG</strong>
+                <span>Best for cost reviews and spend snapshots.</span>
+              </button>
+              <button class="export-item" type="button" data-svg="focus-card">
+                <strong>Focus SVG</strong>
+                <span>Best for showing anomalies and next steps.</span>
+              </button>
+              <button class="export-item" type="button" data-svg="projects-card">
+                <strong>Projects SVG</strong>
+                <span>Best for README embeds and project-share summaries.</span>
+              </button>
+            </div>
+          </div>
         </div>
-        <p class="toolbar-note">Generated {escape(generated_at)}. PDF exports use the currently active tab.</p>
+        <p class="toolbar-note">Generated {escape(generated_at)}</p>
       </div>
     </section>
     {window_sections}
@@ -620,6 +768,8 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     const dashboardAssets = {assets_json};
     const tabs = Array.from(document.querySelectorAll("[data-window]"));
     const windows = Array.from(document.querySelectorAll(".window"));
+    const exportWrap = document.querySelector(".export-wrap");
+    const exportMenu = document.querySelector("[data-export-menu]");
     let activeWindow = tabs[0]?.dataset.window || "";
 
     function setActiveWindow(key) {{
@@ -633,6 +783,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       document.title = `Codex Stats Dashboard - ${{
         tabs.find((button) => button.dataset.window === key)?.textContent || "Stats"
       }}`;
+      exportMenu?.classList.remove("is-open");
     }}
 
     function downloadSvg(assetKey) {{
@@ -654,9 +805,34 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     tabs.forEach((button) => {{
       button.addEventListener("click", () => setActiveWindow(button.dataset.window));
     }});
-    document.querySelector('[data-action="pdf"]')?.addEventListener("click", () => window.print());
+    document.querySelector('[data-action="toggle-export"]')?.addEventListener("click", () => {{
+      exportMenu?.classList.toggle("is-open");
+    }});
+    document.querySelector('[data-action="pdf"]')?.addEventListener("click", () => {{
+      exportMenu?.classList.remove("is-open");
+      window.print();
+    }});
     document.querySelectorAll("[data-svg]").forEach((button) => {{
-      button.addEventListener("click", () => downloadSvg(button.dataset.svg));
+      button.addEventListener("click", () => {{
+        exportMenu?.classList.remove("is-open");
+        downloadSvg(button.dataset.svg);
+      }});
+    }});
+    document.querySelectorAll("[data-toggle-details]").forEach((button) => {{
+      button.addEventListener("click", () => {{
+        const target = document.getElementById(button.dataset.toggleDetails);
+        const expanded = button.getAttribute("aria-expanded") === "true";
+        button.setAttribute("aria-expanded", expanded ? "false" : "true");
+        button.textContent = expanded ? "Show details" : "Hide details";
+        if (target) {{
+          target.hidden = expanded;
+        }}
+      }});
+    }});
+    document.addEventListener("click", (event) => {{
+      if (exportWrap && !exportWrap.contains(event.target)) {{
+        exportMenu?.classList.remove("is-open");
+      }}
     }});
     setActiveWindow(activeWindow);
   </script>
@@ -1220,6 +1396,14 @@ def format_report_svg(report: ReportData, daily_points: list[DailyPoint] | None 
 def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool) -> str:
     delta_pct = "n/a" if window.comparison.total_tokens_delta_pct is None else f"{window.comparison.total_tokens_delta_pct:+.1f}%"
     delta_tone = "var(--warn)" if delta_pct.startswith("+") else "var(--good)"
+    headline = f"You spent ${window.summary.estimated_cost_usd:.2f} across {window.summary.requests} requests in {window.label.lower()}."
+    if window.key == "all":
+        headline = f"You have spent ${window.summary.estimated_cost_usd:.2f} across all recorded Codex usage."
+    change_text = (
+        f"{window.comparison.total_tokens_delta:+,} tokens versus {window.comparison.previous.label}"
+        if window.comparison.previous.total_tokens or window.comparison.total_tokens_delta
+        else "No comparable previous window yet."
+    )
     token_trend_svg = _svg_line_chart(
         [(point.day[5:], float(point.total_tokens)) for point in window.daily_points],
         stroke="#0f766e",
@@ -1287,12 +1471,17 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
     <section class="window{' is-active' if is_active else ''}" data-window="{escape(window.key)}">
       <div class="grid">
         <section class="panel hero-panel">
+          <p class="section-kicker">Start Here</p>
           <div class="window-title">
             <div>
               <h2>{escape(window.label)}</h2>
               <p>{escape(window.description)}</p>
             </div>
             <div class="delta-badge" style="color: {delta_tone};">{escape(window.comparison_label)}: {escape(delta_pct)}</div>
+          </div>
+          <div class="headline-band">
+            <strong>{escape(headline)}</strong>
+            <span>{escape(change_text)}</span>
           </div>
           <div class="metric-grid">
             <div class="metric">
@@ -1320,7 +1509,10 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
 
         <section class="panel">
           <div class="section-header">
-            <h2>Comparison</h2>
+            <div>
+              <p class="section-kicker">Biggest Change</p>
+              <h2>Comparison</h2>
+            </div>
             <strong style="color: {delta_tone};">{escape(delta_pct)}</strong>
           </div>
           <div class="kpi-grid">
@@ -1335,7 +1527,10 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
 
         <section class="panel">
           <div class="section-header">
-            <h2>Charts</h2>
+            <div>
+              <p class="section-kicker">Why It Happened</p>
+              <h2>Charts</h2>
+            </div>
           </div>
           <div class="chart-grid">
             <div class="chart-card">
@@ -1359,68 +1554,10 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
 
         <section class="panel">
           <div class="section-header">
-            <h2>Top Projects</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Project</th>
-                  <th>Sessions</th>
-                  <th>Requests</th>
-                  <th>Tokens</th>
-                  <th>Cost</th>
-                </tr>
-              </thead>
-              <tbody>{project_rows}</tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="section-header">
-            <h2>Top Sessions</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Project</th>
-                  <th>Model</th>
-                  <th>Requests</th>
-                  <th>Tokens</th>
-                  <th>Cost</th>
-                </tr>
-              </thead>
-              <tbody>{top_rows}</tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="section-header">
-            <h2>Recent Sessions</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Updated</th>
-                  <th>Project</th>
-                  <th>Model</th>
-                  <th>Requests</th>
-                  <th>Tokens</th>
-                  <th>Cost</th>
-                </tr>
-              </thead>
-              <tbody>{history_rows}</tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="section-header">
-            <h2>Costs and Insights</h2>
+            <div>
+              <p class="section-kicker">What To Look At</p>
+              <h2>Costs and Insights</h2>
+            </div>
           </div>
           <div class="split">
             <div class="kpi-grid">
@@ -1441,6 +1578,76 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
                 <ul>{recommendations_html}</ul>
                 <span class="hint">Possible savings ${window.insights.possible_savings_usd:.2f}</span>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Details</p>
+              <h2>Projects, Sessions, and History</h2>
+            </div>
+            <button class="detail-toggle" type="button" data-toggle-details="details-{escape(window.key)}" aria-expanded="false">Show details</button>
+          </div>
+          <div class="detail-section" id="details-{escape(window.key)}" hidden>
+            <div class="split">
+              <div>
+                <div class="section-header">
+                  <h3>Top Projects</h3>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Project</th>
+                        <th>Sessions</th>
+                        <th>Requests</th>
+                        <th>Tokens</th>
+                        <th>Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>{project_rows}</tbody>
+                  </table>
+                </div>
+              </div>
+              <div>
+                <div class="section-header">
+                  <h3>Top Sessions</h3>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Project</th>
+                        <th>Model</th>
+                        <th>Requests</th>
+                        <th>Tokens</th>
+                        <th>Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>{top_rows}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class="section-header" style="margin-top: 18px;">
+              <h3>Recent Sessions</h3>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Updated</th>
+                    <th>Project</th>
+                    <th>Model</th>
+                    <th>Requests</th>
+                    <th>Tokens</th>
+                    <th>Cost</th>
+                  </tr>
+                </thead>
+                <tbody>{history_rows}</tbody>
+              </table>
             </div>
           </div>
         </section>
