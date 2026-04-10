@@ -14,6 +14,8 @@ from .models import (
     CompareReport,
     ConfigView,
     CostSummary,
+    DashboardData,
+    DashboardWindow,
     DailyPoint,
     DoctorCheck,
     HistoryEntry,
@@ -261,6 +263,406 @@ def format_report(report: ReportData, options: FormatOptions | None = None) -> s
     if report.project_name is None:
         lines[4:4] = ["", format_breakdown("Top Projects", report.projects, options)]
     return "\n".join(lines)
+
+
+def format_dashboard_html(dashboard: DashboardData) -> str:
+    generated_at = dashboard.generated_at.strftime("%Y-%m-%d %H:%M %Z")
+    tab_buttons = "".join(
+        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-window="{escape(window.key)}">{escape(window.label)}</button>'
+        for index, window in enumerate(dashboard.windows)
+    )
+    window_sections = "".join(
+        _format_dashboard_window_section(window, is_active=index == 0)
+        for index, window in enumerate(dashboard.windows)
+    )
+    assets_json = json.dumps(
+        {
+            window.key: format_dashboard_svg_assets(window)
+            for window in dashboard.windows
+        },
+        separators=(",", ":"),
+    )
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Stats Dashboard</title>
+  <style>
+    :root {{
+      --bg: #f6efe3;
+      --bg-deep: #efe1cb;
+      --panel: rgba(255, 252, 246, 0.94);
+      --panel-strong: #fffaf2;
+      --ink: #1f1a17;
+      --muted: #6c6258;
+      --line: rgba(72, 53, 36, 0.14);
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --good: #166534;
+      --warn: #b45309;
+      --shadow: 0 18px 56px rgba(75, 56, 40, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(180, 83, 9, 0.16), transparent 26%),
+        linear-gradient(180deg, #fbf6ee 0%, var(--bg) 52%, var(--bg-deep) 100%);
+      min-height: 100vh;
+    }}
+    .page {{
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }}
+    .hero {{
+      padding: 28px;
+      border-radius: 28px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.88), rgba(255,247,236,0.94));
+      border: 1px solid rgba(72, 53, 36, 0.12);
+      box-shadow: var(--shadow);
+    }}
+    .eyebrow {{
+      margin: 0 0 12px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-size: 0.76rem;
+      font-weight: 700;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(2.2rem, 4vw, 4rem);
+      line-height: 0.95;
+      max-width: 10ch;
+    }}
+    .lede {{
+      margin: 14px 0 0;
+      color: var(--muted);
+      max-width: 60ch;
+      line-height: 1.6;
+      font-size: 1rem;
+    }}
+    .toolbar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 24px;
+    }}
+    .tabs, .actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }}
+    button {{
+      border: 0;
+      border-radius: 999px;
+      cursor: pointer;
+      font: inherit;
+      transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }}
+    .tab-button {{
+      padding: 12px 18px;
+      background: rgba(255,255,255,0.74);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }}
+    .tab-button.is-active {{
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 12px 30px rgba(15, 118, 110, 0.22);
+    }}
+    .action-button {{
+      padding: 11px 16px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }}
+    .action-button.primary {{
+      background: var(--accent-2);
+      color: #fff;
+    }}
+    button:hover {{
+      transform: translateY(-1px);
+    }}
+    .toolbar-note {{
+      width: 100%;
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }}
+    .window {{
+      display: none;
+      margin-top: 22px;
+    }}
+    .window.is-active {{
+      display: block;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    .panel {{
+      grid-column: span 12;
+      background: var(--panel);
+      border: 1px solid rgba(72, 53, 36, 0.12);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 22px;
+      backdrop-filter: blur(10px);
+    }}
+    .panel.hero-panel {{
+      padding-bottom: 26px;
+    }}
+    .window-title {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: space-between;
+      align-items: end;
+    }}
+    .window-title p {{
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 64ch;
+      line-height: 1.55;
+    }}
+    .delta-badge {{
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid var(--line);
+      font-weight: 700;
+      white-space: nowrap;
+    }}
+    .metric-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }}
+    .metric {{
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+    }}
+    .metric .label {{
+      display: block;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.8rem;
+    }}
+    .metric .value {{
+      display: block;
+      margin-top: 10px;
+      font-size: clamp(1.35rem, 2vw, 2.2rem);
+      line-height: 1.05;
+    }}
+    .metric .hint {{
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }}
+    .split {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    .section-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }}
+    .section-header h2, .section-header h3 {{
+      margin: 0;
+    }}
+    .kpi-grid {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .kpi {{
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }}
+    .kpi strong {{
+      display: block;
+      font-size: 1.06rem;
+      margin-bottom: 4px;
+    }}
+    .kpi span {{
+      color: var(--muted);
+      font-size: 0.92rem;
+    }}
+    .chart-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }}
+    .chart-card {{
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+    }}
+    .chart-card h3 {{
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }}
+    .chart-svg {{
+      width: 100%;
+      height: auto;
+      display: block;
+    }}
+    .chart-empty {{
+      color: var(--muted);
+      font-size: 0.95rem;
+      padding: 12px 0 6px;
+    }}
+    .table-wrap {{
+      overflow-x: auto;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }}
+    th {{
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 1.1rem;
+    }}
+    li {{
+      margin: 0 0 10px;
+      line-height: 1.5;
+    }}
+    .footer {{
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: right;
+    }}
+    @media (max-width: 960px) {{
+      .metric-grid, .split, .chart-grid, .kpi-grid {{ grid-template-columns: 1fr; }}
+    }}
+    @media print {{
+      body {{
+        background: #fff;
+      }}
+      .page {{
+        width: auto;
+        padding: 0;
+      }}
+      .hero, .panel {{
+        box-shadow: none;
+        backdrop-filter: none;
+        break-inside: avoid;
+      }}
+      .tabs, .actions, .toolbar-note {{
+        display: none;
+      }}
+      .window {{
+        display: none !important;
+      }}
+      .window.is-active {{
+        display: block !important;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Codex Stats</p>
+      <h1>Usage dashboard in the browser.</h1>
+      <p class="lede">This page opens automatically from <code>codex-stats</code> and keeps day, week, month, and all-time views in one place. Print the active tab to PDF or download shareable SVG cards from the action bar.</p>
+      <div class="toolbar">
+        <div class="tabs">{tab_buttons}</div>
+        <div class="actions">
+          <button class="action-button primary" type="button" data-action="pdf">Download PDF</button>
+          <button class="action-button" type="button" data-svg="summary-card">Summary SVG</button>
+          <button class="action-button" type="button" data-svg="cost-card">Cost SVG</button>
+          <button class="action-button" type="button" data-svg="focus-card">Focus SVG</button>
+          <button class="action-button" type="button" data-svg="projects-card">Projects SVG</button>
+        </div>
+        <p class="toolbar-note">Generated {escape(generated_at)}. PDF exports use the currently active tab.</p>
+      </div>
+    </section>
+    {window_sections}
+    <div class="footer">Generated by codex-stats</div>
+  </main>
+  <script>
+    const dashboardAssets = {assets_json};
+    const tabs = Array.from(document.querySelectorAll("[data-window]"));
+    const windows = Array.from(document.querySelectorAll(".window"));
+    let activeWindow = tabs[0]?.dataset.window || "";
+
+    function setActiveWindow(key) {{
+      activeWindow = key;
+      tabs.forEach((button) => {{
+        button.classList.toggle("is-active", button.dataset.window === key);
+      }});
+      windows.forEach((section) => {{
+        section.classList.toggle("is-active", section.dataset.window === key);
+      }});
+      document.title = `Codex Stats Dashboard - ${{
+        tabs.find((button) => button.dataset.window === key)?.textContent || "Stats"
+      }}`;
+    }}
+
+    function downloadSvg(assetKey) {{
+      const content = dashboardAssets[activeWindow]?.[assetKey];
+      if (!content) {{
+        return;
+      }}
+      const blob = new Blob([content], {{ type: "image/svg+xml;charset=utf-8" }});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `codex-stats-${{activeWindow}}-${{assetKey}}.svg`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }}
+
+    tabs.forEach((button) => {{
+      button.addEventListener("click", () => setActiveWindow(button.dataset.window));
+    }});
+    document.querySelector('[data-action="pdf"]')?.addEventListener("click", () => window.print());
+    document.querySelectorAll("[data-svg]").forEach((button) => {{
+      button.addEventListener("click", () => downloadSvg(button.dataset.svg));
+    }});
+    setActiveWindow(activeWindow);
+  </script>
+</body>
+</html>
+"""
 
 
 def format_report_markdown(report: ReportData) -> str:
@@ -788,6 +1190,16 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
 """
 
 
+def format_dashboard_svg_assets(window: DashboardWindow) -> dict[str, str]:
+    title = f"Codex Stats {window.label}"
+    return {
+        "summary-card": _format_summary_card_svg(window, title),
+        "cost-card": _format_cost_card_svg(window, title),
+        "focus-card": _format_focus_card_svg(window, title),
+        "projects-card": _format_projects_card_svg(window, title),
+    }
+
+
 def format_report_svg_assets(report: ReportData, daily_points: list[DailyPoint] | None = None) -> dict[str, str]:
     title = f"Codex Stats {report.period.title()} Report"
     if report.project_name:
@@ -803,6 +1215,238 @@ def format_report_svg_assets(report: ReportData, daily_points: list[DailyPoint] 
 
 def format_report_svg(report: ReportData, daily_points: list[DailyPoint] | None = None) -> str:
     return format_report_svg_assets(report, daily_points)["summary-card"]
+
+
+def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool) -> str:
+    delta_pct = "n/a" if window.comparison.total_tokens_delta_pct is None else f"{window.comparison.total_tokens_delta_pct:+.1f}%"
+    delta_tone = "var(--warn)" if delta_pct.startswith("+") else "var(--good)"
+    token_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.total_tokens)) for point in window.daily_points],
+        stroke="#0f766e",
+        fill="rgba(15, 118, 110, 0.12)",
+        value_formatter=lambda value: f"{int(value):,}",
+    )
+    cost_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.estimated_cost_usd)) for point in window.daily_points],
+        stroke="#b45309",
+        fill="rgba(180, 83, 9, 0.14)",
+        value_formatter=lambda value: f"${value:.2f}",
+    )
+    projects_svg = _svg_bar_chart(
+        [(entry.name, float(entry.total_tokens)) for entry in window.projects[:6]],
+        bar_color="#0f766e",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No project data available for this view.",
+    )
+    sessions_svg = _svg_bar_chart(
+        [(f"{entry.project_name} / {entry.model or 'unknown'}", float(entry.total_tokens)) for entry in window.top_sessions[:6]],
+        bar_color="#b45309",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No top session data available for this view.",
+    )
+    project_rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.name)}</td>
+          <td>{entry.sessions}</td>
+          <td>{entry.requests}</td>
+          <td>{entry.total_tokens:,}</td>
+          <td>${entry.estimated_cost_usd:.2f}</td>
+        </tr>
+        """
+        for entry in window.projects
+    ) or '<tr><td colspan="5">No data</td></tr>'
+    top_rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.project_name)}</td>
+          <td>{escape(entry.model or 'unknown')}</td>
+          <td>{entry.requests}</td>
+          <td>{entry.total_tokens:,}</td>
+          <td>${entry.estimated_cost_usd:.2f}</td>
+        </tr>
+        """
+        for entry in window.top_sessions
+    ) or '<tr><td colspan="5">No data</td></tr>'
+    history_rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(_fmt_short_dt(entry.updated_at))}</td>
+          <td>{escape(entry.project_name)}</td>
+          <td>{escape(entry.model or 'unknown')}</td>
+          <td>{entry.requests}</td>
+          <td>{entry.total_tokens:,}</td>
+          <td>${entry.estimated_cost_usd:.2f}</td>
+        </tr>
+        """
+        for entry in window.history
+    ) or '<tr><td colspan="6">No data</td></tr>'
+    anomalies_html = "".join(f"<li>{escape(item)}</li>" for item in window.insights.anomalies) or "<li>none</li>"
+    recommendations_html = "".join(f"<li>{escape(item)}</li>" for item in window.insights.recommendations) or "<li>none</li>"
+    return f"""
+    <section class="window{' is-active' if is_active else ''}" data-window="{escape(window.key)}">
+      <div class="grid">
+        <section class="panel hero-panel">
+          <div class="window-title">
+            <div>
+              <h2>{escape(window.label)}</h2>
+              <p>{escape(window.description)}</p>
+            </div>
+            <div class="delta-badge" style="color: {delta_tone};">{escape(window.comparison_label)}: {escape(delta_pct)}</div>
+          </div>
+          <div class="metric-grid">
+            <div class="metric">
+              <span class="label">Total Tokens</span>
+              <strong class="value">{window.summary.total_tokens:,}</strong>
+              <span class="hint">{window.summary.requests} requests across {window.summary.sessions} sessions</span>
+            </div>
+            <div class="metric">
+              <span class="label">Estimated Cost</span>
+              <strong class="value">${window.summary.estimated_cost_usd:.2f}</strong>
+              <span class="hint">Projected month ${window.costs.projected_monthly_cost_usd:.2f}</span>
+            </div>
+            <div class="metric">
+              <span class="label">Avg per Request</span>
+              <strong class="value">{window.summary.average_tokens_per_request:,.0f}</strong>
+              <span class="hint">Largest session {window.summary.largest_session_tokens:,} tokens</span>
+            </div>
+            <div class="metric">
+              <span class="label">Cache Ratio</span>
+              <strong class="value">{escape(_fmt_percent(window.summary.cache_ratio))}</strong>
+              <span class="hint">Top model {escape(window.summary.top_model or 'unknown')}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Comparison</h2>
+            <strong style="color: {delta_tone};">{escape(delta_pct)}</strong>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi"><strong>{window.comparison.current.total_tokens:,}</strong><span>{escape(window.comparison.current.label)}</span></div>
+            <div class="kpi"><strong>{window.comparison.previous.total_tokens:,}</strong><span>{escape(window.comparison.previous.label)}</span></div>
+            <div class="kpi"><strong>{window.comparison.total_tokens_delta:+,}</strong><span>Token delta</span></div>
+            <div class="kpi"><strong>{window.comparison.requests_delta:+d}</strong><span>Request delta</span></div>
+            <div class="kpi"><strong>${window.comparison.cost_delta_usd:+.2f}</strong><span>Cost delta</span></div>
+            <div class="kpi"><strong>{escape(window.insights.suggestion)}</strong><span>Primary recommendation</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Charts</h2>
+          </div>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Token Trend</h3>
+              {token_trend_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Cost Trend</h3>
+              {cost_trend_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Project Share</h3>
+              {projects_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Top Sessions by Tokens</h3>
+              {sessions_svg}
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Top Projects</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Sessions</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>{project_rows}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Top Sessions</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Model</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>{top_rows}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Recent Sessions</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Updated</th>
+                  <th>Project</th>
+                  <th>Model</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>{history_rows}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Costs and Insights</h2>
+          </div>
+          <div class="split">
+            <div class="kpi-grid">
+              <div class="kpi"><strong>${window.summary.estimated_cost_usd:.2f}</strong><span>{escape(window.summary.label)} total</span></div>
+              <div class="kpi"><strong>${window.comparison.current.estimated_cost_usd:.2f}</strong><span>{escape(window.comparison.current.label)} cost</span></div>
+              <div class="kpi"><strong>${window.comparison.previous.estimated_cost_usd:.2f}</strong><span>{escape(window.comparison.previous.label)} cost</span></div>
+              <div class="kpi"><strong>${window.costs.projected_monthly_cost_usd:.2f}</strong><span>Projected month</span></div>
+              <div class="kpi"><strong>${window.costs.highest_session_cost_usd:.2f}</strong><span>Highest session</span></div>
+              <div class="kpi"><strong>${window.comparison.cost_delta_usd:+.2f}</strong><span>Window delta</span></div>
+            </div>
+            <div class="split" style="grid-template-columns: 1fr 1fr;">
+              <div class="metric">
+                <span class="label">Anomalies</span>
+                <ul>{anomalies_html}</ul>
+              </div>
+              <div class="metric">
+                <span class="label">Recommended Actions</span>
+                <ul>{recommendations_html}</ul>
+                <span class="hint">Possible savings ${window.insights.possible_savings_usd:.2f}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+    """
 
 
 def _svg_line_chart(

@@ -230,6 +230,50 @@ class ReportData:
 
 
 @dataclass(frozen=True)
+class DashboardWindow:
+    key: str
+    label: str
+    description: str
+    comparison_label: str
+    summary: TimeSummary
+    comparison: CompareReport
+    projects: list[BreakdownEntry]
+    top_sessions: list[TopEntry]
+    history: list[HistoryEntry]
+    daily_points: list[DailyPoint]
+    costs: CostSummary
+    insights: InsightReport
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "description": self.description,
+            "comparison_label": self.comparison_label,
+            "summary": self.summary.to_dict(),
+            "comparison": self.comparison.to_dict(),
+            "projects": [entry.to_dict() for entry in self.projects],
+            "top_sessions": [entry.to_dict() for entry in self.top_sessions],
+            "history": [entry.to_dict() for entry in self.history],
+            "daily_points": [point.to_dict() for point in self.daily_points],
+            "costs": self.costs.to_dict(),
+            "insights": self.insights.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class DashboardData:
+    generated_at: datetime
+    windows: list[DashboardWindow]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "generated_at": self.generated_at.isoformat(),
+            "windows": [window.to_dict() for window in self.windows],
+        }
+
+
+@dataclass(frozen=True)
 class DisplayConfigView:
     color: str
     history_limit: int

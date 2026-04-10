@@ -1,207 +1,45 @@
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 import tempfile
-import time
 import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .completions import render_completion
-from .config import DisplayConfig, Paths, init_config, load_config_view, load_display_config, load_pricing_config
-from .display import (
-    as_json,
-    format_breakdown,
-    format_compare,
-    format_config,
-    format_costs,
-    format_daily,
-    format_doctor,
-    format_history,
-    format_import_summary,
-    format_insights,
-    format_report,
-    format_report_html,
-    format_report_markdown,
-    format_report_svg_assets,
-    format_report_svg,
-    format_session,
-    format_summary,
-    format_top,
-    format_watch_dashboard,
-    resolve_format_options,
-)
-from .ingest import get_session, get_session_details, iter_session_details
+from .config import Paths, PricingConfig, load_pricing_config
+from .display import format_dashboard_html
 from .metrics import (
-    build_report,
-    apply_watch_state,
-    details_for_last_days,
-    filter_details_by_project,
-    run_doctor,
-    build_watch_alerts,
-    summarize_compare,
+    local_date,
     summarize_compare_from_details,
-    summarize_compare_named,
-    summarize_costs,
     summarize_costs_from_details,
-    summarize_daily,
     summarize_daily_from_details,
-    summarize_history,
-    summarize_history_from_details,
-    summarize_imported_details,
-    summarize_insights,
-    summarize_insights_from_details,
-    summarize_last_days,
-    summarize_models,
-    summarize_models_from_details,
-    summarize_month,
-    summarize_project_drilldown,
-    summarize_projects,
-    summarize_projects_from_details,
     summarize_details,
-    summarize_today,
-    summarize_top_sessions,
+    summarize_history_from_details,
+    summarize_insights_from_details,
+    summarize_projects_from_details,
     summarize_top_sessions_from_details,
-    summarize_week,
 )
-from .otel import parse_key_value_pairs, post_otlp_metrics_json, write_otlp_metrics_json
-from .transfer import read_imports_with_summary, write_export, write_merged_export
-from .watch_state import build_watch_scope_key, load_watch_state, save_watch_state
+from .ingest import iter_session_details
+from .models import DashboardData, DashboardWindow, SessionDetails
+from .transfer import write_export
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-stats", description="Local usage analytics for Codex.")
-    parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    parser.add_argument("--days", type=int, help="Show a rolling summary for the last N days.")
-    parser.add_argument(
-        "--color",
-        choices=["auto", "always", "never"],
-        default=None,
-        help="Control ANSI color output.",
+    parser = argparse.ArgumentParser(
+        prog="codex-stats",
+        description="Open a local Codex usage dashboard in the browser or export normalized stats.",
     )
+    parser.add_argument(
+        "--output",
+        dest="dashboard_output",
+        help="Write dashboard HTML to a file instead of a temp file.",
+    )
+    parser.add_argument("--no-open", action="store_true", help="Write the dashboard without opening the browser.")
     subparsers = parser.add_subparsers(dest="command")
-
-    today_parser = subparsers.add_parser("today", help="Show today's usage summary.")
-    today_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    week_parser = subparsers.add_parser("week", help="Show the last 7 days of usage.")
-    week_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    month_parser = subparsers.add_parser("month", help="Show the last 30 days of usage.")
-    month_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    session_parser = subparsers.add_parser("session", help="Show a session summary.")
-    session_parser.add_argument("--id", dest="session_id", help="Specific session ID.")
-    session_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    models_parser = subparsers.add_parser("models", help="Show usage by model.")
-    models_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    project_parser = subparsers.add_parser("project", help="Show usage by project or inspect a single project.")
-    project_parser.add_argument("name", nargs="?", help="Optional project name for a drilldown view.")
-    project_parser.add_argument("--days", type=int, help="Limit a project drilldown to the last N days.")
-    project_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    daily_parser = subparsers.add_parser("daily", help="Show per-day usage and a trend graph.")
-    daily_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    daily_parser.add_argument("--days", type=int, default=7, help="Number of days to show.")
-
-    compare_parser = subparsers.add_parser("compare", help="Compare the last N days to the previous N days.")
-    compare_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    compare_parser.add_argument("--days", type=int, help="Days per comparison window.")
-    compare_parser.add_argument("current", nargs="?", choices=["today", "week", "month"], help="Named current window.")
-    compare_parser.add_argument("previous", nargs="?", choices=["yesterday", "last-week", "last-month"], help="Named previous window.")
-
-    history_parser = subparsers.add_parser("history", help="Show recent session history.")
-    history_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    history_parser.add_argument("--limit", type=int, help="Maximum sessions to show.")
-
-    top_parser = subparsers.add_parser("top", help="Show the largest sessions.")
-    top_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    top_parser.add_argument("--limit", type=int, default=5, help="Maximum sessions to show.")
-    top_parser.add_argument("--project", dest="project_name", help="Filter top sessions to one project.")
-
-    costs_parser = subparsers.add_parser("costs", help="Show estimated cost breakdown.")
-    costs_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    costs_parser.add_argument("--days", type=int, help="Use the last N days for the projection basis.")
-
-    insights_parser = subparsers.add_parser("insights", help="Show usage insights.")
-    insights_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    insights_parser.add_argument("--days", type=int, help="Analyze the last N days.")
 
     export_parser = subparsers.add_parser("export", help="Export normalized local stats to JSON.")
     export_parser.add_argument("output", help="Output JSON file.")
     export_parser.add_argument("--since", help="Only export the last Nd of sessions, for example 30d.")
-
-    import_parser = subparsers.add_parser("import", help="Read an exported stats JSON file.")
-    import_parser.add_argument("input", nargs="+", help="One or more input JSON files.")
-    import_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    doctor_parser = subparsers.add_parser("doctor", help="Validate local Codex data sources.")
-    doctor_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-    doctor_parser.add_argument("--strict", action="store_true", help="Exit non-zero when any doctor check fails.")
-
-    completions_parser = subparsers.add_parser("completions", help="Print shell completion script.")
-    completions_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell name.")
-
-    init_parser = subparsers.add_parser("init", help="Create a default config file.")
-    init_parser.add_argument("--force", action="store_true", help="Overwrite an existing config.")
-
-    config_parser = subparsers.add_parser("config", help="Inspect effective codex-stats configuration.")
-    config_subparsers = config_parser.add_subparsers(dest="config_command")
-    config_show_parser = config_subparsers.add_parser("show", help="Show effective config values.")
-    config_show_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    report_parser = subparsers.add_parser("report", help="Generate a shareable usage report.")
-    report_parser.add_argument("period", choices=["weekly", "monthly"], help="Report period.")
-    report_parser.add_argument("--format", choices=["text", "markdown", "html", "svg", "json"], default="text", help="Output format.")
-    report_parser.add_argument("--project", dest="project_name", help="Generate the report for one project.")
-    report_parser.add_argument("--output", help="Write the report to a file instead of stdout.")
-    report_parser.add_argument("--render", action="store_true", help="Open an HTML report in the default browser.")
-
-    merge_parser = subparsers.add_parser("merge", help="Merge one or more exported stats files into one snapshot.")
-    merge_parser.add_argument("output", help="Merged output JSON file.")
-    merge_parser.add_argument("input", nargs="+", help="Input export JSON files.")
-    merge_parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON.")
-
-    otel_parser = subparsers.add_parser("otel", help="Build or push OTLP metrics from local Codex stats.")
-    otel_parser.add_argument("--output", help="Write OTLP JSON metrics to a file.")
-    otel_parser.add_argument("--endpoint", help="POST OTLP JSON metrics to an OTLP/HTTP metrics endpoint.")
-    otel_parser.add_argument("--since", help="Limit the exported session snapshot to the last Nd, for example 30d.")
-    otel_parser.add_argument("--daily-days", type=int, default=30, help="How many daily historical points to include.")
-    otel_parser.add_argument("--service-name", default="codex-stats", help="Resource service.name value.")
-    otel_parser.add_argument(
-        "--resource-attr",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Extra OTLP resource attribute. Repeat to set multiple values.",
-    )
-    otel_parser.add_argument(
-        "--header",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Extra HTTP header for OTLP export. Repeat to set multiple values.",
-    )
-    otel_parser.add_argument("--gzip", action="store_true", help="Gzip the OTLP HTTP request body.")
-    otel_parser.add_argument("--timeout", type=float, default=10.0, help="OTLP HTTP timeout in seconds.")
-
-    watch_parser = subparsers.add_parser("watch", help="Live dashboard that refreshes Codex usage summaries.")
-    watch_parser.add_argument("--days", type=int, default=7, help="Rolling window size for the watch dashboard.")
-    watch_parser.add_argument("--interval", type=float, default=5.0, help="Refresh interval in seconds.")
-    watch_parser.add_argument("--history-limit", type=int, default=5, help="Recent sessions to display.")
-    watch_parser.add_argument("--top-limit", type=int, default=5, help="Top sessions to display.")
-    watch_parser.add_argument("--project", dest="project_name", help="Restrict the dashboard to one project.")
-    watch_parser.add_argument("--alert-cost-usd", type=float, help="Raise an alert when estimated cost meets this threshold.")
-    watch_parser.add_argument("--alert-tokens", type=int, help="Raise an alert when total tokens meet this threshold.")
-    watch_parser.add_argument("--alert-requests", type=int, help="Raise an alert when request count meets this threshold.")
-    watch_parser.add_argument("--alert-delta-pct", type=float, help="Raise an alert when token growth versus the previous window meets this percent.")
-    watch_parser.add_argument("--reset-state", action="store_true", help="Ignore saved watch state and rebuild the alert baseline.")
-    watch_parser.add_argument("--once", action="store_true", help="Render one snapshot and exit.")
-
     return parser
 
 
@@ -209,424 +47,207 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     paths = Paths.discover()
-    try:
-        display_config = load_display_config(paths)
-    except Exception:
-        display_config = DisplayConfig()
-    options = resolve_format_options(args.color or display_config.color)
-
-    if args.command in (None, "today"):
-        summary = summarize_last_days(paths, args.days) if args.days else summarize_today(paths)
-        if args.json_output:
-            print(as_json(summary.to_dict()))
-        else:
-            print(format_summary(summary, options))
-        return 0
-
-    if args.command == "week":
-        summary = summarize_week(paths)
-        if args.json_output:
-            print(as_json(summary.to_dict()))
-        else:
-            print(format_summary(summary, options))
-        return 0
-
-    if args.command == "month":
-        summary = summarize_month(paths)
-        if args.json_output:
-            print(as_json(summary.to_dict()))
-        else:
-            print(format_summary(summary, options))
-        return 0
-
-    if args.command == "session":
-        session = get_session(paths, session_id=args.session_id)
-        if session is None:
-            print("No Codex session found.", file=sys.stderr)
-            return 1
-        details = get_session_details(paths, session)
-        if args.json_output:
-            print(as_json(details.to_dict()))
-        else:
-            print(format_session(details, options, load_pricing_config(paths)))
-        return 0
-
-    if args.command == "models":
-        entries = summarize_models(paths)
-        if args.json_output:
-            print(as_json({"models": [entry.to_dict() for entry in entries]}))
-        else:
-            print(format_breakdown("Model Usage", entries, options))
-        return 0
-
-    if args.command == "project":
-        if args.name:
-            summary = summarize_project_drilldown(paths, args.name, days=args.days)
-            if args.json_output:
-                print(as_json(summary.to_dict()))
-            else:
-                print(format_summary(summary, options))
-        else:
-            entries = summarize_projects(paths)
-            if args.json_output:
-                print(as_json({"projects": [entry.to_dict() for entry in entries]}))
-            else:
-                print(format_breakdown("Project Usage", entries, options))
-        return 0
-
-    if args.command == "daily":
-        points = summarize_daily(paths, days=args.days)
-        if args.json_output:
-            print(as_json({"days": [point.to_dict() for point in points]}))
-        else:
-            print(format_daily(points, options))
-        return 0
-
-    if args.command == "compare":
-        if args.current and args.previous:
-            report = summarize_compare_named(paths, args.current, args.previous)
-        else:
-            report = summarize_compare(paths, days=args.days or display_config.compare_days)
-        if args.json_output:
-            print(as_json(report.to_dict()))
-        else:
-            print(format_compare(report, options))
-        return 0
-
-    if args.command == "history":
-        entries = summarize_history(paths, limit=args.limit or display_config.history_limit)
-        if args.json_output:
-            print(as_json({"history": [entry.to_dict() for entry in entries]}))
-        else:
-            print(format_history(entries, options))
-        return 0
-
-    if args.command == "top":
-        if args.project_name:
-            pricing = load_pricing_config(paths)
-            details = iter_session_details(paths)
-            entries = summarize_top_sessions_from_details(
-                details,
-                pricing,
-                limit=args.limit,
-                project_name=args.project_name,
-            )
-        else:
-            entries = summarize_top_sessions(paths, limit=args.limit)
-        if args.json_output:
-            print(as_json({"top": [entry.to_dict() for entry in entries]}))
-        else:
-            print(format_top(entries, options))
-        return 0
-
-    if args.command == "costs":
-        if args.days:
-            details = details_for_last_days(paths, args.days)
-            summary = summarize_details_for_range(args.days, details)
-            costs = summarize_costs_from_details(details, today=summary, week=summary, month=summary)
-        else:
-            costs = summarize_costs(paths)
-        if args.json_output:
-            print(as_json(costs.to_dict()))
-        else:
-            print(format_costs(costs, options))
-        return 0
-
-    if args.command == "insights":
-        if args.days:
-            details = details_for_last_days(paths, args.days)
-            summary = summarize_details_for_range(args.days, details)
-            insights = summarize_insights_from_details(details, month=summary)
-        else:
-            insights = summarize_insights(paths)
-        if args.json_output:
-            print(as_json(insights.to_dict()))
-        else:
-            print(format_insights(insights, options))
-        return 0
 
     if args.command == "export":
         output_path = write_export(paths, Path(args.output).expanduser(), since=args.since)
         print(f"Exported stats to {output_path}")
         return 0
 
-    if args.command == "import":
-        pricing = load_pricing_config(paths)
-        details, import_summary = read_imports_with_summary([Path(input_path).expanduser() for input_path in args.input])
-        summary = summarize_imported_details(details, pricing=pricing)
-        if args.json_output:
-            print(
-                as_json(
-                    {
-                        "import_summary": import_summary.to_dict(),
-                        "summary": summary.to_dict(),
-                        "models": [entry.to_dict() for entry in summarize_models_from_details(details, pricing)],
-                        "projects": [entry.to_dict() for entry in summarize_projects_from_details(details, pricing)],
-                        "history": [entry.to_dict() for entry in summarize_history_from_details(details, pricing)],
-                        "top": [entry.to_dict() for entry in summarize_top_sessions_from_details(details, pricing)],
-                        "costs": summarize_costs_from_details(details, pricing=pricing).to_dict(),
-                        "insights": summarize_insights_from_details(details, pricing=pricing).to_dict(),
-                    }
-                )
-            )
-        else:
-            print(format_import_summary(import_summary, options))
-            print()
-            print(format_summary(summary, options))
-        return 0
+    if args.command is not None:
+        parser.print_help()
+        return 1
 
-    if args.command == "doctor":
-        checks = run_doctor(paths)
-        if args.json_output:
-            print(as_json({"checks": [check.to_dict() for check in checks]}))
-        else:
-            print(format_doctor(checks, options))
-        if args.strict and any((not check.ok) and check.severity != "warning" for check in checks):
-            return 1
-        return 0
-
-    if args.command == "init":
-        config_path = init_config(paths, force=args.force)
-        print(f"Initialized config at {config_path}")
-        return 0
-
-    if args.command == "config" and args.config_command == "show":
-        config_view = load_config_view(paths)
-        if args.json_output:
-            print(as_json(config_view.to_dict()))
-        else:
-            print(format_config(config_view, options))
-        return 0
-
-    if args.command == "completions":
-        print(render_completion(args.shell), end="")
-        return 0
-
-    if args.command == "report":
-        if args.render and args.format not in {"html", "svg"}:
-            print("--render requires --format html or --format svg", file=sys.stderr)
-            return 1
-        report = build_report(paths, period=args.period, project_name=args.project_name)
-        daily_points = None
-        if args.format in {"html", "svg"}:
-            report_days = 7 if args.period == "weekly" else 30
-            report_details = filter_details_by_project(details_for_last_days(paths, report_days), args.project_name)
-            daily_points = summarize_daily_from_details(report_details, days=report_days)
-        if args.format == "json":
-            content = as_json(report.to_dict())
-        elif args.format == "html":
-            content = format_report_html(report, daily_points=daily_points)
-        elif args.format == "svg":
-            assets = format_report_svg_assets(report, daily_points=daily_points)
-            output_dir = _write_report_svg_assets(
-                assets,
-                args.output,
-                base_name=_default_report_basename(args.period, args.project_name),
-            )
-            print(f"Wrote SVG assets to {output_dir}")
-            if args.render:
-                summary_path = output_dir / f"{_default_report_basename(args.period, args.project_name)}-summary-card.svg"
-                _open_report_in_browser(summary_path)
-                print(f"Opened report in browser: {summary_path}")
-            return 0
-        elif args.format == "markdown":
-            content = format_report_markdown(report)
-        else:
-            content = format_report(report, options)
-        if args.output or args.render:
-            output_path = _write_report_output(
-                content,
-                args.output,
-                suffix=f".{args.format}" if args.format in {"html", "svg"} else ".txt",
-            )
-            print(f"Wrote report to {output_path}")
-            if args.render:
-                _open_report_in_browser(output_path)
-                print(f"Opened report in browser: {output_path}")
-        else:
-            print(content)
-        return 0
-
-    if args.command == "merge":
-        output_path, import_summary = write_merged_export(
-            [Path(input_path).expanduser() for input_path in args.input],
-            Path(args.output).expanduser(),
-        )
-        if args.json_output:
-            print(as_json({"output_path": str(output_path), "import_summary": import_summary.to_dict()}))
-        else:
-            print(format_import_summary(import_summary, options))
-            print()
-            print(f"Merged stats to {output_path}")
-        return 0
-
-    if args.command == "otel":
-        if not args.output and not args.endpoint:
-            print("otel requires --output and/or --endpoint", file=sys.stderr)
-            return 1
-        try:
-            resource_attributes = parse_key_value_pairs(args.resource_attr)
-            headers = parse_key_value_pairs(args.header)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        if args.output:
-            output_path = write_otlp_metrics_json(
-                paths,
-                Path(args.output).expanduser(),
-                since=args.since,
-                daily_days=args.daily_days,
-                service_name=args.service_name,
-                resource_attributes=resource_attributes,
-            )
-            print(f"Wrote OTLP metrics to {output_path}")
-        if args.endpoint:
-            status_code, body = post_otlp_metrics_json(
-                paths,
-                args.endpoint,
-                since=args.since,
-                daily_days=args.daily_days,
-                service_name=args.service_name,
-                resource_attributes=resource_attributes,
-                headers=headers,
-                gzip_payload=args.gzip,
-                timeout_seconds=args.timeout,
-            )
-            print(f"Posted OTLP metrics to {args.endpoint} (HTTP {status_code})")
-            if body.strip():
-                print(body)
-        return 0
-
-    if args.command == "watch":
-        if args.json_output and not args.once:
-            print("watch only supports --json with --once", file=sys.stderr)
-            return 1
-        interval = max(args.interval, 0.2)
-        scope_key = build_watch_scope_key(
-            days=max(args.days, 1),
-            project_name=args.project_name,
-            cost_threshold_usd=args.alert_cost_usd,
-            token_threshold=args.alert_tokens,
-            request_threshold=args.alert_requests,
-            delta_pct_threshold=args.alert_delta_pct,
-        )
-        if args.reset_state:
-            seen_session_ids = set()
-            seen_alert_keys = set()
-            baseline_ready = False
-        else:
-            try:
-                persisted_state = load_watch_state(paths, scope_key)
-                seen_session_ids = set(persisted_state.seen_session_ids)
-                seen_alert_keys = set(persisted_state.seen_alert_keys)
-                baseline_ready = bool(seen_session_ids or seen_alert_keys)
-            except OSError:
-                seen_session_ids = set()
-                seen_alert_keys = set()
-                baseline_ready = False
-        while True:
-            current_time = datetime.now().astimezone()
-            pricing = load_pricing_config(paths)
-            current_details = filter_details_by_project(
-                details_for_last_days(paths, args.days, now=current_time),
-                args.project_name,
-            )
-            previous_details = filter_details_by_project(
-                details_for_last_days(paths, args.days, now=current_time - timedelta(days=max(args.days, 1))),
-                args.project_name,
-            )
-            summary = summarize_details(f"last {max(args.days, 1)} days", current_details, pricing)
-            compare = summarize_compare_from_details(
-                current_details,
-                previous_details,
-                current_label=f"last {max(args.days, 1)} days",
-                previous_label=f"prev {max(args.days, 1)} days",
-                pricing=pricing,
-            )
-            daily = summarize_daily_from_details(current_details, days=max(args.days, 1), now=current_time, pricing=pricing)
-            history = summarize_history_from_details(current_details, pricing, limit=args.history_limit)
-            top = summarize_top_sessions_from_details(current_details, pricing, limit=args.top_limit)
-            insights = summarize_insights_from_details(current_details, pricing=pricing, month=summary, now=current_time)
-            alerts = build_watch_alerts(
-                summary,
-                compare,
-                insights,
-                cost_threshold_usd=args.alert_cost_usd,
-                token_threshold=args.alert_tokens,
-                request_threshold=args.alert_requests,
-                delta_pct_threshold=args.alert_delta_pct,
-            )
-            alerts, seen_session_ids, seen_alert_keys = apply_watch_state(
-                current_details,
-                alerts,
-                seen_session_ids=seen_session_ids,
-                seen_alert_keys=seen_alert_keys,
-                baseline_ready=baseline_ready,
-            )
-            baseline_ready = True
-            try:
-                save_watch_state(
-                    paths,
-                    scope_key,
-                    seen_session_ids=seen_session_ids,
-                    seen_alert_keys=seen_alert_keys,
-                )
-            except OSError:
-                pass
-            if args.json_output:
-                print(
-                    as_json(
-                        {
-                            "refreshed_at": current_time.isoformat(),
-                            "summary": summary.to_dict(),
-                            "comparison": compare.to_dict(),
-                            "daily": [point.to_dict() for point in daily],
-                            "top": [entry.to_dict() for entry in top],
-                            "history": [entry.to_dict() for entry in history],
-                            "insights": insights.to_dict(),
-                            "alerts": [alert.to_dict() for alert in alerts],
-                        }
-                    )
-                )
-                return 0
-            frame = format_watch_dashboard(
-                summary,
-                compare,
-                daily,
-                top,
-                history,
-                insights,
-                alerts,
-                now=current_time,
-                interval_seconds=interval,
-                scope_label=args.project_name or f"last {max(args.days, 1)} days",
-                options=options,
-            )
-            if os.isatty(1):
-                print("\033[2J\033[H", end="")
-            print(frame)
-            if args.once or not os.isatty(1):
-                return 0
-            try:
-                time.sleep(interval)
-            except KeyboardInterrupt:
-                print()
-                return 0
-
-    parser.print_help()
-    return 1
-
-def summarize_details_for_range(days: int, details):
-    return summarize_imported_details(details, label=f"last {max(days, 1)} days")
+    dashboard = _build_dashboard(paths)
+    output_path = _write_dashboard_output(format_dashboard_html(dashboard), args.dashboard_output)
+    print(f"Wrote dashboard to {output_path}")
+    if not args.no_open:
+        _open_report_in_browser(output_path)
+        print(f"Opened dashboard in browser: {output_path}")
+    return 0
 
 
-def _write_report_output(content: str, output: str | None, *, suffix: str, default_name: str | None = None) -> Path:
+def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData:
+    current_time = now or datetime.now().astimezone()
+    pricing = load_pricing_config(paths)
+    all_details = iter_session_details(paths)
+
+    today_details = _details_for_last_days(all_details, 1, current_time)
+    week_details = _details_for_last_days(all_details, 7, current_time)
+    month_details = _details_for_last_days(all_details, 30, current_time)
+
+    windows = [
+        _build_window(
+            key="day",
+            label="Day",
+            description="Today’s usage with a direct comparison to yesterday.",
+            current_details=today_details,
+            previous_details=_details_for_previous_window(all_details, 1, current_time),
+            current_label="today",
+            previous_label="yesterday",
+            trend_days=1,
+            all_details=all_details,
+            pricing=pricing,
+            now=current_time,
+        ),
+        _build_window(
+            key="week",
+            label="Week",
+            description="Rolling 7-day totals, recent trend, and the busiest sessions this week.",
+            current_details=week_details,
+            previous_details=_details_for_previous_window(all_details, 7, current_time),
+            current_label="last 7 days",
+            previous_label="previous 7 days",
+            trend_days=7,
+            all_details=all_details,
+            pricing=pricing,
+            now=current_time,
+        ),
+        _build_window(
+            key="month",
+            label="Month",
+            description="Rolling 30-day totals with project concentration and cost pressure.",
+            current_details=month_details,
+            previous_details=_details_for_previous_window(all_details, 30, current_time),
+            current_label="last 30 days",
+            previous_label="previous 30 days",
+            trend_days=30,
+            all_details=all_details,
+            pricing=pricing,
+            now=current_time,
+        ),
+        _build_all_time_window(
+            all_details=all_details,
+            pricing=pricing,
+            now=current_time,
+        ),
+    ]
+    return DashboardData(generated_at=current_time, windows=windows)
+
+
+def _build_window(
+    *,
+    key: str,
+    label: str,
+    description: str,
+    current_details: list[SessionDetails],
+    previous_details: list[SessionDetails],
+    current_label: str,
+    previous_label: str,
+    trend_days: int,
+    all_details: list[SessionDetails],
+    pricing: PricingConfig,
+    now: datetime,
+) -> DashboardWindow:
+    summary = summarize_details(current_label, current_details, pricing)
+    comparison = summarize_compare_from_details(
+        current_details,
+        previous_details,
+        current_label=current_label,
+        previous_label=previous_label,
+        pricing=pricing,
+    )
+    insights = summarize_insights_from_details(current_details, pricing=pricing, month=summary, now=now)
+    costs = summarize_costs_from_details(
+        current_details,
+        pricing=pricing,
+        today=summary,
+        week=summary,
+        month=summary,
+        now=now,
+    )
+    history_source = current_details if current_details else all_details
+    return DashboardWindow(
+        key=key,
+        label=label,
+        description=description,
+        comparison_label=f"{current_label} vs {previous_label}",
+        summary=summary,
+        comparison=comparison,
+        projects=summarize_projects_from_details(current_details, pricing)[:10],
+        top_sessions=summarize_top_sessions_from_details(current_details, pricing, limit=10),
+        history=summarize_history_from_details(history_source, pricing, limit=10),
+        daily_points=summarize_daily_from_details(current_details, days=max(trend_days, 1), now=now, pricing=pricing),
+        costs=costs,
+        insights=insights,
+    )
+
+
+def _build_all_time_window(
+    *,
+    all_details: list[SessionDetails],
+    pricing: PricingConfig,
+    now: datetime,
+) -> DashboardWindow:
+    summary = summarize_details("all time", all_details, pricing)
+    recent_details = _details_for_last_days(all_details, 30, now)
+    previous_details = _details_for_previous_window(all_details, 30, now)
+    comparison = summarize_compare_from_details(
+        recent_details,
+        previous_details,
+        current_label="recent 30 days",
+        previous_label="prior 30 days",
+        pricing=pricing,
+    )
+    costs = summarize_costs_from_details(all_details, pricing=pricing, now=now)
+    trend_days = _all_time_trend_days(all_details, now)
+    trend_details = _details_for_last_days(all_details, trend_days, now)
+    return DashboardWindow(
+        key="all",
+        label="All Time",
+        description=f"All recorded sessions. Trend charts cover the last {trend_days} days so the page stays readable.",
+        comparison_label="recent 30 days vs prior 30 days",
+        summary=summary,
+        comparison=comparison,
+        projects=summarize_projects_from_details(all_details, pricing)[:10],
+        top_sessions=summarize_top_sessions_from_details(all_details, pricing, limit=10),
+        history=summarize_history_from_details(all_details, pricing, limit=10),
+        daily_points=summarize_daily_from_details(trend_details, days=trend_days, now=now, pricing=pricing),
+        costs=costs,
+        insights=summarize_insights_from_details(all_details, pricing=pricing, month=summary, now=now),
+    )
+
+
+def _details_for_last_days(details: list[SessionDetails], days: int, now: datetime) -> list[SessionDetails]:
+    safe_days = max(days, 1)
+    end_day = now.date()
+    start_day = end_day - timedelta(days=safe_days - 1)
+    return _filter_details_between(details, start_day, end_day, now)
+
+
+def _details_for_previous_window(details: list[SessionDetails], days: int, now: datetime) -> list[SessionDetails]:
+    safe_days = max(days, 1)
+    end_day = now.date() - timedelta(days=safe_days)
+    start_day = end_day - timedelta(days=safe_days - 1)
+    return _filter_details_between(details, start_day, end_day, now)
+
+
+def _filter_details_between(
+    details: list[SessionDetails],
+    start_day,
+    end_day,
+    now: datetime,
+) -> list[SessionDetails]:
+    return [
+        detail
+        for detail in details
+        if start_day <= local_date(detail.session.created_at, now.tzinfo) <= end_day
+    ]
+
+
+def _all_time_trend_days(details: list[SessionDetails], now: datetime) -> int:
+    if not details:
+        return 30
+    newest_day = max(local_date(detail.session.created_at, now.tzinfo) for detail in details)
+    oldest_day = min(local_date(detail.session.created_at, now.tzinfo) for detail in details)
+    span_days = (newest_day - oldest_day).days + 1
+    return min(max(span_days, 1), 90)
+
+
+def _write_dashboard_output(content: str, output: str | None) -> Path:
     if output:
         output_path = Path(output).expanduser()
-    elif default_name:
-        output_path = Path.cwd() / default_name
     else:
-        handle = tempfile.NamedTemporaryFile(prefix="codex-stats-report-", suffix=suffix, delete=False)
+        handle = tempfile.NamedTemporaryFile(prefix="codex-stats-dashboard-", suffix=".html", delete=False)
         handle.close()
         output_path = Path(handle.name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -636,31 +257,6 @@ def _write_report_output(content: str, output: str | None, *, suffix: str, defau
 
 def _open_report_in_browser(path: Path) -> None:
     webbrowser.open(path.resolve().as_uri())
-
-
-def _default_report_filename(period: str, project_name: str | None, fmt: str) -> str:
-    if project_name:
-        safe_project = "".join(char.lower() if char.isalnum() else "-" for char in project_name).strip("-")
-        safe_project = safe_project or "project"
-        return f"codex-stats-{period}-{safe_project}.{fmt}"
-    return f"codex-stats-{period}.{fmt}"
-
-
-def _default_report_basename(period: str, project_name: str | None) -> str:
-    if project_name:
-        safe_project = "".join(char.lower() if char.isalnum() else "-" for char in project_name).strip("-")
-        safe_project = safe_project or "project"
-        return f"codex-stats-{period}-{safe_project}"
-    return f"codex-stats-{period}"
-
-
-def _write_report_svg_assets(assets: dict[str, str], output: str | None, *, base_name: str) -> Path:
-    output_dir = Path(output).expanduser() if output else Path.cwd()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for asset_name, content in assets.items():
-        asset_path = output_dir / f"{base_name}-{asset_name}.svg"
-        asset_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
-    return output_dir
 
 
 if __name__ == "__main__":
