@@ -10,7 +10,7 @@ It reads your local Codex state from `~/.codex` and surfaces:
 - estimated token-based cost
 - anomaly-aware usage insights and recommendations
 - export for cross-device snapshots
-- shareable SVG cards and browser PDF export from the dashboard
+- shareable JPG cards and browser PDF export from the dashboard
 
 ## Install
 
@@ -41,7 +41,7 @@ Inside the dashboard, use the action bar to:
 
 - switch between `Day`, `Week`, `Month`, and `All Time`
 - print the active tab to PDF
-- download shareable SVG cards for summary, cost, focus, and project share
+- download shareable JPG cards for summary, cost, focus, and project share
 
 ## How It Works
 
@@ -60,11 +60,18 @@ It reads local Codex artifacts, including:
 
 ## Roadmap
 
-The current priority list lives in [docs/roadmap.md](/Users/vivek/Desktop/Salad/codex_stats/docs/roadmap.md).
+The current priority list lives in [docs/roadmap.md](https://github.com/vivek378521/codex-stats/blob/main/docs/roadmap.md).
 
 ## Shareable Assets
 
-Share-ready assets now live under [docs/assets/codex-stats-share-card.svg](/Users/vivek/Desktop/Salad/codex_stats/docs/assets/codex-stats-share-card.svg), and the dashboard can generate a fresh SVG download set directly from your local usage data.
+The dashboard exports JPG cards with names like:
+
+- [docs/assets/codex-stats-week-summary-card.jpg](https://github.com/vivek378521/codex-stats/blob/main/docs/assets/codex-stats-week-summary-card.jpg)
+- [docs/assets/codex-stats-week-cost-card.jpg](https://github.com/vivek378521/codex-stats/blob/main/docs/assets/codex-stats-week-cost-card.jpg)
+- [docs/assets/codex-stats-week-focus-card.jpg](https://github.com/vivek378521/codex-stats/blob/main/docs/assets/codex-stats-week-focus-card.jpg)
+- [docs/assets/codex-stats-week-projects-card.jpg](https://github.com/vivek378521/codex-stats/blob/main/docs/assets/codex-stats-week-projects-card.jpg)
+
+These sample assets were generated from the current renderer so the docs match what the dashboard actually downloads.
 
 ## Development
 

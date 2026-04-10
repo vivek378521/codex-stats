@@ -1,39 +1,39 @@
 # Roadmap
 
-This is the prioritized path to make `codex-stats` more operational, more visual, and easier to adopt.
+This is the prioritized path for making `codex-stats` a cleaner browser-first stats experience with simple sharing.
 
 ## Now
 
-1. Grafana starter kit
-   Added in `examples/grafana/` so OTLP export is immediately usable with a dashboard and collector config.
-2. Better OTLP documentation
-   Make setup and expected metric names obvious.
-3. `watch` mode
-   Added as a live terminal dashboard for rolling summaries, trends, and recent sessions.
+1. Sharper dashboard polish
+   Keep improving hierarchy, readability, spacing, and mobile behavior so the page feels obvious at a glance.
+2. Stronger export flow
+   Make PDF and JPG exports reliable, predictable, and visually consistent across all time ranges.
+3. Better empty and edge states
+   Handle sparse data, first-run usage, and low-history comparisons without awkward or confusing panels.
 
 ## Next
 
-1. Budget alerts
-   Add config thresholds for cost, tokens, and request spikes.
-2. Project grouping
-   Allow aliases like `frontend`, `backend`, or `client-work` to combine multiple repos.
-3. Better watch triggers
-   Highlight new sessions, request spikes, and unusually expensive refreshes with stateful change detection.
+1. Range-specific summaries
+   Surface clearer headlines for `Today`, `Last 7 Days`, `Last 30 Days`, and `All Time`.
+2. Session and project drilldowns
+   Let people click from the high-level dashboard into one project or one session without leaving the browser flow.
+3. Save-ready report views
+   Add cleaner layouts tuned specifically for PDF export, README embeds, and social/share cards.
 
 ## Later
 
-1. Terminal dashboard
-   A TUI with live panes for totals, trends, projects, and sessions.
-2. Session timeline
-   Visualize token growth and request cadence inside a session.
-3. What-if cost simulator
-   Re-price historical usage under different models or rates.
+1. Team rollups
+   Combine exports from multiple machines into one dashboard view.
+2. Historical comparison tools
+   Compare custom windows, not just the built-in ranges.
+3. Cost simulation
+   Re-price historical usage under different token rates or model assumptions.
 
 ## Nice To Have
 
-1. Team rollups
-   Merge exports from multiple machines into org-level reports.
-2. Shareable digests
-   Generate polished weekly reports for Slack, email, or PR comments.
-3. Efficiency scoring
-   Rank projects or sessions by tokens per request, cache ratio, and session sprawl.
+1. Lightweight watch view
+   Reintroduce a simple live-refresh mode only if it fits the browser-first product cleanly.
+2. Project grouping
+   Allow aliases such as `frontend`, `backend`, or `client-work` to combine several repos.
+3. Publishing helpers
+   Generate release-note-ready or changelog-ready stat summaries automatically.
