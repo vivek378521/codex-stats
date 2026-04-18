@@ -1353,6 +1353,7 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
           <div class="chart-card chart-wide">
             <h3>Activity Heatmap</h3>
             {heatmap_svg}
+            <div class="chart-empty">Hours are shown in local time.</div>
           </div>
         </div>
       </section>
@@ -1630,6 +1631,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
             <div class="chart-card chart-wide">
               <h3>Activity Heatmap</h3>
               {heatmap_svg}
+              <div class="chart-empty">Hours are shown in local time.</div>
             </div>
           </div>
         </section>
@@ -1858,16 +1860,18 @@ def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
         f'<text x="{left - 10}" y="{top + weekday * (cell_height + gap) + 17}" text-anchor="end" font-size="12" fill="#6d645d">{label}</text>'
         for weekday, label in enumerate(weekday_labels)
     )
+    legend_start_x = 520
+    legend_y = 252
     legend = "".join(
-        f'<rect x="{560 + index * 34}" y="256" width="24" height="14" rx="7" fill="{_heatmap_color(index / 4)}" />'
+        f'<rect x="{legend_start_x + index * 34}" y="{legend_y}" width="24" height="14" rx="7" fill="{_heatmap_color(index / 4)}" />'
         for index in range(5)
     )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Activity heatmap">'
         f'{hour_labels}{day_labels}{"".join(rects)}'
-        f'<text x="560" y="248" font-size="11" fill="#6d645d">Lower activity</text>'
+        f'<text x="{legend_start_x}" y="{legend_y - 8}" font-size="11" fill="#6d645d">Lower activity</text>'
         f'{legend}'
-        f'<text x="700" y="268" font-size="11" text-anchor="end" fill="#6d645d">Higher activity</text>'
+        f'<text x="{legend_start_x + (4 * 34) + 24}" y="{legend_y - 8}" text-anchor="end" font-size="11" fill="#6d645d">Higher activity</text>'
         f"</svg>"
     )
 
