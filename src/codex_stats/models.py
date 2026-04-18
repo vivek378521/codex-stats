@@ -49,6 +49,11 @@ class SessionDetails:
             return self.total_tokens_from_rollout
         return self.session.tokens_used
 
+    def duration_minutes(self) -> float:
+        started = self.started_at or self.session.created_at
+        seconds = max((self.session.updated_at - started).total_seconds(), 0.0)
+        return seconds / 60.0
+
     def to_dict(self) -> dict[str, Any]:
         payload = {
             "session": self.session.to_dict(),
@@ -79,6 +84,16 @@ class TimeSummary:
     average_tokens_per_request: float
     cache_ratio: float | None
     largest_session_tokens: int
+    requests_per_session: float
+    median_tokens_per_session: float
+    median_requests_per_session: float
+    average_session_duration_minutes: float
+    median_session_duration_minutes: float
+    tokens_per_minute: float
+    project_concentration_top1_pct: float | None
+    project_concentration_top3_pct: float | None
+    longest_active_streak_days: int
+    model_switching_rate: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -151,6 +166,17 @@ class DailyPoint:
 
 
 @dataclass(frozen=True)
+class HeatmapCell:
+    weekday: int
+    hour: int
+    session_count: int
+    total_tokens: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class CompareReport:
     current: TimeSummary
     previous: TimeSummary
@@ -215,6 +241,7 @@ class ReportData:
     top_sessions: list[TopEntry]
     costs: CostSummary
     insights: InsightReport
+    activity_heatmap: list[HeatmapCell]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -226,6 +253,7 @@ class ReportData:
             "top_sessions": [entry.to_dict() for entry in self.top_sessions],
             "costs": self.costs.to_dict(),
             "insights": self.insights.to_dict(),
+            "activity_heatmap": [cell.to_dict() for cell in self.activity_heatmap],
         }
 
 
@@ -243,6 +271,7 @@ class DashboardWindow:
     daily_points: list[DailyPoint]
     costs: CostSummary
     insights: InsightReport
+    activity_heatmap: list[HeatmapCell]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -258,6 +287,7 @@ class DashboardWindow:
             "daily_points": [point.to_dict() for point in self.daily_points],
             "costs": self.costs.to_dict(),
             "insights": self.insights.to_dict(),
+            "activity_heatmap": [cell.to_dict() for cell in self.activity_heatmap],
         }
 
 

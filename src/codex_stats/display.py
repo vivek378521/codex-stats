@@ -18,6 +18,7 @@ from .models import (
     DashboardWindow,
     DailyPoint,
     DoctorCheck,
+    HeatmapCell,
     HistoryEntry,
     InsightReport,
     ImportSummary,
@@ -55,6 +56,9 @@ def format_summary(summary: TimeSummary, options: FormatOptions | None = None) -
         ("Total tokens", f"{summary.total_tokens:,}"),
         ("Estimated cost", f"${summary.estimated_cost_usd:.2f}"),
         ("Avg/request", f"{summary.average_tokens_per_request:,.0f}"),
+        ("Tokens/min", f"{summary.tokens_per_minute:,.0f}"),
+        ("Avg session", _fmt_minutes(summary.average_session_duration_minutes)),
+        ("Median session", _fmt_minutes(summary.median_session_duration_minutes)),
         ("Cache ratio", cache_ratio),
         ("Usage", usage_bar),
     ]
@@ -639,6 +643,9 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       border-radius: 18px;
       padding: 16px;
     }}
+    .chart-card.chart-wide {{
+      grid-column: 1 / -1;
+    }}
     .chart-card h3 {{
       margin: 0 0 10px;
       font-size: 1rem;
@@ -999,6 +1006,7 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
         value_formatter=lambda value: f"{int(value):,}",
         empty_label="No top session data available.",
     )
+    heatmap_svg = _svg_heatmap_chart(report.activity_heatmap)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1211,6 +1219,9 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
       border-radius: 18px;
       padding: 16px;
     }}
+    .chart-card.chart-wide {{
+      grid-column: 1 / -1;
+    }}
     .chart-card h3 {{
       margin: 0 0 10px;
       font-size: 1rem;
@@ -1276,12 +1287,12 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
         <div class="metric">
           <span class="label">Avg per Request</span>
           <strong class="value">{report.summary.average_tokens_per_request:,.0f}</strong>
-          <span class="hint">Largest session {report.summary.largest_session_tokens:,} tokens</span>
+          <span class="hint">{report.summary.tokens_per_minute:,.0f} tokens per minute</span>
         </div>
         <div class="metric">
           <span class="label">Cache Ratio</span>
           <strong class="value">{escape(_fmt_percent(report.summary.cache_ratio))}</strong>
-          <span class="hint">Possible savings ${report.insights.possible_savings_usd:.2f}</span>
+          <span class="hint">Median session {_fmt_minutes(report.summary.median_session_duration_minutes)}</span>
         </div>
       </div>
     </section>
@@ -1299,6 +1310,22 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
           <div class="kpi"><strong>{report.comparison.requests_delta:+d}</strong><span>Request delta</span></div>
           <div class="kpi"><strong>${report.comparison.cost_delta_usd:+.2f}</strong><span>Cost delta</span></div>
           <div class="kpi"><strong>{escape(report.summary.top_model or "unknown")}</strong><span>Most used model</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <h2>Work Patterns</h2>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><strong>{_fmt_minutes(report.summary.average_session_duration_minutes)}</strong><span>Average session length</span></div>
+          <div class="kpi"><strong>{_fmt_minutes(report.summary.median_session_duration_minutes)}</strong><span>Median session length</span></div>
+          <div class="kpi"><strong>{report.summary.requests_per_session:.1f}</strong><span>Requests per session</span></div>
+          <div class="kpi"><strong>{report.summary.median_tokens_per_session:,.0f}</strong><span>Median tokens per session</span></div>
+          <div class="kpi"><strong>{escape(_fmt_percent(report.summary.project_concentration_top1_pct))}</strong><span>Top project concentration</span></div>
+          <div class="kpi"><strong>{escape(_fmt_percent(report.summary.project_concentration_top3_pct))}</strong><span>Top 3 project concentration</span></div>
+          <div class="kpi"><strong>{report.summary.longest_active_streak_days}</strong><span>Longest active streak</span></div>
+          <div class="kpi"><strong>{escape(_fmt_percent(report.summary.model_switching_rate))}</strong><span>Model switching rate</span></div>
         </div>
       </section>
 
@@ -1322,6 +1349,10 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
           <div class="chart-card">
             <h3>Top Sessions by Tokens</h3>
             {session_share_svg}
+          </div>
+          <div class="chart-card chart-wide">
+            <h3>Activity Heatmap</h3>
+            {heatmap_svg}
           </div>
         </div>
       </section>
@@ -1453,6 +1484,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
         value_formatter=lambda value: f"{int(value):,}",
         empty_label="No top session data available for this view.",
     )
+    heatmap_svg = _svg_heatmap_chart(window.activity_heatmap)
     project_rows = "".join(
         f"""
         <tr>
@@ -1553,6 +1585,27 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
         <section class="panel">
           <div class="section-header">
             <div>
+              <p class="section-kicker">Work Shape</p>
+              <h2>Work Patterns</h2>
+            </div>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi"><strong>{_fmt_minutes(window.summary.average_session_duration_minutes)}</strong><span>Average session length</span></div>
+            <div class="kpi"><strong>{_fmt_minutes(window.summary.median_session_duration_minutes)}</strong><span>Median session length</span></div>
+            <div class="kpi"><strong>{window.summary.tokens_per_minute:,.0f}</strong><span>Tokens per minute</span></div>
+            <div class="kpi"><strong>{window.summary.requests_per_session:.1f}</strong><span>Requests per session</span></div>
+            <div class="kpi"><strong>{window.summary.median_tokens_per_session:,.0f}</strong><span>Median tokens per session</span></div>
+            <div class="kpi"><strong>{window.summary.median_requests_per_session:,.1f}</strong><span>Median requests per session</span></div>
+            <div class="kpi"><strong>{escape(_fmt_percent(window.summary.project_concentration_top1_pct))}</strong><span>Top project concentration</span></div>
+            <div class="kpi"><strong>{escape(_fmt_percent(window.summary.project_concentration_top3_pct))}</strong><span>Top 3 project concentration</span></div>
+            <div class="kpi"><strong>{window.summary.longest_active_streak_days}</strong><span>Longest active streak</span></div>
+            <div class="kpi"><strong>{escape(_fmt_percent(window.summary.model_switching_rate))}</strong><span>Model switching rate</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <div>
               <p class="section-kicker">Why It Happened</p>
               <h2>Charts</h2>
             </div>
@@ -1573,6 +1626,10 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
             <div class="chart-card">
               <h3>Top Sessions by Tokens</h3>
               {sessions_svg}
+            </div>
+            <div class="chart-card chart-wide">
+              <h3>Activity Heatmap</h3>
+              {heatmap_svg}
             </div>
           </div>
         </section>
@@ -1763,6 +1820,72 @@ def _svg_bar_chart(
             f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'
         )
     return f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
+
+
+def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
+    if not cells:
+        return '<div class="chart-empty">No activity data available for this view.</div>'
+    width = 760
+    height = 290
+    left = 68
+    top = 24
+    cell_width = 24
+    cell_height = 26
+    gap = 4
+    max_value = max((cell.total_tokens for cell in cells), default=0) or 1
+    weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    lookup = {(cell.weekday, cell.hour): cell for cell in cells}
+    rects: list[str] = []
+    for weekday in range(7):
+        for hour in range(24):
+            cell = lookup.get((weekday, hour))
+            tokens = cell.total_tokens if cell else 0
+            sessions = cell.session_count if cell else 0
+            ratio = tokens / max_value if max_value else 0.0
+            fill = _heatmap_color(ratio)
+            x = left + hour * (cell_width + gap)
+            y = top + weekday * (cell_height + gap)
+            rects.append(
+                f'<rect x="{x}" y="{y}" width="{cell_width}" height="{cell_height}" rx="7" fill="{fill}">'
+                f'<title>{escape(_heatmap_title(weekday_labels[weekday], hour, sessions, tokens))}</title>'
+                f"</rect>"
+            )
+    hour_labels = "".join(
+        f'<text x="{left + hour * (cell_width + gap) + cell_width / 2:.1f}" y="{top - 8}" text-anchor="middle" font-size="10" fill="#6d645d">{hour:02d}</text>'
+        for hour in range(24)
+    )
+    day_labels = "".join(
+        f'<text x="{left - 10}" y="{top + weekday * (cell_height + gap) + 17}" text-anchor="end" font-size="12" fill="#6d645d">{label}</text>'
+        for weekday, label in enumerate(weekday_labels)
+    )
+    legend = "".join(
+        f'<rect x="{560 + index * 34}" y="256" width="24" height="14" rx="7" fill="{_heatmap_color(index / 4)}" />'
+        for index in range(5)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Activity heatmap">'
+        f'{hour_labels}{day_labels}{"".join(rects)}'
+        f'<text x="560" y="248" font-size="11" fill="#6d645d">Lower activity</text>'
+        f'{legend}'
+        f'<text x="700" y="268" font-size="11" text-anchor="end" fill="#6d645d">Higher activity</text>'
+        f"</svg>"
+    )
+
+
+def _heatmap_color(ratio: float) -> str:
+    if ratio <= 0:
+        return "rgba(72,53,36,0.08)"
+    if ratio < 0.25:
+        return "#d7efe7"
+    if ratio < 0.5:
+        return "#8ed3c5"
+    if ratio < 0.75:
+        return "#2ea596"
+    return "#0f766e"
+
+
+def _heatmap_title(day_label: str, hour: int, sessions: int, tokens: int) -> str:
+    return f"{day_label} {hour:02d}:00 - {sessions} sessions, {tokens:,} tokens"
 
 
 def _format_summary_card_svg(report: ReportData, title: str) -> str:
@@ -2071,6 +2194,19 @@ def _fmt_optional_int(value: int | None) -> str:
     if value is None:
         return "unknown"
     return f"{value:,}"
+
+
+def _fmt_minutes(value: float) -> str:
+    if value <= 0:
+        return "0m"
+    hours = int(value // 60)
+    minutes = int(round(value % 60))
+    if minutes == 60:
+        hours += 1
+        minutes = 0
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 def _fmt_percent(value: float | None) -> str:

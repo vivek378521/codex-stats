@@ -10,6 +10,7 @@ from .config import Paths, PricingConfig, load_pricing_config
 from .display import format_dashboard_html
 from .metrics import (
     local_date,
+    summarize_activity_heatmap_from_details,
     summarize_compare_from_details,
     summarize_costs_from_details,
     summarize_daily_from_details,
@@ -169,6 +170,7 @@ def _build_window(
         daily_points=summarize_daily_from_details(current_details, days=max(trend_days, 1), now=now, pricing=pricing),
         costs=costs,
         insights=insights,
+        activity_heatmap=summarize_activity_heatmap_from_details(current_details, timezone=now.tzinfo),
     )
 
 
@@ -204,6 +206,7 @@ def _build_all_time_window(
         daily_points=summarize_daily_from_details(trend_details, days=trend_days, now=now, pricing=pricing),
         costs=costs,
         insights=summarize_insights_from_details(all_details, pricing=pricing, month=summary, now=now),
+        activity_heatmap=summarize_activity_heatmap_from_details(all_details, timezone=now.tzinfo),
     )
 
 

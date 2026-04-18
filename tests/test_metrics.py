@@ -201,6 +201,9 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(summary.requests, 2)
         self.assertEqual(summary.total_tokens, 280)
         self.assertEqual(summary.top_model, "gpt-5.4")
+        self.assertGreater(summary.average_session_duration_minutes, 0.0)
+        self.assertGreater(summary.tokens_per_minute, 0.0)
+        self.assertEqual(summary.longest_active_streak_days, 1)
 
     def test_week_and_month_summaries_include_session(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -549,6 +552,14 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("Cost Snapshot", assets["cost-card"])
         self.assertIn("Focus Card", assets["focus-card"])
         self.assertIn("Project Snapshot", assets["projects-card"])
+
+    def test_dashboard_html_includes_work_patterns_and_heatmap(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now)
+        html = format_dashboard_html(dashboard)
+        self.assertIn("Work Patterns", html)
+        self.assertIn("Activity Heatmap", html)
+        self.assertIn("Top project concentration", html)
 
 
 if __name__ == "__main__":

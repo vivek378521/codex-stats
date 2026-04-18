@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, tzinfo
 import re
+from statistics import median
 
 from .config import Paths, PricingConfig, load_config, load_pricing_config
 from .ingest import get_session_details, iter_session_details
@@ -12,6 +13,7 @@ from .models import (
     CostSummary,
     DailyPoint,
     DoctorCheck,
+    HeatmapCell,
     HistoryEntry,
     InsightReport,
     SessionDetails,
@@ -110,6 +112,11 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
     average_tokens_per_request = total_tokens / requests if requests else 0.0
     cache_ratio = (cached_input_tokens / input_tokens) if input_tokens else None
     largest_session_tokens = max((detail.effective_total_tokens() for detail in details), default=0)
+    requests_per_session = requests / sessions_count if sessions_count else 0.0
+    session_totals = [detail.effective_total_tokens() for detail in details]
+    session_requests = [detail.request_count for detail in details]
+    session_durations = [detail.duration_minutes() for detail in details]
+    total_duration_minutes = sum(session_durations)
     return TimeSummary(
         label=label,
         sessions=sessions_count,
@@ -124,6 +131,16 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
         average_tokens_per_request=average_tokens_per_request,
         cache_ratio=cache_ratio,
         largest_session_tokens=largest_session_tokens,
+        requests_per_session=requests_per_session,
+        median_tokens_per_session=float(median(session_totals)) if session_totals else 0.0,
+        median_requests_per_session=float(median(session_requests)) if session_requests else 0.0,
+        average_session_duration_minutes=(total_duration_minutes / sessions_count) if sessions_count else 0.0,
+        median_session_duration_minutes=float(median(session_durations)) if session_durations else 0.0,
+        tokens_per_minute=(total_tokens / total_duration_minutes) if total_duration_minutes > 0 else 0.0,
+        project_concentration_top1_pct=_project_concentration(details, top_n=1),
+        project_concentration_top3_pct=_project_concentration(details, top_n=3),
+        longest_active_streak_days=_longest_active_streak_days(details),
+        model_switching_rate=_model_switching_rate(details),
     )
 
 
@@ -669,6 +686,40 @@ def summarize_top_sessions(paths: Paths, limit: int = 5) -> list[TopEntry]:
     return summarize_top_sessions_from_details(iter_session_details(paths), load_pricing_config(paths), limit=limit)
 
 
+def summarize_activity_heatmap(
+    paths: Paths,
+    *,
+    days: int | None = None,
+    now: datetime | None = None,
+) -> list[HeatmapCell]:
+    details = details_for_last_days(paths, days, now=now) if days else iter_session_details(paths)
+    timezone = (now or datetime.now().astimezone()).tzinfo
+    return summarize_activity_heatmap_from_details(details, timezone=timezone)
+
+
+def summarize_activity_heatmap_from_details(
+    details: list[SessionDetails],
+    *,
+    timezone: tzinfo | None,
+) -> list[HeatmapCell]:
+    buckets: dict[tuple[int, int], dict[str, int]] = defaultdict(lambda: {"session_count": 0, "total_tokens": 0})
+    for detail in details:
+        started = detail.started_at or detail.session.created_at
+        local_started = started.astimezone(timezone or started.astimezone().tzinfo)
+        key = (local_started.weekday(), local_started.hour)
+        buckets[key]["session_count"] += 1
+        buckets[key]["total_tokens"] += detail.effective_total_tokens()
+    return [
+        HeatmapCell(
+            weekday=weekday,
+            hour=hour,
+            session_count=bucket["session_count"],
+            total_tokens=bucket["total_tokens"],
+        )
+        for (weekday, hour), bucket in sorted(buckets.items())
+    ]
+
+
 def summarize_top_sessions_from_details(
     details: list[SessionDetails],
     pricing: PricingConfig | None = None,
@@ -751,6 +802,7 @@ def build_report(
         top_sessions=summarize_top_sessions_from_details(filtered_details, pricing, limit=5),
         costs=summarize_costs_from_details(filtered_details, pricing=pricing, today=summary, week=summary, month=summary, now=current_time),
         insights=summarize_insights_from_details(filtered_details, pricing=pricing, month=summary, now=current_time),
+        activity_heatmap=summarize_activity_heatmap_from_details(filtered_details, timezone=current_time.tzinfo),
     )
     return report
 
@@ -797,3 +849,42 @@ def _summary_for_named_window(
         details = details_for_last_days(paths, 30, now=now - timedelta(days=30))
         return summarize_details("last-month", details, pricing)
     raise ValueError(f"Unsupported compare label: {label}")
+
+
+def _project_concentration(details: list[SessionDetails], *, top_n: int) -> float | None:
+    if not details:
+        return None
+    project_totals: dict[str, int] = defaultdict(int)
+    total_tokens = 0
+    for detail in details:
+        tokens = detail.effective_total_tokens()
+        total_tokens += tokens
+        project_totals[detail.session.project_name] += tokens
+    if total_tokens <= 0:
+        return None
+    ranked = sorted(project_totals.values(), reverse=True)
+    return sum(ranked[:top_n]) / total_tokens
+
+
+def _longest_active_streak_days(details: list[SessionDetails]) -> int:
+    active_days = sorted({detail.session.created_at.astimezone().date() for detail in details})
+    if not active_days:
+        return 0
+    longest = 1
+    current = 1
+    for previous, current_day in zip(active_days, active_days[1:]):
+        if (current_day - previous).days == 1:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 1
+    return longest
+
+
+def _model_switching_rate(details: list[SessionDetails]) -> float | None:
+    ordered_models = [detail.session.model or "unknown" for detail in sorted(details, key=lambda detail: detail.session.created_at)]
+    if len(ordered_models) < 2:
+        return None
+    switches = sum(1 for previous, current in zip(ordered_models, ordered_models[1:]) if previous != current)
+    transitions = len(ordered_models) - 1
+    return switches / transitions if transitions else None
