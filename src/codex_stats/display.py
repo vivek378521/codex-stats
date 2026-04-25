@@ -970,7 +970,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
                 <strong>Download PDF</strong>
                 <span>Best for printing or sending the active view as a full report.</span>
               </button>
-              <button class="export-item" type="button" data-action="page-jpg">
+              <button class="export-item" type="button" data-jpg="page-card">
                 <strong>Full Page JPG</strong>
                 <span>Best for downloading the active dashboard page as one tall image.</span>
               </button>
@@ -1125,88 +1125,6 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       }}
     }}
 
-    async function downloadActivePageJpg() {{
-      const page = document.querySelector(".page");
-      const activeSection = windows.find((section) => section.dataset.window === activeWindow);
-      if (!page || !activeSection) {{
-        return;
-      }}
-      const exportRoot = document.createElement("div");
-      exportRoot.setAttribute(
-        "style",
-        [
-          "width: 1180px",
-          "padding: 0",
-          "background: #f6efe3",
-          "font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', serif",
-          "color: #1f1a17",
-        ].join("; "),
-      );
-      const hero = document.querySelector(".hero");
-      if (hero) {{
-        exportRoot.appendChild(hero.cloneNode(true));
-      }}
-      exportRoot.appendChild(activeSection.cloneNode(true));
-      exportRoot.querySelectorAll(".actions, .tabs, .toolbar-note, .print-note, .detail-toggle").forEach((node) => node.remove());
-      exportRoot.querySelectorAll(".window").forEach((node) => {{
-        node.classList.add("is-active");
-        node.style.display = "block";
-      }});
-      exportRoot.querySelectorAll(".detail-section").forEach((node) => {{
-        node.hidden = false;
-      }});
-      exportRoot.querySelectorAll(".project-panel").forEach((panel, index) => {{
-        panel.classList.toggle("is-active", index === 0);
-        panel.style.display = index === 0 ? "block" : "none";
-      }});
-
-      const width = 1180;
-      const tempHost = document.createElement("div");
-      tempHost.setAttribute("style", "position:absolute;left:-99999px;top:0;visibility:hidden;");
-      tempHost.appendChild(exportRoot);
-      document.body.appendChild(tempHost);
-      const height = Math.max(exportRoot.scrollHeight, exportRoot.offsetHeight, 1200);
-      const serializer = new XMLSerializer();
-      const xhtml = serializer.serializeToString(exportRoot);
-      tempHost.remove();
-
-      const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}">
-          <foreignObject width="100%" height="100%">${{xhtml}}</foreignObject>
-        </svg>
-      `;
-      const blob = new Blob([svg], {{ type: "image/svg+xml;charset=utf-8" }});
-      const url = URL.createObjectURL(blob);
-      try {{
-        const image = new Image();
-        await new Promise((resolve, reject) => {{
-          image.onload = resolve;
-          image.onerror = reject;
-          image.src = url;
-        }});
-        const scale = 2;
-        const canvas = document.createElement("canvas");
-        canvas.width = width * scale;
-        canvas.height = height * scale;
-        const context = canvas.getContext("2d");
-        if (!context) {{
-          return;
-        }}
-        context.scale(scale, scale);
-        context.fillStyle = "#f6efe3";
-        context.fillRect(0, 0, width, height);
-        context.drawImage(image, 0, 0, width, height);
-        const link = document.createElement("a");
-        link.href = canvas.toDataURL("image/jpeg", 0.94);
-        link.download = `codex-stats-${{activeWindow}}-page.jpg`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      }} finally {{
-        URL.revokeObjectURL(url);
-      }}
-    }}
-
     async function copySummary() {{
       const content = dashboardSummaries[activeWindow];
       if (!content) {{
@@ -1250,10 +1168,6 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       exportMenu?.classList.remove("is-open");
       beforePrint();
       window.print();
-    }});
-    document.querySelector('[data-action="page-jpg"]')?.addEventListener("click", async () => {{
-      exportMenu?.classList.remove("is-open");
-      await downloadActivePageJpg();
     }});
     window.addEventListener("beforeprint", beforePrint);
     window.addEventListener("afterprint", afterPrint);
@@ -1857,6 +1771,7 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
 def format_dashboard_svg_assets(window: DashboardWindow) -> dict[str, str]:
     title = f"Codex Stats {window.label}"
     return {
+        "page-card": _format_page_card_svg(window, title),
         "summary-card": _format_summary_card_svg(window, title),
         "cost-card": _format_cost_card_svg(window, title),
         "focus-card": _format_focus_card_svg(window, title),
@@ -1870,6 +1785,7 @@ def format_report_svg_assets(report: ReportData, daily_points: list[DailyPoint] 
     if report.project_name:
         title = f"{title}: {report.project_name}"
     assets = {
+        "page-card": _format_page_card_svg(report, title),
         "summary-card": _format_summary_card_svg(report, title),
         "cost-card": _format_cost_card_svg(report, title),
         "focus-card": _format_focus_card_svg(report, title),
@@ -2728,6 +2644,113 @@ def _format_heatmap_card_svg(report: ReportData | DashboardWindow, title: str) -
     chart_svg = _svg_heatmap_chart(report.activity_heatmap)
     subtitle = "Activity by weekday and hour. Darker cells indicate heavier local usage."
     return _wrap_chart_svg(f"{title} Heatmap", subtitle, chart_svg)
+
+
+def _format_page_card_svg(report: ReportData | DashboardWindow, title: str) -> str:
+    summary = report.summary
+    comparison = report.comparison
+    delta_text = "n/a" if comparison.total_tokens_delta_pct is None else f"{comparison.total_tokens_delta_pct:+.1f}%"
+    if isinstance(report, DashboardWindow):
+        takeaways = report.takeaways[:4] or ["Usage looks healthy."]
+        badges = report.badges[:4]
+        expensive = report.expensive_session
+        rhythm = report.work_rhythm
+        trend_svg = _svg_line_chart(
+            [(point.day[5:], float(point.total_tokens)) for point in report.daily_points],
+            stroke="#0f766e",
+            fill="rgba(15, 118, 110, 0.12)",
+            value_formatter=lambda value: f"{int(value):,}",
+        )
+    else:
+        takeaways = report.insights.recommendations[:4] or ["Usage looks healthy."]
+        badges = []
+        expensive = None
+        rhythm = None
+        trend_svg = _svg_bar_chart(
+            [(entry.name, float(entry.total_tokens)) for entry in report.projects[:5]],
+            bar_color="#0f766e",
+            value_formatter=lambda value: f"{int(value):,}",
+            empty_label="No project data available for this view.",
+        )
+    heatmap_svg = _svg_heatmap_chart(report.activity_heatmap)
+    badge_rows = "".join(
+        f'<rect x="{76 + index * 260}" y="248" width="236" height="46" rx="23" fill="rgba(255,255,255,0.72)" stroke="rgba(66,48,31,0.10)"/>'
+        f'<text x="{94 + index * 260}" y="276" font-size="18" fill="#1f1a17">{escape(badge.label)}: {escape(badge.value)}</text>'
+        for index, badge in enumerate(badges)
+    )
+    takeaway_lines = _svg_bullet_list(takeaways, x=92, y=430, width=460, line_height=28, max_lines=7, fill="#4b4036")
+    expensive_block = ""
+    if expensive is not None:
+        expensive_block = f"""
+  <rect x="664" y="368" width="458" height="162" rx="24" fill="rgba(180,83,9,0.08)" stroke="rgba(180,83,9,0.16)"/>
+  <text x="692" y="404" font-size="18" letter-spacing="2" fill="#8a4b0f">MOST EXPENSIVE SESSION</text>
+  <text x="692" y="440" font-size="30" font-weight="700" fill="#1f1a17">{escape(expensive.project_name)}</text>
+  <text x="692" y="472" font-size="22" fill="#4b4036">{escape(expensive.model or "unknown")}  •  {expensive.requests} requests</text>
+  <text x="692" y="512" font-size="36" font-weight="700" fill="#8a4b0f">${expensive.estimated_cost_usd:.2f}</text>
+  <text x="948" y="512" font-size="22" fill="#4b4036">{expensive.total_tokens:,} tokens</text>
+"""
+    rhythm_block = ""
+    if rhythm is not None:
+        rhythm_meta = (rhythm.peak_day or "No peak day") + (f"  •  {rhythm.peak_hour}" if rhythm.peak_hour else "")
+        rhythm_block = f"""
+  <rect x="664" y="548" width="458" height="126" rx="24" fill="rgba(15,118,110,0.08)" stroke="rgba(15,118,110,0.16)"/>
+  <text x="692" y="584" font-size="18" letter-spacing="2" fill="#115e59">WORK RHYTHM</text>
+  <text x="692" y="620" font-size="24" font-weight="700" fill="#1f1a17">{escape(rhythm.headline)}</text>
+  <text x="692" y="650" font-size="20" fill="#4b4036">{escape(rhythm_meta)}</text>
+"""
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600" viewBox="0 0 1200 1600" role="img" aria-label="{escape(title)} full page card">
+  <defs>
+    <linearGradient id="page-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbf6ee"/>
+      <stop offset="100%" stop-color="#efe1cb"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="1600" fill="url(#page-bg)"/>
+  <rect x="36" y="28" width="1128" height="1544" rx="30" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+
+  <text x="76" y="92" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
+  <text x="76" y="156" font-size="56" font-weight="700" fill="#1f1a17">{escape(title)}</text>
+  <text x="76" y="198" font-size="24" fill="#6d645d">Single-image export of the active dashboard view.</text>
+
+  <rect x="76" y="322" width="236" height="152" rx="24" fill="#115e59"/>
+  <text x="102" y="362" font-size="16" letter-spacing="2" fill="#d7faf5">TOKENS</text>
+  <text x="102" y="418" font-size="42" font-weight="700" fill="#ffffff">{summary.total_tokens:,}</text>
+  <text x="102" y="446" font-size="18" fill="#d7faf5">{summary.requests} requests / {summary.sessions} sessions</text>
+
+  <rect x="328" y="322" width="236" height="152" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="354" y="362" font-size="16" letter-spacing="2" fill="#6d645d">EST. COST</text>
+  <text x="354" y="418" font-size="42" font-weight="700" fill="#1f1a17">${summary.estimated_cost_usd:.2f}</text>
+  <text x="354" y="446" font-size="18" fill="#6d645d">Top model {escape(summary.top_model or "unknown")}</text>
+
+  <rect x="580" y="322" width="264" height="152" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="606" y="362" font-size="16" letter-spacing="2" fill="#6d645d">WINDOW DELTA</text>
+  <text x="606" y="418" font-size="42" font-weight="700" fill="#1f1a17">{escape(delta_text)}</text>
+  <text x="606" y="446" font-size="18" fill="#6d645d">{comparison.total_tokens_delta:+,} tokens</text>
+
+  <rect x="860" y="322" width="262" height="152" rx="24" fill="#b45309"/>
+  <text x="886" y="362" font-size="16" letter-spacing="2" fill="#ffedd5">CACHE</text>
+  <text x="886" y="418" font-size="42" font-weight="700" fill="#ffffff">{escape(_fmt_percent(summary.cache_ratio))}</text>
+  <text x="886" y="446" font-size="18" fill="#ffedd5">Avg/request {summary.average_tokens_per_request:,.0f}</text>
+
+  {badge_rows}
+
+  <rect x="76" y="368" width="560" height="306" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="404" font-size="18" letter-spacing="2" fill="#4b4036">KEY TAKEAWAYS</text>
+  {takeaway_lines}
+
+  {expensive_block}
+  {rhythm_block}
+
+  <rect x="76" y="716" width="1046" height="352" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="752" font-size="18" letter-spacing="2" fill="#115e59">TREND</text>
+  <g transform="translate(92 778)">{trend_svg}</g>
+
+  <rect x="76" y="1094" width="1046" height="430" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="1130" font-size="18" letter-spacing="2" fill="#115e59">ACTIVITY HEATMAP</text>
+  <g transform="translate(92 1160)">{heatmap_svg}</g>
+
+  <text x="1124" y="1550" text-anchor="end" font-size="18" fill="#6d645d">Generated by codex-stats</text>
+</svg>"""
 
 
 def _format_projects_card_svg(report: ReportData, title: str) -> str:
