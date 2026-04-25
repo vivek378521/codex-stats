@@ -1018,6 +1018,12 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     let activeWindow = tabs[0]?.dataset.window || "";
     let expandedForPrint = [];
 
+    function setFeedback(message) {{
+      if (copyFeedback) {{
+        copyFeedback.textContent = message;
+      }}
+    }}
+
     function setActiveWindow(key) {{
       activeWindow = key;
       tabs.forEach((button) => {{
@@ -1043,9 +1049,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         printNote.textContent = `PDF export will print ${{heading}} with expanded details. Generated ${{generatedAt}}.`;
       }}
       exportMenu?.classList.remove("is-open");
-      if (copyFeedback) {{
-        copyFeedback.textContent = "";
-      }}
+      setFeedback("");
     }}
 
     function beforePrint() {{
@@ -1087,6 +1091,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     async function downloadJpg(assetKey) {{
       const content = dashboardAssets[activeWindow]?.[assetKey];
       if (!content) {{
+        setFeedback("No JPG export available for this view.");
         return;
       }}
       const blob = new Blob([content], {{ type: "image/svg+xml;charset=utf-8" }});
@@ -1113,13 +1118,29 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         context.fillRect(0, 0, width, height);
         context.drawImage(image, 0, 0, width, height);
 
-        const jpgUrl = canvas.toDataURL("image/jpeg", 0.94);
         const link = document.createElement("a");
-        link.href = jpgUrl;
         link.download = `codex-stats-${{activeWindow}}-${{assetKey}}.jpg`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
+        const jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.94));
+        if (jpgBlob) {{
+          const jpgObjectUrl = URL.createObjectURL(jpgBlob);
+          try {{
+            link.href = jpgObjectUrl;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+          }} finally {{
+            URL.revokeObjectURL(jpgObjectUrl);
+          }}
+        }} else {{
+          // Fallback for browsers that cannot provide a JPG blob.
+          link.href = canvas.toDataURL("image/jpeg", 0.94);
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }}
+        setFeedback("JPG downloaded.");
+      }} catch (error) {{
+        setFeedback("JPG export failed. Please try again.");
       }} finally {{
         URL.revokeObjectURL(url);
       }}
@@ -1128,9 +1149,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     async function copySummary() {{
       const content = dashboardSummaries[activeWindow];
       if (!content) {{
-        if (copyFeedback) {{
-          copyFeedback.textContent = "No summary available.";
-        }}
+        setFeedback("No summary available.");
         return;
       }}
       try {{
@@ -1147,13 +1166,9 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
           document.execCommand("copy");
           textarea.remove();
         }}
-        if (copyFeedback) {{
-          copyFeedback.textContent = "Summary copied.";
-        }}
+        setFeedback("Summary copied.");
       }} catch (error) {{
-        if (copyFeedback) {{
-          copyFeedback.textContent = "Copy failed.";
-        }}
+        setFeedback("Copy failed.");
       }}
     }}
 
