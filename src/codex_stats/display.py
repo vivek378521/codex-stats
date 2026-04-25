@@ -970,6 +970,10 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
                 <strong>Download PDF</strong>
                 <span>Best for printing or sending the active view as a full report.</span>
               </button>
+              <button class="export-item" type="button" data-action="page-jpg">
+                <strong>Full Page JPG</strong>
+                <span>Best for downloading the active dashboard page as one tall image.</span>
+              </button>
               <button class="export-item" type="button" data-jpg="summary-card">
                 <strong>Summary JPG</strong>
                 <span>Best for a quick share card with headline metrics.</span>
@@ -1121,6 +1125,88 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       }}
     }}
 
+    async function downloadActivePageJpg() {{
+      const page = document.querySelector(".page");
+      const activeSection = windows.find((section) => section.dataset.window === activeWindow);
+      if (!page || !activeSection) {{
+        return;
+      }}
+      const exportRoot = document.createElement("div");
+      exportRoot.setAttribute(
+        "style",
+        [
+          "width: 1180px",
+          "padding: 0",
+          "background: #f6efe3",
+          "font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', serif",
+          "color: #1f1a17",
+        ].join("; "),
+      );
+      const hero = document.querySelector(".hero");
+      if (hero) {{
+        exportRoot.appendChild(hero.cloneNode(true));
+      }}
+      exportRoot.appendChild(activeSection.cloneNode(true));
+      exportRoot.querySelectorAll(".actions, .tabs, .toolbar-note, .print-note, .detail-toggle").forEach((node) => node.remove());
+      exportRoot.querySelectorAll(".window").forEach((node) => {{
+        node.classList.add("is-active");
+        node.style.display = "block";
+      }});
+      exportRoot.querySelectorAll(".detail-section").forEach((node) => {{
+        node.hidden = false;
+      }});
+      exportRoot.querySelectorAll(".project-panel").forEach((panel, index) => {{
+        panel.classList.toggle("is-active", index === 0);
+        panel.style.display = index === 0 ? "block" : "none";
+      }});
+
+      const width = 1180;
+      const tempHost = document.createElement("div");
+      tempHost.setAttribute("style", "position:absolute;left:-99999px;top:0;visibility:hidden;");
+      tempHost.appendChild(exportRoot);
+      document.body.appendChild(tempHost);
+      const height = Math.max(exportRoot.scrollHeight, exportRoot.offsetHeight, 1200);
+      const serializer = new XMLSerializer();
+      const xhtml = serializer.serializeToString(exportRoot);
+      tempHost.remove();
+
+      const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}">
+          <foreignObject width="100%" height="100%">${{xhtml}}</foreignObject>
+        </svg>
+      `;
+      const blob = new Blob([svg], {{ type: "image/svg+xml;charset=utf-8" }});
+      const url = URL.createObjectURL(blob);
+      try {{
+        const image = new Image();
+        await new Promise((resolve, reject) => {{
+          image.onload = resolve;
+          image.onerror = reject;
+          image.src = url;
+        }});
+        const scale = 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const context = canvas.getContext("2d");
+        if (!context) {{
+          return;
+        }}
+        context.scale(scale, scale);
+        context.fillStyle = "#f6efe3";
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        const link = document.createElement("a");
+        link.href = canvas.toDataURL("image/jpeg", 0.94);
+        link.download = `codex-stats-${{activeWindow}}-page.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }} finally {{
+        URL.revokeObjectURL(url);
+      }}
+    }}
+
     async function copySummary() {{
       const content = dashboardSummaries[activeWindow];
       if (!content) {{
@@ -1164,6 +1250,10 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       exportMenu?.classList.remove("is-open");
       beforePrint();
       window.print();
+    }});
+    document.querySelector('[data-action="page-jpg"]')?.addEventListener("click", async () => {{
+      exportMenu?.classList.remove("is-open");
+      await downloadActivePageJpg();
     }});
     window.addEventListener("beforeprint", beforePrint);
     window.addEventListener("afterprint", afterPrint);
@@ -2355,7 +2445,7 @@ def _svg_line_chart(
         for step in range(4)
     )
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Trend chart">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Trend chart">'
         f'{grid}'
         f'<polygon points="{area_points}" fill="{fill}" />'
         f'<polyline points="{line_points}" fill="none" stroke="{stroke}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />'
@@ -2389,7 +2479,7 @@ def _svg_bar_chart(
             f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_width:.1f}" height="16" rx="8" fill="{bar_color}" />'
             f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'
         )
-    return f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
+    return f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
 
 
 def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
@@ -2435,7 +2525,7 @@ def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
         for index in range(5)
     )
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 {width} {height}" role="img" aria-label="Activity heatmap">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Activity heatmap">'
         f'{hour_labels}{day_labels}{"".join(rects)}'
         f'<text x="{legend_start_x}" y="{legend_y - 8}" font-size="11" fill="#6d645d">Lower activity</text>'
         f'{legend}'
@@ -2612,8 +2702,8 @@ def _format_cost_card_svg(report: ReportData | DashboardWindow, title: str) -> s
 def _format_focus_card_svg(report: ReportData | DashboardWindow, title: str) -> str:
     anomalies = report.insights.anomalies[:3] or ["No active anomalies"]
     recommendations = report.insights.recommendations[:3] or ["Usage looks healthy."]
-    anomaly_lines = _svg_bullet_list(anomalies, x=90, y=248, width=430, line_height=28, max_lines=8, fill="#8a4b0f")
-    recommendation_lines = _svg_bullet_list(recommendations, x=620, y=248, width=460, line_height=28, max_lines=8, fill="#1f1a17")
+    anomaly_lines = _svg_bullet_list(anomalies, x=90, y=290, width=400, line_height=26, max_lines=7, fill="#8a4b0f")
+    recommendation_lines = _svg_bullet_list(recommendations, x=620, y=290, width=430, line_height=26, max_lines=7, fill="#1f1a17")
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="{escape(title)} focus card">
   <rect width="1200" height="630" fill="#f2ece3"/>
   <rect x="40" y="36" width="1120" height="558" rx="32" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>

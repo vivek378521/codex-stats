@@ -322,22 +322,40 @@ def summarize_work_rhythm(
             peak_day=None,
             peak_hour=None,
         )
-    busiest_day = max(active_days, key=lambda point: point.total_tokens)
-    peak_cell = max(activity_heatmap, key=lambda cell: cell.total_tokens)
-    weekday_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][peak_cell.weekday]
-    hour_label = _fmt_hour(peak_cell.hour)
-    active_weekdays = {cell.weekday for cell in activity_heatmap if cell.total_tokens > 0}
+    weekday_totals: dict[int, int] = defaultdict(int)
+    hour_totals: dict[int, int] = defaultdict(int)
+    active_weekdays = set()
+    for cell in activity_heatmap:
+        if cell.total_tokens <= 0:
+            continue
+        weekday_totals[cell.weekday] += cell.total_tokens
+        hour_totals[cell.hour] += cell.total_tokens
+        active_weekdays.add(cell.weekday)
+    peak_weekday = max(weekday_totals, key=weekday_totals.get, default=None)
+    peak_hour = max(hour_totals, key=hour_totals.get, default=None)
+    weekday_name = (
+        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][peak_weekday]
+        if peak_weekday is not None
+        else None
+    )
+    hour_label = _fmt_hour(peak_hour) if peak_hour is not None else None
     if len(active_weekdays) <= 2:
         cadence = "clustered into a few focused days"
     elif len(active_weekdays) >= 5:
         cadence = "spread across most of the week"
     else:
         cadence = "centered on a mid-week rhythm"
+    if weekday_name and hour_label:
+        detail = f"Your strongest weekday is {weekday_name}, and the busiest hour overall lands around {hour_label}."
+    elif weekday_name:
+        detail = f"Your strongest weekday is {weekday_name}."
+    else:
+        detail = "Use Codex across a few more sessions to unlock a clearer work pattern summary."
     return WorkRhythm(
         headline=f"Your work is {cadence}.",
-        detail=f"The busiest recent day was {busiest_day.day} and the strongest hour lands around {weekday_name} {hour_label}.",
-        peak_day=busiest_day.day,
-        peak_hour=f"{weekday_name} {hour_label}",
+        detail=detail,
+        peak_day=weekday_name,
+        peak_hour=hour_label,
     )
 
 
