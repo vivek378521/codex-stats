@@ -1017,10 +1017,118 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     const copyFeedback = document.querySelector("[data-copy-feedback]");
     let activeWindow = tabs[0]?.dataset.window || "";
     let expandedForPrint = [];
+    let pendingPrintTitle = null;
 
     function setFeedback(message) {{
       if (copyFeedback) {{
         copyFeedback.textContent = message;
+      }}
+    }}
+
+    function exportTimestamp() {{
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const min = String(now.getMinutes()).padStart(2, "0");
+      const sec = String(now.getSeconds()).padStart(2, "0");
+      return `${{yyyy}}${{mm}}${{dd}}-${{hh}}${{min}}${{sec}}`;
+    }}
+
+    function triggerJpgDownloadFromCanvas(canvas, filename) {{
+      const link = document.createElement("a");
+      link.download = filename;
+      return new Promise((resolve) => {{
+        canvas.toBlob((jpgBlob) => {{
+          if (jpgBlob) {{
+            const jpgObjectUrl = URL.createObjectURL(jpgBlob);
+            try {{
+              link.href = jpgObjectUrl;
+              document.body.appendChild(link);
+              link.click();
+              link.remove();
+            }} finally {{
+              URL.revokeObjectURL(jpgObjectUrl);
+            }}
+            resolve(true);
+            return;
+          }}
+          // Fallback for browsers that cannot provide a JPG blob.
+          link.href = canvas.toDataURL("image/jpeg", 0.94);
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          resolve(true);
+        }}, "image/jpeg", 0.94);
+      }});
+    }}
+
+    async function downloadRenderedPageJpg() {{
+      const page = document.querySelector(".page");
+      const hero = document.querySelector(".hero");
+      const activeSection = windows.find((section) => section.dataset.window === activeWindow);
+      const footer = document.querySelector(".footer");
+      if (!page || !hero || !activeSection || !footer) {{
+        throw new Error("Missing page sections");
+      }}
+
+      const sandbox = document.createElement("div");
+      sandbox.style.position = "fixed";
+      sandbox.style.left = "-99999px";
+      sandbox.style.top = "0";
+      sandbox.style.width = `${{Math.ceil(page.getBoundingClientRect().width)}}px`;
+      sandbox.style.background = "#f6efe4";
+      sandbox.style.zIndex = "-1";
+
+      const clonePage = document.createElement("main");
+      clonePage.className = "page";
+      clonePage.appendChild(hero.cloneNode(true));
+      clonePage.appendChild(activeSection.cloneNode(true));
+      clonePage.appendChild(footer.cloneNode(true));
+      clonePage.querySelectorAll(".detail-section").forEach((section) => {{
+        section.hidden = false;
+      }});
+      clonePage.querySelectorAll(".detail-toggle").forEach((toggle) => {{
+        toggle.remove();
+      }});
+      clonePage.querySelectorAll(".toolbar, .tabs, .actions, .print-note").forEach((node) => {{
+        node.remove();
+      }});
+      sandbox.appendChild(clonePage);
+      document.body.appendChild(sandbox);
+
+      const width = Math.max(1200, Math.ceil(clonePage.getBoundingClientRect().width));
+      const height = Math.max(1600, Math.ceil(clonePage.scrollHeight + 24));
+      const styleText = Array.from(document.querySelectorAll("style"))
+        .map((style) => style.textContent || "")
+        .join("\\n");
+      const serialized = new XMLSerializer().serializeToString(clonePage);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml"><style>${{styleText}}</style>${{serialized}}</div></foreignObject></svg>`;
+      const blob = new Blob([svg], {{ type: "image/svg+xml;charset=utf-8" }});
+      const url = URL.createObjectURL(blob);
+      try {{
+        const image = new Image();
+        const loaded = new Promise((resolve, reject) => {{
+          image.onload = resolve;
+          image.onerror = reject;
+        }});
+        image.src = url;
+        await loaded;
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {{
+          throw new Error("Canvas context unavailable");
+        }}
+        context.fillStyle = "#fffaf2";
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        await triggerJpgDownloadFromCanvas(canvas, `codex-stats-${{activeWindow}}-full-page-${{exportTimestamp()}}.jpg`);
+      }} finally {{
+        URL.revokeObjectURL(url);
+        sandbox.remove();
       }}
     }}
 
@@ -1088,7 +1196,18 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       expandedForPrint = [];
     }}
 
-    async function downloadJpg(assetKey) {{
+    async function downloadJpg(assetKey, options = {{}}) {{
+      const forceSvgAsset = options.forceSvgAsset === true;
+      if (assetKey === "page-card" && !forceSvgAsset) {{
+        try {{
+          await downloadRenderedPageJpg();
+          setFeedback("JPG downloaded.");
+        }} catch (error) {{
+          setFeedback("Full-page capture failed, downloaded full-page card instead.");
+          await downloadJpg("page-card", {{ forceSvgAsset: true }});
+        }}
+        return;
+      }}
       const content = dashboardAssets[activeWindow]?.[assetKey];
       if (!content) {{
         setFeedback("No JPG export available for this view.");
@@ -1118,26 +1237,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         context.fillRect(0, 0, width, height);
         context.drawImage(image, 0, 0, width, height);
 
-        const link = document.createElement("a");
-        link.download = `codex-stats-${{activeWindow}}-${{assetKey}}.jpg`;
-        const jpgBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.94));
-        if (jpgBlob) {{
-          const jpgObjectUrl = URL.createObjectURL(jpgBlob);
-          try {{
-            link.href = jpgObjectUrl;
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-          }} finally {{
-            URL.revokeObjectURL(jpgObjectUrl);
-          }}
-        }} else {{
-          // Fallback for browsers that cannot provide a JPG blob.
-          link.href = canvas.toDataURL("image/jpeg", 0.94);
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-        }}
+        await triggerJpgDownloadFromCanvas(canvas, `codex-stats-${{activeWindow}}-${{assetKey}}-${{exportTimestamp()}}.jpg`);
         setFeedback("JPG downloaded.");
       }} catch (error) {{
         setFeedback("JPG export failed. Please try again.");
@@ -1182,10 +1282,19 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     document.querySelector('[data-action="pdf"]')?.addEventListener("click", () => {{
       exportMenu?.classList.remove("is-open");
       beforePrint();
+      const previousTitle = document.title;
+      document.title = `codex-stats-${{activeWindow}}-report-${{exportTimestamp()}}`;
+      pendingPrintTitle = previousTitle;
       window.print();
     }});
     window.addEventListener("beforeprint", beforePrint);
-    window.addEventListener("afterprint", afterPrint);
+    window.addEventListener("afterprint", () => {{
+      afterPrint();
+      if (pendingPrintTitle !== null) {{
+        document.title = pendingPrintTitle;
+        pendingPrintTitle = null;
+      }}
+    }});
     document.querySelectorAll("[data-jpg]").forEach((button) => {{
       button.addEventListener("click", async () => {{
         exportMenu?.classList.remove("is-open");
@@ -2688,40 +2797,58 @@ def _format_page_card_svg(report: ReportData | DashboardWindow, title: str) -> s
             empty_label="No project data available for this view.",
         )
     heatmap_svg = _svg_heatmap_chart(report.activity_heatmap)
+    project_rows = report.projects[:4]
+    session_rows = report.top_sessions[:4]
+    max_project_tokens = max((entry.total_tokens for entry in project_rows), default=1)
+    project_rows_svg = "".join(
+        f'<text x="92" y="{1152 + index * 54}" font-size="20" fill="#1f1a17">{escape((entry.name[:26] + "...") if len(entry.name) > 29 else entry.name)}</text>'
+        f'<rect x="392" y="{1138 + index * 54}" width="288" height="14" rx="7" fill="rgba(72,53,36,0.08)" />'
+        f'<rect x="392" y="{1138 + index * 54}" width="{max(8.0, 288 * (entry.total_tokens / max_project_tokens)):.1f}" height="14" rx="7" fill="#0f766e" />'
+        f'<text x="692" y="{1150 + index * 54}" font-size="18" fill="#4b4036">{entry.total_tokens:,}</text>'
+        f'<text x="790" y="{1150 + index * 54}" font-size="18" fill="#4b4036">${entry.estimated_cost_usd:.2f}</text>'
+        for index, entry in enumerate(project_rows)
+    ) or '<text x="92" y="1152" font-size="20" fill="#6d645d">No project breakdown available for this view.</text>'
+    session_rows_svg = "".join(
+        f'<text x="92" y="{1440 + index * 42}" font-size="20" fill="#1f1a17">{escape(((entry.project_name + " / " + (entry.model or "unknown"))[:31] + "...") if len(entry.project_name + " / " + (entry.model or "unknown")) > 34 else (entry.project_name + " / " + (entry.model or "unknown")))}</text>'
+        f'<text x="600" y="{1440 + index * 42}" font-size="18" fill="#4b4036">{entry.requests} req</text>'
+        f'<text x="710" y="{1440 + index * 42}" font-size="18" fill="#4b4036">{entry.total_tokens:,}</text>'
+        f'<text x="860" y="{1440 + index * 42}" font-size="18" fill="#4b4036">${entry.estimated_cost_usd:.2f}</text>'
+        for index, entry in enumerate(session_rows)
+    ) or '<text x="92" y="1440" font-size="20" fill="#6d645d">No top sessions available for this view.</text>'
     badge_rows = "".join(
         f'<rect x="{76 + index * 260}" y="248" width="236" height="46" rx="23" fill="rgba(255,255,255,0.72)" stroke="rgba(66,48,31,0.10)"/>'
         f'<text x="{94 + index * 260}" y="276" font-size="18" fill="#1f1a17">{escape(badge.label)}: {escape(badge.value)}</text>'
         for index, badge in enumerate(badges)
     )
-    takeaway_lines = _svg_bullet_list(takeaways, x=92, y=430, width=460, line_height=28, max_lines=7, fill="#4b4036")
+    takeaway_lines = _svg_bullet_list(takeaways, x=92, y=556, width=460, line_height=28, max_lines=4, fill="#4b4036")
     expensive_block = ""
     if expensive is not None:
         expensive_block = f"""
-  <rect x="664" y="368" width="458" height="162" rx="24" fill="rgba(180,83,9,0.08)" stroke="rgba(180,83,9,0.16)"/>
-  <text x="692" y="404" font-size="18" letter-spacing="2" fill="#8a4b0f">MOST EXPENSIVE SESSION</text>
-  <text x="692" y="440" font-size="30" font-weight="700" fill="#1f1a17">{escape(expensive.project_name)}</text>
-  <text x="692" y="472" font-size="22" fill="#4b4036">{escape(expensive.model or "unknown")}  •  {expensive.requests} requests</text>
-  <text x="692" y="512" font-size="36" font-weight="700" fill="#8a4b0f">${expensive.estimated_cost_usd:.2f}</text>
-  <text x="948" y="512" font-size="22" fill="#4b4036">{expensive.total_tokens:,} tokens</text>
+  <rect x="664" y="492" width="458" height="124" rx="24" fill="rgba(180,83,9,0.08)" stroke="rgba(180,83,9,0.16)"/>
+  <text x="692" y="526" font-size="16" letter-spacing="2" fill="#8a4b0f">MOST EXPENSIVE SESSION</text>
+  <text x="692" y="556" font-size="24" font-weight="700" fill="#1f1a17">{escape(expensive.project_name)}</text>
+  <text x="692" y="582" font-size="18" fill="#4b4036">{escape(expensive.model or "unknown")}  •  {expensive.requests} requests</text>
+  <text x="692" y="606" font-size="28" font-weight="700" fill="#8a4b0f">${expensive.estimated_cost_usd:.2f}</text>
+  <text x="942" y="606" font-size="18" fill="#4b4036">{expensive.total_tokens:,} tokens</text>
 """
     rhythm_block = ""
     if rhythm is not None:
         rhythm_meta = (rhythm.peak_day or "No peak day") + (f"  •  {rhythm.peak_hour}" if rhythm.peak_hour else "")
         rhythm_block = f"""
-  <rect x="664" y="548" width="458" height="126" rx="24" fill="rgba(15,118,110,0.08)" stroke="rgba(15,118,110,0.16)"/>
-  <text x="692" y="584" font-size="18" letter-spacing="2" fill="#115e59">WORK RHYTHM</text>
-  <text x="692" y="620" font-size="24" font-weight="700" fill="#1f1a17">{escape(rhythm.headline)}</text>
-  <text x="692" y="650" font-size="20" fill="#4b4036">{escape(rhythm_meta)}</text>
+  <rect x="664" y="624" width="458" height="78" rx="24" fill="rgba(15,118,110,0.08)" stroke="rgba(15,118,110,0.16)"/>
+  <text x="692" y="650" font-size="16" letter-spacing="2" fill="#115e59">WORK RHYTHM</text>
+  <text x="692" y="674" font-size="20" font-weight="700" fill="#1f1a17">{escape(rhythm.headline)}</text>
+  <text x="692" y="696" font-size="16" fill="#4b4036">{escape(rhythm_meta)}</text>
 """
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600" viewBox="0 0 1200 1600" role="img" aria-label="{escape(title)} full page card">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2100" viewBox="0 0 1200 2100" role="img" aria-label="{escape(title)} full page card">
   <defs>
     <linearGradient id="page-bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#fbf6ee"/>
       <stop offset="100%" stop-color="#efe1cb"/>
     </linearGradient>
   </defs>
-  <rect width="1200" height="1600" fill="url(#page-bg)"/>
-  <rect x="36" y="28" width="1128" height="1544" rx="30" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <rect width="1200" height="2100" fill="url(#page-bg)"/>
+  <rect x="36" y="28" width="1128" height="2044" rx="30" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
 
   <text x="76" y="92" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
   <text x="76" y="156" font-size="56" font-weight="700" fill="#1f1a17">{escape(title)}</text>
@@ -2749,8 +2876,8 @@ def _format_page_card_svg(report: ReportData | DashboardWindow, title: str) -> s
 
   {badge_rows}
 
-  <rect x="76" y="368" width="560" height="306" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
-  <text x="92" y="404" font-size="18" letter-spacing="2" fill="#4b4036">KEY TAKEAWAYS</text>
+  <rect x="76" y="492" width="560" height="210" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="526" font-size="18" letter-spacing="2" fill="#4b4036">KEY TAKEAWAYS</text>
   {takeaway_lines}
 
   {expensive_block}
@@ -2760,11 +2887,24 @@ def _format_page_card_svg(report: ReportData | DashboardWindow, title: str) -> s
   <text x="92" y="752" font-size="18" letter-spacing="2" fill="#115e59">TREND</text>
   <g transform="translate(92 778)">{trend_svg}</g>
 
-  <rect x="76" y="1094" width="1046" height="430" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
-  <text x="92" y="1130" font-size="18" letter-spacing="2" fill="#115e59">ACTIVITY HEATMAP</text>
-  <g transform="translate(92 1160)">{heatmap_svg}</g>
+  <rect x="76" y="1094" width="1046" height="250" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="1130" font-size="18" letter-spacing="2" fill="#115e59">TOP PROJECTS</text>
+  <text x="690" y="1130" font-size="16" letter-spacing="2" fill="#6d645d">TOKENS</text>
+  <text x="790" y="1130" font-size="16" letter-spacing="2" fill="#6d645d">COST</text>
+  {project_rows_svg}
 
-  <text x="1124" y="1550" text-anchor="end" font-size="18" fill="#6d645d">Generated by codex-stats</text>
+  <rect x="76" y="1364" width="1046" height="246" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="1400" font-size="18" letter-spacing="2" fill="#115e59">TOP SESSIONS</text>
+  <text x="600" y="1400" font-size="16" letter-spacing="2" fill="#6d645d">REQ</text>
+  <text x="710" y="1400" font-size="16" letter-spacing="2" fill="#6d645d">TOKENS</text>
+  <text x="860" y="1400" font-size="16" letter-spacing="2" fill="#6d645d">COST</text>
+  {session_rows_svg}
+
+  <rect x="76" y="1630" width="1046" height="430" rx="24" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="92" y="1666" font-size="18" letter-spacing="2" fill="#115e59">ACTIVITY HEATMAP</text>
+  <g transform="translate(92 1696)">{heatmap_svg}</g>
+
+  <text x="1124" y="2050" text-anchor="end" font-size="18" fill="#6d645d">Generated by codex-stats</text>
 </svg>"""
 
 
