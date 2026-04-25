@@ -253,6 +253,17 @@ class SessionSpotlight:
 
 
 @dataclass(frozen=True)
+class WorkRhythm:
+    headline: str
+    detail: str
+    peak_day: str | None
+    peak_hour: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ReportData:
     period: str
     project_name: str | None
@@ -296,6 +307,7 @@ class DashboardWindow:
     takeaways: list[str]
     badges: list[DashboardBadge]
     expensive_session: SessionSpotlight | None
+    work_rhythm: WorkRhythm
     project_drilldowns: list["ProjectDrilldown"]
 
     def to_dict(self) -> dict[str, Any]:
@@ -316,6 +328,7 @@ class DashboardWindow:
             "takeaways": self.takeaways,
             "badges": [badge.to_dict() for badge in self.badges],
             "expensive_session": self.expensive_session.to_dict() if self.expensive_session else None,
+            "work_rhythm": self.work_rhythm.to_dict(),
             "project_drilldowns": [drilldown.to_dict() for drilldown in self.project_drilldowns],
         }
 

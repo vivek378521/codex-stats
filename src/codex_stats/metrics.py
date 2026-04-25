@@ -24,6 +24,7 @@ from .models import (
     TopEntry,
     ReportData,
     WatchAlert,
+    WorkRhythm,
 )
 
 def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float) -> float:
@@ -306,6 +307,37 @@ def summarize_expensive_session(
         total_tokens=most_expensive.effective_total_tokens(),
         requests=most_expensive.request_count,
         estimated_cost_usd=estimate_detail_cost(most_expensive, pricing),
+    )
+
+
+def summarize_work_rhythm(
+    daily_points: list[DailyPoint],
+    activity_heatmap: list[HeatmapCell],
+) -> WorkRhythm:
+    active_days = [point for point in daily_points if point.total_tokens > 0]
+    if not active_days or not activity_heatmap:
+        return WorkRhythm(
+            headline="Still learning your rhythm.",
+            detail="Use Codex across a few days and times to unlock a clearer work pattern summary.",
+            peak_day=None,
+            peak_hour=None,
+        )
+    busiest_day = max(active_days, key=lambda point: point.total_tokens)
+    peak_cell = max(activity_heatmap, key=lambda cell: cell.total_tokens)
+    weekday_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][peak_cell.weekday]
+    hour_label = _fmt_hour(peak_cell.hour)
+    active_weekdays = {cell.weekday for cell in activity_heatmap if cell.total_tokens > 0}
+    if len(active_weekdays) <= 2:
+        cadence = "clustered into a few focused days"
+    elif len(active_weekdays) >= 5:
+        cadence = "spread across most of the week"
+    else:
+        cadence = "centered on a mid-week rhythm"
+    return WorkRhythm(
+        headline=f"Your work is {cadence}.",
+        detail=f"The busiest recent day was {busiest_day.day} and the strongest hour lands around {weekday_name} {hour_label}.",
+        peak_day=busiest_day.day,
+        peak_hour=f"{weekday_name} {hour_label}",
     )
 
 
@@ -918,6 +950,16 @@ def _fmt_ratio_pct(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value * 100:.0f}%"
+
+
+def _fmt_hour(hour: int) -> str:
+    if hour == 0:
+        return "12 AM"
+    if hour < 12:
+        return f"{hour} AM"
+    if hour == 12:
+        return "12 PM"
+    return f"{hour - 12} PM"
 
 
 def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingConfig) -> list[BreakdownEntry]:

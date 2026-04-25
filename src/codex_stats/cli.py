@@ -23,6 +23,7 @@ from .metrics import (
     summarize_projects_from_details,
     summarize_takeaways,
     summarize_top_sessions_from_details,
+    summarize_work_rhythm,
 )
 from .ingest import iter_session_details
 from .models import DashboardData, DashboardWindow, SessionDetails
@@ -180,6 +181,7 @@ def _build_window(
         takeaways=summarize_takeaways(summary=summary, comparison=comparison, costs=costs, insights=insights),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(current_details, pricing),
+        work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap),
         project_drilldowns=summarize_project_drilldowns_from_details(
             current_details,
             days=max(trend_days, 1),
@@ -234,6 +236,7 @@ def _build_all_time_window(
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(all_details, pricing),
+        work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap),
         project_drilldowns=summarize_project_drilldowns_from_details(
             all_details,
             days=trend_days,

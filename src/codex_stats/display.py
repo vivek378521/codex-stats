@@ -730,6 +730,51 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       font-size: 0.95rem;
       padding: 12px 0 6px;
     }}
+    .empty-showcase {{
+      background: linear-gradient(135deg, rgba(15,118,110,0.08), rgba(180,83,9,0.06));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      color: var(--ink);
+    }}
+    .empty-showcase strong {{
+      display: block;
+      margin-bottom: 6px;
+      font-size: 1rem;
+    }}
+    .empty-showcase p {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }}
+    .rhythm-card {{
+      padding: 18px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(15,118,110,0.09), rgba(255,255,255,0.78));
+      border: 1px solid var(--line);
+    }}
+    .rhythm-card h3 {{
+      margin: 0 0 8px;
+      font-size: 1rem;
+    }}
+    .rhythm-card p {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }}
+    .rhythm-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }}
+    .rhythm-meta span {{
+      padding: 9px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.74);
+      border: 1px solid var(--line);
+      font-size: 0.9rem;
+    }}
     .table-wrap {{
       overflow-x: auto;
     }}
@@ -1906,6 +1951,16 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
         <section class="panel">
           <div class="section-header">
             <div>
+              <p class="section-kicker">When You Work</p>
+              <h2>Work Rhythm</h2>
+            </div>
+          </div>
+          {_format_work_rhythm_card(window)}
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <div>
               <p class="section-kicker">What Changed</p>
               <h2>Key Takeaways</h2>
             </div>
@@ -2082,7 +2137,10 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
 
 def _format_project_drilldown(window: DashboardWindow) -> str:
     if not window.project_drilldowns:
-        return '<div class="chart-empty">No project activity is available for this window yet.</div>'
+        return _format_empty_showcase(
+            "No project drilldown yet.",
+            "Run a few sessions in at least one project and this section will break out project-specific trends, heatmaps, and top sessions.",
+        )
     buttons = []
     panels = []
     for index, drilldown in enumerate(window.project_drilldowns):
@@ -2202,6 +2260,35 @@ def _format_project_panel(project_id: str, drilldown: ProjectDrilldown) -> str:
     """
 
 
+def _format_work_rhythm_card(window: DashboardWindow) -> str:
+    meta = []
+    if window.work_rhythm.peak_day:
+        meta.append(f"<span>Peak day: {escape(window.work_rhythm.peak_day)}</span>")
+    if window.work_rhythm.peak_hour:
+        meta.append(f"<span>Peak hour: {escape(window.work_rhythm.peak_hour)}</span>")
+    meta_html = f'<div class="rhythm-meta">{"".join(meta)}</div>' if meta else ""
+    return f"""
+    <div class="rhythm-card">
+      <h3>{escape(window.work_rhythm.headline)}</h3>
+      <p>{escape(window.work_rhythm.detail)}</p>
+      {meta_html}
+    </div>
+    """
+
+
+def _format_empty_showcase(title: str, detail: str) -> str:
+    return f"""
+    <div class="empty-showcase">
+      <strong>{escape(title)}</strong>
+      <p>{escape(detail)}</p>
+    </div>
+    """
+
+
+def _format_empty_chart(title: str, detail: str) -> str:
+    return f'<div class="chart-empty">{_format_empty_showcase(title, detail)}</div>'
+
+
 def _format_window_copy_summary(window: DashboardWindow) -> str:
     lines = [
         f"Codex Stats {window.label}",
@@ -2229,7 +2316,7 @@ def _svg_line_chart(
     value_formatter,
 ) -> str:
     if not points:
-        return '<div class="chart-empty">No data available.</div>'
+        return _format_empty_chart("No trend yet.", "Use Codex on more than one day in this window to reveal the trend line.")
     width = 760
     height = 240
     padding_left = 48
@@ -2284,7 +2371,7 @@ def _svg_bar_chart(
     empty_label: str,
 ) -> str:
     if not bars:
-        return f'<div class="chart-empty">{escape(empty_label)}</div>'
+        return _format_empty_chart("Nothing to rank yet.", empty_label)
     width = 760
     row_height = 34
     padding = 18
@@ -2307,7 +2394,7 @@ def _svg_bar_chart(
 
 def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
     if not cells:
-        return '<div class="chart-empty">No activity data available for this view.</div>'
+        return _format_empty_chart("No activity map yet.", "This heatmap fills in after you use Codex across different hours of the day.")
     width = 760
     height = 290
     left = 68

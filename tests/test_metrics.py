@@ -54,8 +54,9 @@ from codex_stats.metrics import (
     summarize_top_sessions_from_details,
     summarize_top_sessions,
     summarize_week,
+    summarize_work_rhythm,
 )
-from codex_stats.models import WatchAlert
+from codex_stats.models import DashboardData, WatchAlert
 from codex_stats.otel import build_otlp_metrics_payload, parse_key_value_pairs, write_otlp_metrics_json
 from codex_stats.transfer import export_payload, read_import, read_imports, read_imports_with_summary, write_merged_export
 from codex_stats.watch_state import build_watch_scope_key, load_watch_state, save_watch_state
@@ -330,6 +331,16 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(expensive_session.project_name, "project")
         self.assertEqual(expensive_session.total_tokens, 280)
 
+    def test_work_rhythm_summary(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = details_for_last_days(self.paths, 7, now=now)
+        daily = summarize_daily_from_details(details, days=7, now=now)
+        heatmap = summarize_activity_heatmap_from_details(details, timezone=now.tzinfo)
+        rhythm = summarize_work_rhythm(daily, heatmap)
+        self.assertIn("work", rhythm.headline.lower())
+        self.assertIsNotNone(rhythm.peak_day)
+        self.assertIsNotNone(rhythm.peak_hour)
+
     def test_export_payload_since_and_parser(self) -> None:
         payload = export_payload(self.paths, since="30d")
         self.assertEqual(len(payload["sessions"]), 1)
@@ -518,6 +529,7 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("Most Expensive Session", html)
         self.assertIn("Busiest day", html)
         self.assertIn("Peak hour", html)
+        self.assertIn("Work Rhythm", html)
         self.assertIn('data-window="day"', html)
         self.assertIn('data-window="week"', html)
         self.assertIn('data-window="month"', html)
@@ -589,6 +601,7 @@ class MetricsTestCase(unittest.TestCase):
         self.assertGreaterEqual(len(day_window.takeaways), 1)
         self.assertGreaterEqual(len(day_window.badges), 1)
         self.assertIsNotNone(day_window.expensive_session)
+        self.assertIsNotNone(day_window.work_rhythm)
         self.assertEqual(len(day_window.project_drilldowns), 1)
         self.assertEqual(day_window.project_drilldowns[0].name, "project")
 
@@ -615,6 +628,26 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("Work Patterns", html)
         self.assertIn("Activity Heatmap", html)
         self.assertIn("Top project concentration", html)
+
+    def test_empty_state_showcase_appears_for_no_data(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        empty_window = _build_window(
+            key="day",
+            label="Day",
+            description="Day view",
+            current_details=[],
+            previous_details=[],
+            current_label="today",
+            previous_label="yesterday",
+            trend_days=1,
+            all_details=[],
+            pricing=load_pricing_config(self.paths),
+            now=now,
+        )
+        html = format_dashboard_html(DashboardData(generated_at=now, windows=[empty_window]))
+        self.assertIn("Still learning your rhythm.", html)
+        self.assertIn("No project drilldown yet.", html)
+        self.assertIn("No activity map yet.", html)
 
 
 if __name__ == "__main__":
