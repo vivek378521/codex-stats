@@ -11,11 +11,14 @@ from .models import (
     BreakdownEntry,
     CompareReport,
     CostSummary,
+    DashboardBadge,
     DailyPoint,
     DoctorCheck,
     HeatmapCell,
     HistoryEntry,
     InsightReport,
+    ProjectDrilldown,
+    SessionSpotlight,
     SessionDetails,
     TimeSummary,
     TopEntry,
@@ -200,6 +203,110 @@ def summarize_projects_from_details(
     for detail in details:
         grouped[detail.session.project_name].append(detail)
     return _build_breakdown(grouped, pricing)
+
+
+def summarize_project_drilldowns_from_details(
+    details: list[SessionDetails],
+    *,
+    days: int,
+    now: datetime | None = None,
+    pricing: PricingConfig | None = None,
+    limit: int = 5,
+) -> list[ProjectDrilldown]:
+    pricing = pricing or PricingConfig()
+    current_time = now or datetime.now().astimezone()
+    project_entries = summarize_projects_from_details(details, pricing)[: max(limit, 0)]
+    drilldowns: list[ProjectDrilldown] = []
+    for entry in project_entries:
+        project_details = filter_details_by_project(details, entry.name)
+        summary = summarize_details(entry.name, project_details, pricing)
+        insights = summarize_insights_from_details(project_details, pricing=pricing, month=summary, now=current_time)
+        drilldowns.append(
+            ProjectDrilldown(
+                name=entry.name,
+                summary=summary,
+                top_sessions=summarize_top_sessions_from_details(project_details, pricing, limit=5),
+                history=summarize_history_from_details(project_details, pricing, limit=5),
+                daily_points=summarize_daily_from_details(project_details, days=max(days, 1), now=current_time, pricing=pricing),
+                activity_heatmap=summarize_activity_heatmap_from_details(project_details, timezone=current_time.tzinfo),
+                insights=insights,
+                takeaways=summarize_takeaways(summary=summary, insights=insights, max_items=3, scope_label=entry.name),
+            )
+        )
+    return drilldowns
+
+
+def summarize_takeaways(
+    *,
+    summary: TimeSummary,
+    insights: InsightReport,
+    comparison: CompareReport | None = None,
+    costs: CostSummary | None = None,
+    max_items: int = 4,
+    scope_label: str | None = None,
+) -> list[str]:
+    takeaways: list[str] = []
+    if comparison and comparison.total_tokens_delta_pct is not None:
+        direction = "up" if comparison.total_tokens_delta_pct >= 0 else "down"
+        takeaways.append(
+            f"Usage moved {direction} {abs(comparison.total_tokens_delta_pct):.1f}% versus {comparison.previous.label}."
+        )
+    if summary.project_concentration_top1_pct is not None and summary.project_concentration_top1_pct >= 0.6:
+        takeaways.append(
+            f"Work is concentrated: the top project accounts for {_fmt_ratio_pct(summary.project_concentration_top1_pct)} of tokens."
+        )
+    if summary.longest_active_streak_days >= 3:
+        takeaways.append(f"Active streak reached {summary.longest_active_streak_days} days.")
+    if summary.average_tokens_per_request >= 25_000:
+        takeaways.append(f"Average request size is high at {summary.average_tokens_per_request:,.0f} tokens.")
+    if summary.cache_ratio is not None and summary.cache_ratio < 0.25:
+        takeaways.append(f"Cache reuse is low at {_fmt_ratio_pct(summary.cache_ratio)}.")
+    if costs and costs.projected_monthly_cost_usd > summary.estimated_cost_usd and summary.estimated_cost_usd > 0:
+        takeaways.append(f"Current pace projects to ${costs.projected_monthly_cost_usd:.2f} for the month.")
+    if insights.anomalies:
+        takeaways.append(insights.anomalies[0] + ".")
+    if not takeaways:
+        label = scope_label or summary.label
+        takeaways.append(f"{label.title()} usage looks balanced with no obvious warning patterns.")
+    return takeaways[: max(max_items, 1)]
+
+
+def summarize_badges(
+    *,
+    summary: TimeSummary,
+    daily_points: list[DailyPoint],
+    activity_heatmap: list[HeatmapCell],
+) -> list[DashboardBadge]:
+    badges: list[DashboardBadge] = []
+    if summary.top_model:
+        badges.append(DashboardBadge(label="Top model", value=summary.top_model))
+    busiest_day = max(daily_points, key=lambda point: point.total_tokens, default=None)
+    if busiest_day and busiest_day.total_tokens > 0:
+        badges.append(DashboardBadge(label="Busiest day", value=f"{busiest_day.day[5:]}"))
+    peak_cell = max(activity_heatmap, key=lambda cell: cell.total_tokens, default=None)
+    if peak_cell and peak_cell.total_tokens > 0:
+        weekday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][peak_cell.weekday]
+        badges.append(DashboardBadge(label="Peak hour", value=f"{weekday} {peak_cell.hour:02d}:00"))
+    if summary.longest_active_streak_days > 0:
+        badges.append(DashboardBadge(label="Streak", value=f"{summary.longest_active_streak_days} day{'s' if summary.longest_active_streak_days != 1 else ''}"))
+    return badges[:4]
+
+
+def summarize_expensive_session(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+) -> SessionSpotlight | None:
+    pricing = pricing or PricingConfig()
+    if not details:
+        return None
+    most_expensive = max(details, key=lambda detail: estimate_detail_cost(detail, pricing))
+    return SessionSpotlight(
+        project_name=most_expensive.session.project_name,
+        model=most_expensive.session.model,
+        total_tokens=most_expensive.effective_total_tokens(),
+        requests=most_expensive.request_count,
+        estimated_cost_usd=estimate_detail_cost(most_expensive, pricing),
+    )
 
 
 def summarize_history(paths: Paths, limit: int = 10) -> list[HistoryEntry]:
@@ -805,6 +912,12 @@ def build_report(
         activity_heatmap=summarize_activity_heatmap_from_details(filtered_details, timezone=current_time.tzinfo),
     )
     return report
+
+
+def _fmt_ratio_pct(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.0f}%"
 
 
 def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingConfig) -> list[BreakdownEntry]:

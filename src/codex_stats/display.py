@@ -22,6 +22,7 @@ from .models import (
     HistoryEntry,
     InsightReport,
     ImportSummary,
+    ProjectDrilldown,
     SessionDetails,
     TimeSummary,
     TopEntry,
@@ -292,6 +293,13 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         },
         separators=(",", ":"),
     )
+    summaries_json = json.dumps(
+        {
+            window.key: _format_window_copy_summary(window)
+            for window in dashboard.windows
+        },
+        separators=(",", ":"),
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -484,6 +492,11 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       color: var(--muted);
       font-size: 0.92rem;
     }}
+    .copy-feedback {{
+      color: var(--muted);
+      font-size: 0.9rem;
+      min-height: 1.2em;
+    }}
     .window {{
       display: none;
       margin-top: 22px;
@@ -562,6 +575,63 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     .headline-band span {{
       color: var(--muted);
       font-size: 0.92rem;
+    }}
+    .badge-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }}
+    .summary-badge {{
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid var(--line);
+      font-size: 0.9rem;
+      color: var(--ink);
+    }}
+    .summary-badge strong {{
+      margin-right: 6px;
+    }}
+    .spotlight-card {{
+      margin-top: 16px;
+      padding: 18px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(180,83,9,0.11), rgba(15,118,110,0.09));
+      border: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 14px;
+      align-items: end;
+    }}
+    .spotlight-card h3 {{
+      margin: 0 0 6px;
+      font-size: 1rem;
+    }}
+    .spotlight-card p {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }}
+    .spotlight-kpis {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .spotlight-kpi {{
+      background: rgba(255,255,255,0.7);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+    }}
+    .spotlight-kpi strong {{
+      display: block;
+      font-size: 1rem;
+      margin-bottom: 4px;
+    }}
+    .spotlight-kpi span {{
+      color: var(--muted);
+      font-size: 0.85rem;
     }}
     .metric {{
       background: var(--panel-strong);
@@ -663,6 +733,70 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     .table-wrap {{
       overflow-x: auto;
     }}
+    .project-drilldown {{
+      display: grid;
+      gap: 16px;
+    }}
+    .project-tab-list {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }}
+    .project-tab-button {{
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.72);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      font-weight: 700;
+    }}
+    .project-tab-button.is-active {{
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 12px 30px rgba(15, 118, 110, 0.18);
+    }}
+    .project-panel {{
+      display: none;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+    }}
+    .project-panel.is-active {{
+      display: block;
+    }}
+    .project-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }}
+    .project-meta p {{
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 54ch;
+    }}
+    .project-stats {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }}
+    .project-stat {{
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }}
+    .project-stat strong {{
+      display: block;
+      font-size: 1.05rem;
+      margin-bottom: 4px;
+    }}
+    .project-stat span {{
+      color: var(--muted);
+      font-size: 0.92rem;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
@@ -688,6 +822,13 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       margin: 0 0 10px;
       line-height: 1.5;
     }}
+    .takeaway-list {{
+      margin: 0;
+      padding-left: 1.1rem;
+    }}
+    .takeaway-list li:last-child {{
+      margin-bottom: 0;
+    }}
     .footer {{
       margin-top: 16px;
       color: var(--muted);
@@ -701,7 +842,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       font-size: 0.9rem;
     }}
     @media (max-width: 960px) {{
-      .hero-grid, .metric-grid, .split, .chart-grid, .kpi-grid {{ grid-template-columns: 1fr; }}
+      .hero-grid, .metric-grid, .split, .chart-grid, .kpi-grid, .project-stats, .spotlight-card, .spotlight-kpis {{ grid-template-columns: 1fr; }}
     }}
     @media print {{
       @page {{
@@ -775,6 +916,8 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       <div class="toolbar">
         <div class="tabs">{tab_buttons}</div>
         <div class="actions">
+          <button class="action-button" type="button" data-action="copy-summary">Copy Summary</button>
+          <span class="copy-feedback" data-copy-feedback></span>
           <div class="export-wrap">
             <button class="action-button primary" type="button" data-action="toggle-export">Export</button>
             <div class="export-menu" data-export-menu>
@@ -814,6 +957,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
   </main>
   <script>
     const dashboardAssets = {assets_json};
+    const dashboardSummaries = {summaries_json};
     const tabs = Array.from(document.querySelectorAll("[data-window]"));
     const windows = Array.from(document.querySelectorAll(".window"));
     const exportWrap = document.querySelector(".export-wrap");
@@ -821,6 +965,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     const activeTitle = document.querySelector("[data-active-title]");
     const activeDescription = document.querySelector("[data-active-description]");
     const printNote = document.querySelector("[data-print-note]");
+    const copyFeedback = document.querySelector("[data-copy-feedback]");
     let activeWindow = tabs[0]?.dataset.window || "";
     let expandedForPrint = [];
 
@@ -849,6 +994,9 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         printNote.textContent = `PDF export will print ${{heading}} with expanded details. Generated ${{generatedAt}}.`;
       }}
       exportMenu?.classList.remove("is-open");
+      if (copyFeedback) {{
+        copyFeedback.textContent = "";
+      }}
     }}
 
     function beforePrint() {{
@@ -928,12 +1076,45 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       }}
     }}
 
+    async function copySummary() {{
+      const content = dashboardSummaries[activeWindow];
+      if (!content) {{
+        if (copyFeedback) {{
+          copyFeedback.textContent = "No summary available.";
+        }}
+        return;
+      }}
+      try {{
+        if (navigator.clipboard?.writeText) {{
+          await navigator.clipboard.writeText(content);
+        }} else {{
+          const textarea = document.createElement("textarea");
+          textarea.value = content;
+          textarea.setAttribute("readonly", "readonly");
+          textarea.style.position = "absolute";
+          textarea.style.left = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          textarea.remove();
+        }}
+        if (copyFeedback) {{
+          copyFeedback.textContent = "Summary copied.";
+        }}
+      }} catch (error) {{
+        if (copyFeedback) {{
+          copyFeedback.textContent = "Copy failed.";
+        }}
+      }}
+    }}
+
     tabs.forEach((button) => {{
       button.addEventListener("click", () => setActiveWindow(button.dataset.window));
     }});
     document.querySelector('[data-action="toggle-export"]')?.addEventListener("click", () => {{
       exportMenu?.classList.toggle("is-open");
     }});
+    document.querySelector('[data-action="copy-summary"]')?.addEventListener("click", copySummary);
     document.querySelector('[data-action="pdf"]')?.addEventListener("click", () => {{
       exportMenu?.classList.remove("is-open");
       beforePrint();
@@ -957,6 +1138,24 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
           target.hidden = expanded;
         }}
       }});
+    }});
+    document.querySelectorAll(".project-drilldown").forEach((drilldown) => {{
+      const buttons = Array.from(drilldown.querySelectorAll("[data-project-target]"));
+      const panels = Array.from(drilldown.querySelectorAll("[data-project-panel]"));
+      function setActiveProject(projectId) {{
+        buttons.forEach((button) => {{
+          button.classList.toggle("is-active", button.dataset.projectTarget === projectId);
+        }});
+        panels.forEach((panel) => {{
+          panel.classList.toggle("is-active", panel.dataset.projectPanel === projectId);
+        }});
+      }}
+      buttons.forEach((button) => {{
+        button.addEventListener("click", () => setActiveProject(button.dataset.projectTarget));
+      }});
+      if (buttons.length) {{
+        setActiveProject(buttons[0].dataset.projectTarget);
+      }}
     }});
     document.addEventListener("click", (event) => {{
       if (exportWrap && !exportWrap.contains(event.target)) {{
@@ -1624,6 +1823,26 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
     ) or '<tr><td colspan="6">No data</td></tr>'
     anomalies_html = "".join(f"<li>{escape(item)}</li>" for item in window.insights.anomalies) or "<li>none</li>"
     recommendations_html = "".join(f"<li>{escape(item)}</li>" for item in window.insights.recommendations) or "<li>none</li>"
+    project_drilldown_html = _format_project_drilldown(window)
+    badges_html = "".join(
+        f'<div class="summary-badge"><strong>{escape(badge.label)}:</strong>{escape(badge.value)}</div>'
+        for badge in window.badges
+    )
+    expensive_session_html = ""
+    if window.expensive_session:
+        expensive_session_html = f"""
+          <div class="spotlight-card">
+            <div>
+              <h3>Most Expensive Session</h3>
+              <p>{escape(window.expensive_session.project_name)} used {escape(window.expensive_session.model or 'unknown')} and drove the highest estimated cost in this view.</p>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>${window.expensive_session.estimated_cost_usd:.2f}</strong><span>Estimated cost</span></div>
+              <div class="spotlight-kpi"><strong>{window.expensive_session.total_tokens:,}</strong><span>Tokens</span></div>
+              <div class="spotlight-kpi"><strong>{window.expensive_session.requests}</strong><span>Requests</span></div>
+            </div>
+          </div>
+        """
     return f"""
     <section class="window{' is-active' if is_active else ''}" data-window="{escape(window.key)}">
       <div class="grid">
@@ -1640,6 +1859,8 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
             <strong>{escape(headline)}</strong>
             <span>{escape(change_text)}</span>
           </div>
+          <div class="badge-row">{badges_html}</div>
+          {expensive_session_html}
           <div class="metric-grid">
             <div class="metric">
               <span class="label">Total Tokens</span>
@@ -1680,6 +1901,16 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
             <div class="kpi"><strong>${window.comparison.cost_delta_usd:+.2f}</strong><span>Cost delta</span></div>
             <div class="kpi"><strong>{escape(window.insights.suggestion)}</strong><span>Primary recommendation</span></div>
           </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What Changed</p>
+              <h2>Key Takeaways</h2>
+            </div>
+          </div>
+          <ul class="takeaway-list">{''.join(f"<li>{escape(item)}</li>" for item in window.takeaways)}</ul>
         </section>
 
         <section class="panel">
@@ -1768,6 +1999,16 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
         <section class="panel">
           <div class="section-header">
             <div>
+              <p class="section-kicker">Go Deeper</p>
+              <h2>Project Drilldown</h2>
+            </div>
+          </div>
+          {project_drilldown_html}
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <div>
               <p class="section-kicker">Details</p>
               <h2>Projects, Sessions, and History</h2>
             </div>
@@ -1837,6 +2078,147 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
       </div>
     </section>
     """
+
+
+def _format_project_drilldown(window: DashboardWindow) -> str:
+    if not window.project_drilldowns:
+        return '<div class="chart-empty">No project activity is available for this window yet.</div>'
+    buttons = []
+    panels = []
+    for index, drilldown in enumerate(window.project_drilldowns):
+        project_id = f"{window.key}-project-{index}"
+        buttons.append(
+            f'<button class="project-tab-button" type="button" data-project-target="{escape(project_id)}">{escape(drilldown.name)}</button>'
+        )
+        panels.append(_format_project_panel(project_id, drilldown))
+    return (
+        '<div class="project-drilldown">'
+        f'<div class="project-tab-list">{"".join(buttons)}</div>'
+        f'{"".join(panels)}'
+        "</div>"
+    )
+
+
+def _format_project_panel(project_id: str, drilldown: ProjectDrilldown) -> str:
+    token_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.total_tokens)) for point in drilldown.daily_points],
+        stroke="#0f766e",
+        fill="rgba(15, 118, 110, 0.12)",
+        value_formatter=lambda value: f"{int(value):,}",
+    )
+    heatmap_svg = _svg_heatmap_chart(drilldown.activity_heatmap)
+    top_rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.model or 'unknown')}</td>
+          <td>{entry.requests}</td>
+          <td>{entry.total_tokens:,}</td>
+          <td>${entry.estimated_cost_usd:.2f}</td>
+        </tr>
+        """
+        for entry in drilldown.top_sessions
+    ) or '<tr><td colspan="4">No data</td></tr>'
+    history_rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(_fmt_short_dt(entry.updated_at))}</td>
+          <td>{escape(entry.model or 'unknown')}</td>
+          <td>{entry.requests}</td>
+          <td>{entry.total_tokens:,}</td>
+          <td>${entry.estimated_cost_usd:.2f}</td>
+        </tr>
+        """
+        for entry in drilldown.history
+    ) or '<tr><td colspan="5">No data</td></tr>'
+    return f"""
+    <div class="project-panel" data-project-panel="{escape(project_id)}">
+      <div class="project-meta">
+        <div>
+          <h3>{escape(drilldown.name)}</h3>
+          <p>{escape(drilldown.insights.suggestion)} Possible savings: ${drilldown.insights.possible_savings_usd:.2f}.</p>
+        </div>
+        <div class="delta-badge">Top model: {escape(drilldown.summary.top_model or 'unknown')}</div>
+      </div>
+      <div class="metric" style="margin-bottom: 16px;">
+        <span class="label">Key Takeaways</span>
+        <ul class="takeaway-list">{''.join(f"<li>{escape(item)}</li>" for item in drilldown.takeaways)}</ul>
+      </div>
+      <div class="project-stats">
+        <div class="project-stat"><strong>{drilldown.summary.total_tokens:,}</strong><span>Total tokens</span></div>
+        <div class="project-stat"><strong>${drilldown.summary.estimated_cost_usd:.2f}</strong><span>Estimated cost</span></div>
+        <div class="project-stat"><strong>{drilldown.summary.requests}</strong><span>Requests</span></div>
+        <div class="project-stat"><strong>{escape(_fmt_percent(drilldown.summary.cache_ratio))}</strong><span>Cache ratio</span></div>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>Project Token Trend</h3>
+          {token_trend_svg}
+        </div>
+        <div class="chart-card">
+          <h3>Project Activity Heatmap</h3>
+          {heatmap_svg}
+        </div>
+      </div>
+      <div class="split" style="margin-top: 16px;">
+        <div>
+          <div class="section-header">
+            <h3>Top Sessions in This Project</h3>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>{top_rows}</tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div class="section-header">
+            <h3>Recent Sessions in This Project</h3>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Updated</th>
+                  <th>Model</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>{history_rows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+
+def _format_window_copy_summary(window: DashboardWindow) -> str:
+    lines = [
+        f"Codex Stats {window.label}",
+        f"Tokens: {window.summary.total_tokens:,}",
+        f"Requests: {window.summary.requests}",
+        f"Estimated cost: ${window.summary.estimated_cost_usd:.2f}",
+        f"Top model: {window.summary.top_model or 'unknown'}",
+    ]
+    if window.takeaways:
+        lines.append("Takeaways:")
+        lines.extend(f"- {item}" for item in window.takeaways[:3])
+    if window.projects:
+        top_project = window.projects[0]
+        lines.append(
+            f"Top project: {top_project.name} with {top_project.total_tokens:,} tokens across {top_project.requests} requests."
+        )
+    return "\n".join(lines)
 
 
 def _svg_line_chart(

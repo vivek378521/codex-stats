@@ -232,6 +232,27 @@ class TopEntry:
 
 
 @dataclass(frozen=True)
+class DashboardBadge:
+    label: str
+    value: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SessionSpotlight:
+    project_name: str
+    model: str | None
+    total_tokens: int
+    requests: int
+    estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ReportData:
     period: str
     project_name: str | None
@@ -272,6 +293,10 @@ class DashboardWindow:
     costs: CostSummary
     insights: InsightReport
     activity_heatmap: list[HeatmapCell]
+    takeaways: list[str]
+    badges: list[DashboardBadge]
+    expensive_session: SessionSpotlight | None
+    project_drilldowns: list["ProjectDrilldown"]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -288,6 +313,34 @@ class DashboardWindow:
             "costs": self.costs.to_dict(),
             "insights": self.insights.to_dict(),
             "activity_heatmap": [cell.to_dict() for cell in self.activity_heatmap],
+            "takeaways": self.takeaways,
+            "badges": [badge.to_dict() for badge in self.badges],
+            "expensive_session": self.expensive_session.to_dict() if self.expensive_session else None,
+            "project_drilldowns": [drilldown.to_dict() for drilldown in self.project_drilldowns],
+        }
+
+
+@dataclass(frozen=True)
+class ProjectDrilldown:
+    name: str
+    summary: TimeSummary
+    top_sessions: list[TopEntry]
+    history: list[HistoryEntry]
+    daily_points: list[DailyPoint]
+    activity_heatmap: list[HeatmapCell]
+    insights: InsightReport
+    takeaways: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "summary": self.summary.to_dict(),
+            "top_sessions": [entry.to_dict() for entry in self.top_sessions],
+            "history": [entry.to_dict() for entry in self.history],
+            "daily_points": [point.to_dict() for point in self.daily_points],
+            "activity_heatmap": [cell.to_dict() for cell in self.activity_heatmap],
+            "insights": self.insights.to_dict(),
+            "takeaways": self.takeaways,
         }
 
 

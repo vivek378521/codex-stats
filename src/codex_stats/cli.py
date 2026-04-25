@@ -11,13 +11,17 @@ from .display import format_dashboard_html
 from .metrics import (
     local_date,
     summarize_activity_heatmap_from_details,
+    summarize_badges,
     summarize_compare_from_details,
     summarize_costs_from_details,
     summarize_daily_from_details,
     summarize_details,
+    summarize_expensive_session,
     summarize_history_from_details,
     summarize_insights_from_details,
+    summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
+    summarize_takeaways,
     summarize_top_sessions_from_details,
 )
 from .ingest import iter_session_details
@@ -157,6 +161,8 @@ def _build_window(
         now=now,
     )
     history_source = current_details if current_details else all_details
+    daily_points = summarize_daily_from_details(current_details, days=max(trend_days, 1), now=now, pricing=pricing)
+    activity_heatmap = summarize_activity_heatmap_from_details(current_details, timezone=now.tzinfo)
     return DashboardWindow(
         key=key,
         label=label,
@@ -167,10 +173,20 @@ def _build_window(
         projects=summarize_projects_from_details(current_details, pricing)[:10],
         top_sessions=summarize_top_sessions_from_details(current_details, pricing, limit=10),
         history=summarize_history_from_details(history_source, pricing, limit=10),
-        daily_points=summarize_daily_from_details(current_details, days=max(trend_days, 1), now=now, pricing=pricing),
+        daily_points=daily_points,
         costs=costs,
         insights=insights,
-        activity_heatmap=summarize_activity_heatmap_from_details(current_details, timezone=now.tzinfo),
+        activity_heatmap=activity_heatmap,
+        takeaways=summarize_takeaways(summary=summary, comparison=comparison, costs=costs, insights=insights),
+        badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
+        expensive_session=summarize_expensive_session(current_details, pricing),
+        project_drilldowns=summarize_project_drilldowns_from_details(
+            current_details,
+            days=max(trend_days, 1),
+            now=now,
+            pricing=pricing,
+            limit=5,
+        ),
     )
 
 
@@ -191,8 +207,11 @@ def _build_all_time_window(
         pricing=pricing,
     )
     costs = summarize_costs_from_details(all_details, pricing=pricing, now=now)
+    insights = summarize_insights_from_details(all_details, pricing=pricing, month=summary, now=now)
     trend_days = _all_time_trend_days(all_details, now)
     trend_details = _details_for_last_days(all_details, trend_days, now)
+    daily_points = summarize_daily_from_details(trend_details, days=trend_days, now=now, pricing=pricing)
+    activity_heatmap = summarize_activity_heatmap_from_details(all_details, timezone=now.tzinfo)
     return DashboardWindow(
         key="all",
         label="All Time",
@@ -203,10 +222,25 @@ def _build_all_time_window(
         projects=summarize_projects_from_details(all_details, pricing)[:10],
         top_sessions=summarize_top_sessions_from_details(all_details, pricing, limit=10),
         history=summarize_history_from_details(all_details, pricing, limit=10),
-        daily_points=summarize_daily_from_details(trend_details, days=trend_days, now=now, pricing=pricing),
+        daily_points=daily_points,
         costs=costs,
-        insights=summarize_insights_from_details(all_details, pricing=pricing, month=summary, now=now),
-        activity_heatmap=summarize_activity_heatmap_from_details(all_details, timezone=now.tzinfo),
+        insights=insights,
+        activity_heatmap=activity_heatmap,
+        takeaways=summarize_takeaways(
+            summary=summary,
+            comparison=comparison,
+            costs=costs,
+            insights=insights,
+        ),
+        badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
+        expensive_session=summarize_expensive_session(all_details, pricing),
+        project_drilldowns=summarize_project_drilldowns_from_details(
+            all_details,
+            days=trend_days,
+            now=now,
+            pricing=pricing,
+            limit=5,
+        ),
     )
 
 

@@ -30,6 +30,8 @@ from codex_stats.metrics import (
     filter_details_by_project,
     parse_since_days,
     run_doctor,
+    summarize_activity_heatmap_from_details,
+    summarize_badges,
     summarize_compare,
     summarize_compare_from_details,
     summarize_compare_named,
@@ -43,9 +45,12 @@ from codex_stats.metrics import (
     summarize_models,
     summarize_month,
     summarize_project_drilldown,
+    summarize_project_drilldowns_from_details,
     summarize_projects,
     summarize_details,
+    summarize_expensive_session,
     summarize_today,
+    summarize_takeaways,
     summarize_top_sessions_from_details,
     summarize_top_sessions,
     summarize_week,
@@ -288,11 +293,42 @@ class MetricsTestCase(unittest.TestCase):
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         summary = summarize_project_drilldown(self.paths, "project", days=30, now=now)
         details = details_for_last_days(self.paths, 30, now=now)
+        drilldowns = summarize_project_drilldowns_from_details(details, days=30, now=now)
         top = summarize_top_sessions_from_details(details, limit=5, project_name="project")
         self.assertEqual(summary.total_tokens, 280)
         self.assertEqual(summary.requests, 2)
+        self.assertEqual(len(drilldowns), 1)
+        self.assertEqual(drilldowns[0].name, "project")
+        self.assertEqual(drilldowns[0].summary.total_tokens, 280)
+        self.assertGreaterEqual(len(drilldowns[0].takeaways), 1)
         self.assertEqual(len(top), 1)
         self.assertEqual(top[0].project_name, "project")
+
+    def test_takeaways_summarize_usage_story(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = details_for_last_days(self.paths, 7, now=now)
+        summary = summarize_details("last 7 days", details)
+        compare = summarize_compare_from_details(details, [], current_label="last 7 days", previous_label="prev 7 days")
+        insights = summarize_insights_from_details(details, month=summary, now=now)
+        costs = summarize_costs(self.paths, now=now)
+        takeaways = summarize_takeaways(summary=summary, comparison=compare, insights=insights, costs=costs)
+        self.assertTrue(any("Cache reuse is low" in item for item in takeaways))
+        self.assertTrue(any("Current pace projects" in item for item in takeaways))
+
+    def test_badges_and_expensive_session(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = details_for_last_days(self.paths, 7, now=now)
+        summary = summarize_details("last 7 days", details)
+        daily = summarize_daily_from_details(details, days=7, now=now)
+        heatmap = summarize_activity_heatmap_from_details(details, timezone=now.tzinfo)
+        badges = summarize_badges(summary=summary, daily_points=daily, activity_heatmap=heatmap)
+        expensive_session = summarize_expensive_session(details)
+        self.assertTrue(any(badge.label == "Top model" and badge.value == "gpt-5.4" for badge in badges))
+        self.assertTrue(any(badge.label == "Busiest day" for badge in badges))
+        self.assertIsNotNone(expensive_session)
+        assert expensive_session is not None
+        self.assertEqual(expensive_session.project_name, "project")
+        self.assertEqual(expensive_session.total_tokens, 280)
 
     def test_export_payload_since_and_parser(self) -> None:
         payload = export_payload(self.paths, since="30d")
@@ -475,12 +511,23 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("Codex usage at a glance.", html)
         self.assertIn("The selected tab updates the full page.", html)
+        self.assertIn("Copy Summary", html)
+        self.assertIn("data-copy-feedback", html)
         self.assertIn("Download PDF", html)
         self.assertIn("Summary JPG", html)
+        self.assertIn("Most Expensive Session", html)
+        self.assertIn("Busiest day", html)
+        self.assertIn("Peak hour", html)
         self.assertIn('data-window="day"', html)
         self.assertIn('data-window="week"', html)
         self.assertIn('data-window="month"', html)
         self.assertIn('data-window="all"', html)
+        self.assertIn("Codex Stats Week", html)
+        self.assertIn("Top project: project with 280 tokens across 2 requests.", html)
+        self.assertIn("Key Takeaways", html)
+        self.assertIn("Project Drilldown", html)
+        self.assertIn("Project Token Trend", html)
+        self.assertIn('data-project-target="week-project-0"', html)
         self.assertIn("Projects, Sessions, and History", html)
         self.assertEqual(set(week_assets), {"summary-card", "cost-card", "focus-card", "projects-card", "heatmap-card"})
         self.assertIn("Codex Stats Week", week_assets["summary-card"])
@@ -539,6 +586,11 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(month_window.costs.today_cost_usd, month_window.summary.estimated_cost_usd)
         self.assertGreater(month_window.costs.today_cost_usd, day_window.costs.today_cost_usd)
         self.assertGreater(month_window.costs.highest_session_cost_usd, day_window.costs.highest_session_cost_usd)
+        self.assertGreaterEqual(len(day_window.takeaways), 1)
+        self.assertGreaterEqual(len(day_window.badges), 1)
+        self.assertIsNotNone(day_window.expensive_session)
+        self.assertEqual(len(day_window.project_drilldowns), 1)
+        self.assertEqual(day_window.project_drilldowns[0].name, "project")
 
     def test_report_svg_output(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
