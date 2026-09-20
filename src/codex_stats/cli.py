@@ -21,12 +21,19 @@ from .metrics import (
     summarize_insights_from_details,
     summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
+    summarize_source_breakdown_from_details,
+    summarize_source_daily_from_details,
     summarize_takeaways,
     summarize_top_sessions_from_details,
     summarize_work_rhythm,
 )
-from .ingest import iter_session_details
-from .models import DashboardData, DashboardWindow, SessionDetails
+from .models import (
+    DashboardData,
+    DashboardScope,
+    DashboardWindow,
+    SessionDetails,
+)
+from .sources import Source, iter_sources
 from .transfer import write_export
 
 
@@ -41,6 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write dashboard HTML to a file instead of a temp file.",
     )
     parser.add_argument("--no-open", action="store_true", help="Write the dashboard without opening the browser.")
+    parser.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        metavar="SOURCE",
+        help="Only include the given tool scope (codex, opencode, claude, hermes). Repeatable: --source codex --source opencode.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     export_parser = subparsers.add_parser("export", help="Export normalized local stats to JSON.")
@@ -63,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
-    dashboard = _build_dashboard(paths)
+    dashboard = _build_dashboard(paths, sources=args.sources)
     output_path = _write_dashboard_output(format_dashboard_html(dashboard), args.dashboard_output)
     print(f"Wrote dashboard to {output_path}")
     if not args.no_open:
@@ -72,62 +86,118 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData:
+def _build_dashboard(paths: Paths, now: datetime | None = None, sources: list[str] | None = None) -> DashboardData:
     current_time = now or datetime.now().astimezone()
     pricing = load_pricing_config(paths)
-    all_details = iter_session_details(paths)
+    all_sources = iter_sources(paths)
+    if sources:
+        requested = set(sources)
+        missing = sorted(requested - {source.key for source in all_sources})
+        if missing:
+            known = ", ".join(sorted(source.key for source in all_sources)) or "none"
+            raise ValueError(f"Unknown source(s): {', '.join(missing)}. Known sources: {known}")
+        selected_sources = [source for source in all_sources if source.key in requested]
+    else:
+        selected_sources = all_sources
+    source_details = {source.key: source.ingest() for source in selected_sources}
+    all_details = [detail for source in selected_sources for detail in source_details[source.key]]
 
-    today_details = _details_for_last_days(all_details, 1, current_time)
-    week_details = _details_for_last_days(all_details, 7, current_time)
-    month_details = _details_for_last_days(all_details, 30, current_time)
+    overview = _build_scope(
+        key="overview",
+        label="Overview",
+        description="Every tool combined. Start here to see total activity, spend, and where the work happened.",
+        source="all",
+        details=all_details,
+        pricing=pricing,
+        now=current_time,
+        build_tool_breakdown=True,
+    )
+    tool_scopes = [
+        _build_scope(
+            key=source.key,
+            label=source.label,
+            description=source.description,
+            source=source.key,
+            details=source_details[source.key],
+            pricing=pricing,
+            now=current_time,
+        )
+        for source in selected_sources
+    ]
+    return DashboardData(generated_at=current_time, scopes=[overview, *tool_scopes])
 
+
+def _build_scope(
+    *,
+    key: str,
+    label: str,
+    description: str,
+    source: str,
+    details: list[SessionDetails],
+    pricing: PricingConfig,
+    now: datetime,
+    build_tool_breakdown: bool = False,
+) -> DashboardScope:
+    today_details = _details_for_last_days(details, 1, now)
+    week_details = _details_for_last_days(details, 7, now)
+    month_details = _details_for_last_days(details, 30, now)
     windows = [
         _build_window(
             key="day",
             label="Day",
             description="Today’s usage with a direct comparison to yesterday.",
             current_details=today_details,
-            previous_details=_details_for_previous_window(all_details, 1, current_time),
+            previous_details=_details_for_previous_window(details, 1, now),
             current_label="today",
             previous_label="yesterday",
             trend_days=1,
-            all_details=all_details,
+            all_details=details,
             pricing=pricing,
-            now=current_time,
+            now=now,
+            build_tool_breakdown=build_tool_breakdown,
         ),
         _build_window(
             key="week",
             label="Week",
             description="Rolling 7-day totals, recent trend, and the busiest sessions this week.",
             current_details=week_details,
-            previous_details=_details_for_previous_window(all_details, 7, current_time),
+            previous_details=_details_for_previous_window(details, 7, now),
             current_label="last 7 days",
             previous_label="previous 7 days",
             trend_days=7,
-            all_details=all_details,
+            all_details=details,
             pricing=pricing,
-            now=current_time,
+            now=now,
+            build_tool_breakdown=build_tool_breakdown,
         ),
         _build_window(
             key="month",
             label="Month",
             description="Rolling 30-day totals with project concentration and cost pressure.",
             current_details=month_details,
-            previous_details=_details_for_previous_window(all_details, 30, current_time),
+            previous_details=_details_for_previous_window(details, 30, now),
             current_label="last 30 days",
             previous_label="previous 30 days",
             trend_days=30,
-            all_details=all_details,
+            all_details=details,
             pricing=pricing,
-            now=current_time,
+            now=now,
+            build_tool_breakdown=build_tool_breakdown,
         ),
         _build_all_time_window(
-            all_details=all_details,
+            all_details=details,
             pricing=pricing,
-            now=current_time,
+            now=now,
+            build_tool_breakdown=build_tool_breakdown,
         ),
     ]
-    return DashboardData(generated_at=current_time, windows=windows)
+    return DashboardScope(
+        key=key,
+        label=label,
+        description=description,
+        source=source,
+        windows=windows,
+    )
 
 
 def _build_window(
@@ -143,6 +213,7 @@ def _build_window(
     all_details: list[SessionDetails],
     pricing: PricingConfig,
     now: datetime,
+    build_tool_breakdown: bool = False,
 ) -> DashboardWindow:
     summary = summarize_details(current_label, current_details, pricing)
     comparison = summarize_compare_from_details(
@@ -189,6 +260,21 @@ def _build_window(
             pricing=pricing,
             limit=5,
         ),
+        tool_breakdown=(
+            summarize_source_breakdown_from_details(current_details, pricing)
+            if build_tool_breakdown
+            else None
+        ),
+        tool_daily_points=(
+            summarize_source_daily_from_details(
+                current_details,
+                days=max(trend_days, 1),
+                now=now,
+                pricing=pricing,
+            )
+            if build_tool_breakdown
+            else None
+        ),
     )
 
 
@@ -197,6 +283,7 @@ def _build_all_time_window(
     all_details: list[SessionDetails],
     pricing: PricingConfig,
     now: datetime,
+    build_tool_breakdown: bool = False,
 ) -> DashboardWindow:
     summary = summarize_details("all time", all_details, pricing)
     recent_details = _details_for_last_days(all_details, 30, now)
@@ -243,6 +330,21 @@ def _build_all_time_window(
             now=now,
             pricing=pricing,
             limit=5,
+        ),
+        tool_breakdown=(
+            summarize_source_breakdown_from_details(all_details, pricing)
+            if build_tool_breakdown
+            else None
+        ),
+        tool_daily_points=(
+            summarize_source_daily_from_details(
+                all_details,
+                days=trend_days,
+                now=now,
+                pricing=pricing,
+            )
+            if build_tool_breakdown
+            else None
         ),
     )
 

@@ -21,18 +21,25 @@ from .models import (
     SessionSpotlight,
     SessionDetails,
     TimeSummary,
+    ToolDailyPoint,
     TopEntry,
     ReportData,
     WatchAlert,
     WorkRhythm,
 )
+from .sources import source_label
 
 def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float) -> float:
     return round((total_tokens / 1000.0) * usd_per_1k_tokens, 4)
 
 
 def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> float:
-    return estimate_cost_usd(detail.effective_total_tokens(), pricing.rate_for_model(detail.session.model))
+    if detail.recorded_cost_usd is not None and detail.recorded_cost_usd > 0:
+        return round(detail.recorded_cost_usd, 4)
+    return estimate_cost_usd(
+        detail.effective_total_tokens(),
+        pricing.rate_for_source(detail.session.source, detail.session.model),
+    )
 
 
 def summarize_today(paths: Paths, now: datetime | None = None) -> TimeSummary:
@@ -193,6 +200,61 @@ def summarize_project_drilldown(
     filtered = filter_details_by_project(details, project_name)
     label = project_name if days is None else f"{project_name} last {max(days, 1)} days"
     return summarize_details(label, filtered, pricing)
+
+
+def summarize_source_breakdown_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+    labels: dict[str, str] | None = None,
+) -> list[BreakdownEntry]:
+    pricing = pricing or PricingConfig()
+    grouped: dict[str, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        grouped[detail.session.source].append(detail)
+    entries: list[BreakdownEntry] = []
+    for source_key, source_details in grouped.items():
+        label = (labels or {}).get(source_key, source_label(source_key))
+        total_tokens = sum(detail.effective_total_tokens() for detail in source_details)
+        entries.append(
+            BreakdownEntry(
+                name=label,
+                sessions=len(source_details),
+                requests=sum(detail.request_count for detail in source_details),
+                total_tokens=total_tokens,
+                estimated_cost_usd=round(sum(estimate_detail_cost(detail, pricing) for detail in source_details), 4),
+            )
+        )
+    return sorted(entries, key=lambda entry: (-entry.total_tokens, entry.name))
+
+
+def summarize_source_daily_from_details(
+    details: list[SessionDetails],
+    *,
+    days: int,
+    now: datetime | None = None,
+    pricing: PricingConfig | None = None,
+) -> list[ToolDailyPoint]:
+    pricing = pricing or PricingConfig()
+    current_time = now or datetime.now().astimezone()
+    safe_days = max(days, 1)
+    end_day = current_time.date()
+    start_day = end_day - timedelta(days=safe_days - 1)
+    buckets: dict[tuple[date, str], list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        day = local_date(detail.session.created_at, current_time.tzinfo)
+        if start_day <= day <= end_day:
+            buckets[(day, detail.session.source)].append(detail)
+    points = []
+    for (day, source_key), source_details in sorted(buckets.items()):
+        points.append(
+            ToolDailyPoint(
+                day=day.isoformat()[:10],
+                source=source_key,
+                total_tokens=sum(detail.effective_total_tokens() for detail in source_details),
+                estimated_cost_usd=round(sum(estimate_detail_cost(detail, pricing) for detail in source_details), 4),
+            )
+        )
+    return points
 
 
 def summarize_projects_from_details(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import textwrap
+from collections import defaultdict
 from datetime import UTC, datetime
 from dataclasses import dataclass
 from html import escape
@@ -25,10 +26,19 @@ from .models import (
     ProjectDrilldown,
     SessionDetails,
     TimeSummary,
+    ToolDailyPoint,
     TopEntry,
     ReportData,
     WatchAlert,
 )
+from .sources import source_label
+
+SOURCE_CHART_COLORS: dict[str, str] = {
+    "codex": "#0f766e",
+    "opencode": "#b45309",
+    "claude": "#7c3aed",
+    "hermes": "#be185d",
+}
 
 
 @dataclass(frozen=True)
@@ -272,31 +282,51 @@ def format_report(report: ReportData, options: FormatOptions | None = None) -> s
 
 def format_dashboard_html(dashboard: DashboardData) -> str:
     generated_at = dashboard.generated_at.strftime("%Y-%m-%d %H:%M %Z")
+    scopes = list(dashboard.scopes)
+    windows = list(dashboard.windows)
     tab_label_overrides = {
         "day": "Today",
         "week": "Last 7 Days",
         "month": "Last 30 Days",
         "all": "All Time",
     }
-    tab_buttons = "".join(
-        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-window="{escape(window.key)}">{escape(tab_label_overrides.get(window.key, window.label))}</button>'
-        for index, window in enumerate(dashboard.windows)
+    scope_buttons = "".join(
+        f'<button class="scope-button{" is-active" if index == 0 else ""}" type="button" data-scope-button="{escape(scope.key)}">{escape(scope.label)}</button>'
+        for index, scope in enumerate(scopes)
     )
-    window_sections = "".join(
-        _format_dashboard_window_section(window, is_active=index == 0)
-        for index, window in enumerate(dashboard.windows)
+    range_keys: list[str] = []
+    for window in windows:
+        if window.key not in range_keys:
+            range_keys.append(window.key)
+    range_buttons = "".join(
+        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-window-button="{escape(window_key)}">{escape(tab_label_overrides.get(window_key, window_key))}</button>'
+        for index, window_key in enumerate(range_keys)
+    )
+    scope_sections = "".join(
+        "".join(
+            _format_dashboard_window_section(
+                window,
+                is_active=scope_index == 0 and window_index == 0,
+                scope_key=scope.key,
+                scope_label=scope.label,
+            )
+            for window_index, window in enumerate(scope.windows)
+        )
+        for scope_index, scope in enumerate(scopes)
     )
     assets_json = json.dumps(
         {
-            window.key: format_dashboard_svg_assets(window)
-            for window in dashboard.windows
+            f"{scope.key}-{window.key}": format_dashboard_svg_assets(window, scope_label=scope.label)
+            for scope in scopes
+            for window in scope.windows
         },
         separators=(",", ":"),
     )
     summaries_json = json.dumps(
         {
-            window.key: _format_window_copy_summary(window)
-            for window in dashboard.windows
+            f"{scope.key}-{window.key}": _format_window_copy_summary(window, scope_label=scope.label)
+            for scope in scopes
+            for window in scope.windows
         },
         separators=(",", ":"),
     )
@@ -305,7 +335,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex Stats Dashboard</title>
+  <title>Agent Stats Dashboard</title>
   <style>
     :root {{
       --bg: #f6efe3;
@@ -412,6 +442,31 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       flex-wrap: wrap;
       gap: 10px;
       align-items: center;
+    }}
+    .tabs {{
+      gap: 8px;
+    }}
+    .scope-tabs, .range-tabs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }}
+    .scope-tabs {{
+      padding-right: 14px;
+      border-right: 1px solid var(--line);
+    }}
+    .scope-tabs .scope-button {{
+      padding: 13px 18px;
+      background: rgba(180, 83, 9, 0.10);
+      color: var(--ink);
+      border: 1px solid rgba(180, 83, 9, 0.22);
+      font-weight: 700;
+    }}
+    .scope-tabs .scope-button.is-active {{
+      background: var(--accent-2);
+      color: #fff;
+      box-shadow: 0 12px 30px rgba(180, 83, 9, 0.24);
     }}
     button {{
       border: 0;
@@ -874,6 +929,50 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     .takeaway-list li:last-child {{
       margin-bottom: 0;
     }}
+    .tool-share {{
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }}
+    .tool-share-row {{
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }}
+    .tool-share-row:last-child {{
+      border-bottom: 0;
+      padding-bottom: 0;
+    }}
+    .tool-share-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 6px;
+    }}
+    .tool-share-head strong {{
+      font-size: 1.02rem;
+    }}
+    .tool-share-head span {{
+      color: var(--accent-2);
+      font-weight: 700;
+    }}
+    .tool-share-bar {{
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(180, 83, 9, 0.12);
+      overflow: hidden;
+    }}
+    .tool-share-bar span {{
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-2), #d97706);
+    }}
+    .tool-share-meta {{
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }}
     .footer {{
       margin-top: 16px;
       color: var(--muted);
@@ -947,19 +1046,22 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
 <body>
   <main class="page">
     <section class="hero">
-      <p class="eyebrow">Codex Stats</p>
+      <p class="eyebrow">Coding Agent Stats</p>
       <div class="hero-grid">
         <div>
-          <h1>Codex usage at a glance.</h1>
-          <p class="lede">Switch ranges, review the stats, and export the active view if you need to share it.</p>
+          <h1>Every tool, one view.</h1>
+          <p class="lede">Pick a tool, then a time window. Start on Overview to see all coding assistants combined.</p>
         </div>
         <div class="hero-summary">
-          <strong data-active-title>Range</strong>
+          <strong data-active-title>Overview</strong>
           <p data-active-description>The selected tab updates the full page.</p>
         </div>
       </div>
       <div class="toolbar">
-        <div class="tabs">{tab_buttons}</div>
+        <div class="tabs">
+          <div class="scope-tabs">{scope_buttons}</div>
+          <div class="range-tabs">{range_buttons}</div>
+        </div>
         <div class="actions">
           <button class="action-button" type="button" data-action="copy-summary">Copy Summary</button>
           <span class="copy-feedback" data-copy-feedback></span>
@@ -1001,13 +1103,14 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       </div>
       <p class="print-note" data-print-note>PDF export prints the active tab as a report.</p>
     </section>
-    {window_sections}
+    {scope_sections}
     <div class="footer">Generated by codex-stats</div>
   </main>
   <script>
     const dashboardAssets = {assets_json};
     const dashboardSummaries = {summaries_json};
-    const tabs = Array.from(document.querySelectorAll("[data-window]"));
+    const scopeButtons = Array.from(document.querySelectorAll("[data-scope-button]"));
+    const rangeButtons = Array.from(document.querySelectorAll("[data-window-button]"));
     const windows = Array.from(document.querySelectorAll(".window"));
     const exportWrap = document.querySelector(".export-wrap");
     const exportMenu = document.querySelector("[data-export-menu]");
@@ -1015,9 +1118,18 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     const activeDescription = document.querySelector("[data-active-description]");
     const printNote = document.querySelector("[data-print-note]");
     const copyFeedback = document.querySelector("[data-copy-feedback]");
-    let activeWindow = tabs[0]?.dataset.window || "";
+    let activeScope = scopeButtons[0]?.dataset.scopeButton || "";
+    let activeWindow = rangeButtons[0]?.dataset.windowButton || "";
     let expandedForPrint = [];
     let pendingPrintTitle = null;
+
+    function activeSectionId() {{
+      return activeScope + "-" + activeWindow;
+    }}
+
+    function activeSection() {{
+      return windows.find((section) => section.dataset.scope === activeScope && section.dataset.window === activeWindow);
+    }}
 
     function setFeedback(message) {{
       if (copyFeedback) {{
@@ -1067,9 +1179,9 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     async function downloadRenderedPageJpg() {{
       const page = document.querySelector(".page");
       const hero = document.querySelector(".hero");
-      const activeSection = windows.find((section) => section.dataset.window === activeWindow);
+      const activeSectionEl = activeSection();
       const footer = document.querySelector(".footer");
-      if (!page || !hero || !activeSection || !footer) {{
+      if (!page || !hero || !activeSectionEl || !footer) {{
         throw new Error("Missing page sections");
       }}
 
@@ -1084,7 +1196,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       const clonePage = document.createElement("main");
       clonePage.className = "page";
       clonePage.appendChild(hero.cloneNode(true));
-      clonePage.appendChild(activeSection.cloneNode(true));
+      clonePage.appendChild(activeSectionEl.cloneNode(true));
       clonePage.appendChild(footer.cloneNode(true));
       clonePage.querySelectorAll(".detail-section").forEach((section) => {{
         section.hidden = false;
@@ -1125,27 +1237,32 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         context.fillStyle = "#fffaf2";
         context.fillRect(0, 0, width, height);
         context.drawImage(image, 0, 0, width, height);
-        await triggerJpgDownloadFromCanvas(canvas, `codex-stats-${{activeWindow}}-full-page-${{exportTimestamp()}}.jpg`);
+        await triggerJpgDownloadFromCanvas(canvas, `agent-stats-${{activeScope}}-${{activeWindow}}-full-page-${{exportTimestamp()}}.jpg`);
       }} finally {{
         URL.revokeObjectURL(url);
         sandbox.remove();
       }}
     }}
 
-    function setActiveWindow(key) {{
-      activeWindow = key;
-      tabs.forEach((button) => {{
-        button.classList.toggle("is-active", button.dataset.window === key);
+    function reflectActive() {{
+      scopeButtons.forEach((button) => {{
+        button.classList.toggle("is-active", button.dataset.scopeButton === activeScope);
+      }});
+      rangeButtons.forEach((button) => {{
+        button.classList.toggle("is-active", button.dataset.windowButton === activeWindow);
       }});
       windows.forEach((section) => {{
-        section.classList.toggle("is-active", section.dataset.window === key);
+        section.classList.toggle(
+          "is-active",
+          section.dataset.scope === activeScope && section.dataset.window === activeWindow
+        );
       }});
-      document.title = `Codex Stats Dashboard - ${{
-        tabs.find((button) => button.dataset.window === key)?.textContent || "Stats"
-      }}`;
-      const activeSection = windows.find((section) => section.dataset.window === key);
-      const heading = activeSection?.querySelector(".window-title h2")?.textContent || "Range";
-      const description = activeSection?.querySelector(".window-title p")?.textContent || "The selected tab updates the full page.";
+      const scopeLabel = scopeButtons.find((button) => button.dataset.scopeButton === activeScope)?.textContent || "Overview";
+      const rangeLabel = rangeButtons.find((button) => button.dataset.windowButton === activeWindow)?.textContent || "Stats";
+      document.title = `Agent Stats Dashboard - ${{scopeLabel}} / ${{rangeLabel}}`;
+      const active = activeSection();
+      const heading = active?.querySelector(".window-title h2")?.textContent || "Range";
+      const description = active?.querySelector(".window-title p")?.textContent || "The selected tab updates the full page.";
       const generatedAt = {json.dumps(generated_at)};
       if (activeTitle) {{
         activeTitle.textContent = heading;
@@ -1160,12 +1277,22 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       setFeedback("");
     }}
 
+    function setActiveScope(key) {{
+      activeScope = key;
+      reflectActive();
+    }}
+
+    function setActiveWindow(key) {{
+      activeWindow = key;
+      reflectActive();
+    }}
+
     function beforePrint() {{
-      const activeSection = windows.find((section) => section.dataset.window === activeWindow);
+      const active = activeSection();
       expandedForPrint = [];
-      activeSection?.querySelectorAll(".detail-section").forEach((section) => {{
+      active?.querySelectorAll(".detail-section").forEach((section) => {{
         const toggleId = section.id;
-        const toggle = activeSection.querySelector(`[data-toggle-details="${{toggleId}}"]`);
+        const toggle = active.querySelector(`[data-toggle-details="${{toggleId}}"]`);
         expandedForPrint.push({{
           id: toggleId,
           hidden: section.hidden,
@@ -1181,10 +1308,10 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     }}
 
     function afterPrint() {{
-      const activeSection = windows.find((section) => section.dataset.window === activeWindow);
+      const active = activeSection();
       expandedForPrint.forEach((item) => {{
-        const section = activeSection?.querySelector(`#${{item.id}}`);
-        const toggle = activeSection?.querySelector(`[data-toggle-details="${{item.id}}"]`);
+        const section = active?.querySelector(`#${{item.id}}`);
+        const toggle = active?.querySelector(`[data-toggle-details="${{item.id}}"]`);
         if (section) {{
           section.hidden = item.hidden;
         }}
@@ -1208,7 +1335,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         }}
         return;
       }}
-      const content = dashboardAssets[activeWindow]?.[assetKey];
+      const content = dashboardAssets[activeSectionId()]?.[assetKey];
       if (!content) {{
         setFeedback("No JPG export available for this view.");
         return;
@@ -1237,7 +1364,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         context.fillRect(0, 0, width, height);
         context.drawImage(image, 0, 0, width, height);
 
-        await triggerJpgDownloadFromCanvas(canvas, `codex-stats-${{activeWindow}}-${{assetKey}}-${{exportTimestamp()}}.jpg`);
+        await triggerJpgDownloadFromCanvas(canvas, `agent-stats-${{activeScope}}-${{activeWindow}}-${{assetKey}}-${{exportTimestamp()}}.jpg`);
         setFeedback("JPG downloaded.");
       }} catch (error) {{
         setFeedback("JPG export failed. Please try again.");
@@ -1247,7 +1374,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
     }}
 
     async function copySummary() {{
-      const content = dashboardSummaries[activeWindow];
+      const content = dashboardSummaries[activeSectionId()];
       if (!content) {{
         setFeedback("No summary available.");
         return;
@@ -1272,8 +1399,11 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       }}
     }}
 
-    tabs.forEach((button) => {{
-      button.addEventListener("click", () => setActiveWindow(button.dataset.window));
+    scopeButtons.forEach((button) => {{
+      button.addEventListener("click", () => setActiveScope(button.dataset.scopeButton));
+    }});
+    rangeButtons.forEach((button) => {{
+      button.addEventListener("click", () => setActiveWindow(button.dataset.windowButton));
     }});
     document.querySelector('[data-action="toggle-export"]')?.addEventListener("click", () => {{
       exportMenu?.classList.toggle("is-open");
@@ -1283,7 +1413,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
       exportMenu?.classList.remove("is-open");
       beforePrint();
       const previousTitle = document.title;
-      document.title = `codex-stats-${{activeWindow}}-report-${{exportTimestamp()}}`;
+      document.title = `agent-stats-${{activeScope}}-${{activeWindow}}-report-${{exportTimestamp()}}`;
       pendingPrintTitle = previousTitle;
       window.print();
     }});
@@ -1335,7 +1465,7 @@ def format_dashboard_html(dashboard: DashboardData) -> str:
         exportMenu?.classList.remove("is-open");
       }}
     }});
-    setActiveWindow(activeWindow);
+    reflectActive();
   </script>
 </body>
 </html>
@@ -1892,8 +2022,8 @@ def format_report_html(report: ReportData, daily_points: list[DailyPoint] | None
 """
 
 
-def format_dashboard_svg_assets(window: DashboardWindow) -> dict[str, str]:
-    title = f"Codex Stats {window.label}"
+def format_dashboard_svg_assets(window: DashboardWindow, *, scope_label: str = "Codex") -> dict[str, str]:
+    title = f"{scope_label} Stats {window.label}"
     return {
         "page-card": _format_page_card_svg(window, title),
         "summary-card": _format_summary_card_svg(window, title),
@@ -1923,12 +2053,20 @@ def format_report_svg(report: ReportData, daily_points: list[DailyPoint] | None 
     return format_report_svg_assets(report, daily_points)["summary-card"]
 
 
-def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool) -> str:
+def _format_dashboard_window_section(
+    window: DashboardWindow,
+    *,
+    is_active: bool,
+    scope_key: str,
+    scope_label: str,
+) -> str:
     delta_pct = "n/a" if window.comparison.total_tokens_delta_pct is None else f"{window.comparison.total_tokens_delta_pct:+.1f}%"
     delta_tone = "var(--warn)" if delta_pct.startswith("+") else "var(--good)"
     headline = f"You spent ${window.summary.estimated_cost_usd:.2f} across {window.summary.requests} requests in {window.label.lower()}."
     if window.key == "all":
-        headline = f"You have spent ${window.summary.estimated_cost_usd:.2f} across all recorded Codex usage."
+        headline = f"You have spent ${window.summary.estimated_cost_usd:.2f} across all recorded {scope_label} usage."
+        if scope_label.lower() == "overview":
+            headline = f"You have spent ${window.summary.estimated_cost_usd:.2f} across every tool in this dashboard."
     change_text = (
         f"{window.comparison.total_tokens_delta:+,} tokens versus {window.comparison.previous.label}"
         if window.comparison.previous.total_tokens or window.comparison.total_tokens_delta
@@ -1959,6 +2097,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
         empty_label="No top session data available for this view.",
     )
     heatmap_svg = _svg_heatmap_chart(window.activity_heatmap)
+    tool_trend_html = _format_tool_trend(window)
     project_rows = "".join(
         f"""
         <tr>
@@ -1998,7 +2137,8 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
     ) or '<tr><td colspan="6">No data</td></tr>'
     anomalies_html = "".join(f"<li>{escape(item)}</li>" for item in window.insights.anomalies) or "<li>none</li>"
     recommendations_html = "".join(f"<li>{escape(item)}</li>" for item in window.insights.recommendations) or "<li>none</li>"
-    project_drilldown_html = _format_project_drilldown(window)
+    project_drilldown_html = _format_project_drilldown(window, scope_key)
+    tool_share_html = _format_tool_share(window)
     badges_html = "".join(
         f'<div class="summary-badge"><strong>{escape(badge.label)}:</strong>{escape(badge.value)}</div>'
         for badge in window.badges
@@ -2019,7 +2159,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
           </div>
         """
     return f"""
-    <section class="window{' is-active' if is_active else ''}" data-window="{escape(window.key)}">
+    <section class="window{' is-active' if is_active else ''}" data-window="{escape(window.key)}" data-scope="{escape(scope_key)}">
       <div class="grid">
         <section class="panel hero-panel">
           <p class="section-kicker">Start Here</p>
@@ -2077,6 +2217,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
             <div class="kpi"><strong>{escape(window.insights.suggestion)}</strong><span>Primary recommendation</span></div>
           </div>
         </section>
+        {tool_share_html}
 
         <section class="panel">
           <div class="section-header">
@@ -2143,6 +2284,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
               <h3>Top Sessions by Tokens</h3>
               {sessions_svg}
             </div>
+            {tool_trend_html}
             <div class="chart-card chart-wide">
               <h3>Activity Heatmap</h3>
               {heatmap_svg}
@@ -2197,9 +2339,9 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
               <p class="section-kicker">Details</p>
               <h2>Projects, Sessions, and History</h2>
             </div>
-            <button class="detail-toggle" type="button" data-toggle-details="details-{escape(window.key)}" aria-expanded="false">Show details</button>
+            <button class="detail-toggle" type="button" data-toggle-details="details-{escape(scope_key)}-{escape(window.key)}" aria-expanded="false">Show details</button>
           </div>
-          <div class="detail-section" id="details-{escape(window.key)}" hidden>
+          <div class="detail-section" id="details-{escape(scope_key)}-{escape(window.key)}" hidden>
             <div class="split">
               <div>
                 <div class="section-header">
@@ -2265,7 +2407,7 @@ def _format_dashboard_window_section(window: DashboardWindow, *, is_active: bool
     """
 
 
-def _format_project_drilldown(window: DashboardWindow) -> str:
+def _format_project_drilldown(window: DashboardWindow, scope_key: str) -> str:
     if not window.project_drilldowns:
         return _format_empty_showcase(
             "No project drilldown yet.",
@@ -2274,7 +2416,7 @@ def _format_project_drilldown(window: DashboardWindow) -> str:
     buttons = []
     panels = []
     for index, drilldown in enumerate(window.project_drilldowns):
-        project_id = f"{window.key}-project-{index}"
+        project_id = f"{scope_key}-{window.key}-project-{index}"
         buttons.append(
             f'<button class="project-tab-button" type="button" data-project-target="{escape(project_id)}">{escape(drilldown.name)}</button>'
         )
@@ -2419,9 +2561,45 @@ def _format_empty_chart(title: str, detail: str) -> str:
     return f'<div class="chart-empty">{_format_empty_showcase(title, detail)}</div>'
 
 
-def _format_window_copy_summary(window: DashboardWindow) -> str:
+def _format_tool_share(window: DashboardWindow) -> str:
+    entries = window.tool_breakdown or []
+    if not entries:
+        return ""
+    total_tokens = sum(entry.total_tokens for entry in entries)
+    rows = []
+    if total_tokens > 0:
+        for entry in entries:
+            share = (entry.total_tokens / total_tokens) * 100 if total_tokens else 0.0
+            rows.append(
+                f"""
+        <div class="tool-share-row">
+          <div class="tool-share-head">
+            <strong>{escape(entry.name)}</strong>
+            <span>{share:.1f}%</span>
+          </div>
+          <div class="tool-share-bar"><span style="width: {share:.1f}%"></span></div>
+          <div class="tool-share-meta">{entry.sessions} session{'s' if entry.sessions != 1 else ''} · {entry.requests} requests · {entry.total_tokens:,} tokens · ${entry.estimated_cost_usd:.2f}</div>
+        </div>
+        """
+            )
+    else:
+        rows.append('<div class="chart-empty">No token usage recorded across tools yet.</div>')
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Where It Happened</p>
+              <h2>Tool Share</h2>
+            </div>
+          </div>
+          <div class="tool-share">{"".join(rows)}</div>
+        </section>
+        """
+
+
+def _format_window_copy_summary(window: DashboardWindow, *, scope_label: str = "Codex") -> str:
     lines = [
-        f"Codex Stats {window.label}",
+        f"{scope_label} Stats {window.label}",
         f"Tokens: {window.summary.total_tokens:,}",
         f"Requests: {window.summary.requests}",
         f"Estimated cost: ${window.summary.estimated_cost_usd:.2f}",
@@ -2520,6 +2698,103 @@ def _svg_bar_chart(
             f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'
         )
     return f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
+
+
+def _svg_stacked_bar_chart(
+    series: list[tuple[str, list[tuple[str, float]]]],
+    *,
+    colors: dict[str, str],
+    value_formatter,
+    empty_label: str,
+) -> str:
+    if not series or not any(points for _, points in series):
+        return _format_empty_chart("Nothing to stack yet.", empty_label)
+    width = 760
+    height = 260
+    padding_left = 58
+    padding_right = 20
+    padding_top = 26
+    padding_bottom = 40
+    inner_width = width - padding_left - padding_right
+    inner_height = height - padding_top - padding_bottom
+    days: list[str] = []
+    for _, points in series:
+        for day, _ in points:
+            if day not in days:
+                days.append(day)
+    days.sort()
+    if not days:
+        return _format_empty_chart("Nothing to stack yet.", empty_label)
+    day_totals: dict[str, float] = defaultdict(float)
+    for _, points in series:
+        for day, value in points:
+            day_totals[day] += value
+    max_total = max(day_totals.values())
+    scale = inner_height / max(1.0, max_total)
+    slot = inner_width / len(days)
+    bar_width = max(4.0, min(slot * 0.72, 26.0))
+    stack_heights: dict[str, float] = defaultdict(float)
+    bars = []
+    for index, day in enumerate(days):
+        center = padding_left + slot * index + slot / 2
+        for source, points in series:
+            value = next((value for point_day, value in points if point_day == day), 0.0)
+            if value <= 0:
+                continue
+            bar_height = value * scale
+            y_bottom = padding_top + inner_height - stack_heights[day]
+            y_top = y_bottom - bar_height
+            bars.append(
+                f'<rect x="{center - bar_width / 2:.1f}" y="{y_top:.1f}" width="{bar_width:.1f}" height="{max(0.0, bar_height):.1f}" rx="2" fill="{colors.get(source, "#6d645d")}"><title>{escape(source)}: {escape(value_formatter(value))} on {escape(day)}</title></rect>'
+            )
+            stack_heights[day] += bar_height
+    grid = "".join(
+        f'<line x1="{padding_left}" y1="{padding_top + step * (inner_height / 3):.1f}" x2="{width - padding_right}" y2="{padding_top + step * (inner_height / 3):.1f}" stroke="rgba(72,53,36,0.12)" stroke-dasharray="4 6" />'
+        for step in range(4)
+    )
+    y_labels = "".join(
+        f'<text x="{padding_left - 8}" y="{padding_top + inner_height - step * (inner_height / 3) + 4:.1f}" text-anchor="end" font-size="11" fill="#6d645d">{escape(value_formatter((max_total / 3) * step))}</text>'
+        for step in range(4)
+    )
+    max_x_labels = 8
+    label_indexes = set(round(i * (len(days) - 1) / max_x_labels) for i in range(max_x_labels + 1)) if len(days) > 1 else {0}
+    x_labels = "".join(
+        f'<text x="{padding_left + slot * index + slot / 2:.1f}" y="{height - 12}" text-anchor="middle" font-size="11" fill="#6d645d">{escape(day[5:])}</text>'
+        for index, day in enumerate(days)
+        if index in label_indexes
+    )
+    legend = "".join(
+        f'<rect x="{48 + legend_index * 150}" y="6" width="12" height="12" rx="3" fill="{colors.get(source, "#6d645d")}"/>'
+        f'<text x="{66 + legend_index * 150}" y="17" font-size="12" fill="#1f1a17">{escape(source_label(source))}</text>'
+        for legend_index, (source, _) in enumerate([entry for entry in series if any(value > 0 for _, value in entry[1])])
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Stacked bar chart">'
+        f'{legend}{grid}{y_labels}{"".join(bars)}{x_labels}</svg>'
+    )
+
+
+def _format_tool_trend(window: DashboardWindow) -> str:
+    points = window.tool_daily_points or []
+    if not points:
+        return ""
+    series: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for point in points:
+        series[point.source].append((point.day, float(point.total_tokens)))
+    ordered = sorted(series.items(), key=lambda item: (-(sum(v for _, v in item[1]) if item[1] else 0), item[0]))
+    svg = _svg_stacked_bar_chart(
+        ordered,
+        colors=SOURCE_CHART_COLORS,
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="Run any tool on more than one day in this window to reveal the stacked trend.",
+    )
+    return f"""
+        <div class="chart-card chart-wide">
+          <h3>Tool Trend (Stacked Tokens)</h3>
+          {svg}
+          <div class="chart-empty">Daily token usage split by tool over the visible window.</div>
+        </div>
+        """
 
 
 def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
@@ -2799,7 +3074,7 @@ def _format_page_card_svg(report: ReportData | DashboardWindow, title: str) -> s
     heatmap_svg = _svg_heatmap_chart(report.activity_heatmap)
     project_rows = report.projects[:4]
     session_rows = report.top_sessions[:4]
-    max_project_tokens = max((entry.total_tokens for entry in project_rows), default=1)
+    max_project_tokens = max((entry.total_tokens for entry in project_rows), default=1) or 1
     project_rows_svg = "".join(
         f'<text x="92" y="{1152 + index * 54}" font-size="20" fill="#1f1a17">{escape((entry.name[:26] + "...") if len(entry.name) > 29 else entry.name)}</text>'
         f'<rect x="392" y="{1138 + index * 54}" width="288" height="14" rx="7" fill="rgba(72,53,36,0.08)" />'

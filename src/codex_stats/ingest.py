@@ -59,6 +59,7 @@ def iter_sessions(paths: Paths) -> Iterable[SessionRecord]:
                 rollout_path=Path(row["rollout_path"]),
                 git_branch=row["git_branch"],
                 git_origin_url=row["git_origin_url"],
+                source="codex",
             )
         )
     return sessions

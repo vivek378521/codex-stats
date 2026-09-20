@@ -44,6 +44,9 @@ default_usd_per_1k_tokens = 0.02
 [pricing.model_usd_per_1k_tokens]
 gpt-5.4 = 0.03
 
+[pricing.source_usd_per_1k_tokens]
+claude = 0.02
+
 [display]
 color = "never"
 history_limit = 20
@@ -56,9 +59,27 @@ compare_days = 14
         self.assertTrue(config_view.exists)
         self.assertEqual(config_view.pricing_default_usd_per_1k_tokens, 0.02)
         self.assertEqual(config_view.pricing_model_overrides["gpt-5.4"], 0.03)
+        self.assertEqual(config_view.pricing_source_overrides["claude"], 0.02)
         self.assertEqual(config_view.display.color, "never")
         self.assertEqual(display_config.history_limit, 20)
         self.assertEqual(display_config.compare_days, 14)
+
+    def test_source_rates_apply_and_fall_back(self) -> None:
+        self.paths.config_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.config_file.write_text(
+            """
+[pricing]
+default_usd_per_1k_tokens = 0.01
+
+[pricing.source_usd_per_1k_tokens]
+claude = 0.05
+""".strip(),
+            encoding="utf-8",
+        )
+        pricing = load_config(self.paths).pricing
+        self.assertEqual(pricing.rate_for_source("claude", None), 0.05)
+        self.assertEqual(pricing.rate_for_source("opencode", None), 0.01)
+        self.assertEqual(pricing.rate_for_model(None), 0.01)
 
     def test_invalid_display_config_raises(self) -> None:
         self.paths.config_dir.mkdir(parents=True, exist_ok=True)

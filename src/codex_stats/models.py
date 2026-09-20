@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+DEFAULT_SOURCE = "codex"
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,7 @@ class SessionRecord:
     rollout_path: Path
     git_branch: str | None
     git_origin_url: str | None
+    source: str = DEFAULT_SOURCE
 
     @property
     def project_name(self) -> str:
@@ -43,6 +47,7 @@ class SessionDetails:
     reasoning_output_tokens: int | None
     total_tokens_from_rollout: int | None
     started_at: datetime | None
+    recorded_cost_usd: float | None = None
 
     def effective_total_tokens(self) -> int:
         if self.total_tokens_from_rollout is not None:
@@ -65,6 +70,7 @@ class SessionDetails:
             "total_tokens_from_rollout": self.total_tokens_from_rollout,
             "effective_total_tokens": self.effective_total_tokens(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "recorded_cost_usd": self.recorded_cost_usd,
         }
         return payload
 
@@ -309,6 +315,8 @@ class DashboardWindow:
     expensive_session: SessionSpotlight | None
     work_rhythm: WorkRhythm
     project_drilldowns: list["ProjectDrilldown"]
+    tool_breakdown: list[BreakdownEntry] | None = None
+    tool_daily_points: list["ToolDailyPoint"] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -330,6 +338,24 @@ class DashboardWindow:
             "expensive_session": self.expensive_session.to_dict() if self.expensive_session else None,
             "work_rhythm": self.work_rhythm.to_dict(),
             "project_drilldowns": [drilldown.to_dict() for drilldown in self.project_drilldowns],
+            "tool_breakdown": [entry.to_dict() for entry in self.tool_breakdown] if self.tool_breakdown else None,
+            "tool_daily_points": [point.to_dict() for point in self.tool_daily_points] if self.tool_daily_points else None,
+        }
+
+
+@dataclass(frozen=True)
+class ToolDailyPoint:
+    day: str
+    source: str
+    total_tokens: int
+    estimated_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "day": self.day,
+            "source": self.source,
+            "total_tokens": self.total_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
         }
 
 
@@ -358,14 +384,55 @@ class ProjectDrilldown:
 
 
 @dataclass(frozen=True)
-class DashboardData:
-    generated_at: datetime
+class DashboardScope:
+    key: str
+    label: str
+    description: str
+    source: str
     windows: list[DashboardWindow]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "generated_at": self.generated_at.isoformat(),
+            "key": self.key,
+            "label": self.label,
+            "description": self.description,
+            "source": self.source,
             "windows": [window.to_dict() for window in self.windows],
+        }
+
+
+@dataclass(frozen=True)
+class DashboardData:
+    generated_at: datetime
+    windows: list[DashboardWindow] = field(default_factory=list, repr=False)
+    scopes: list[DashboardScope] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.scopes and self.windows:
+            object.__setattr__(
+                self,
+                "scopes",
+                [
+                    DashboardScope(
+                        key="overview",
+                        label="Overview",
+                        description="All tracked tools combined.",
+                        source="overview",
+                        windows=list(self.windows),
+                    )
+                ],
+            )
+        elif self.scopes and not self.windows:
+            object.__setattr__(
+                self,
+                "windows",
+                [window for scope in self.scopes for window in scope.windows],
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "generated_at": self.generated_at.isoformat(),
+            "scopes": [scope.to_dict() for scope in self.scopes],
         }
 
 
@@ -385,6 +452,7 @@ class ConfigView:
     exists: bool
     pricing_default_usd_per_1k_tokens: float
     pricing_model_overrides: dict[str, float]
+    pricing_source_overrides: dict[str, float]
     display: DisplayConfigView
 
     def to_dict(self) -> dict[str, Any]:
@@ -393,6 +461,7 @@ class ConfigView:
             "exists": self.exists,
             "pricing_default_usd_per_1k_tokens": self.pricing_default_usd_per_1k_tokens,
             "pricing_model_overrides": self.pricing_model_overrides,
+            "pricing_source_overrides": self.pricing_source_overrides,
             "display": self.display.to_dict(),
         }
 

@@ -89,8 +89,10 @@ def _session_detail_from_dict(payload: dict) -> SessionDetails:
         rollout_path=Path(session_payload["rollout_path"]),
         git_branch=session_payload.get("git_branch"),
         git_origin_url=session_payload.get("git_origin_url"),
+        source=session_payload.get("source", "codex"),
     )
     started_at = payload.get("started_at")
+    recorded_cost = payload.get("recorded_cost_usd")
     return SessionDetails(
         session=session,
         request_count=int(payload.get("request_count", 0)),
@@ -100,6 +102,7 @@ def _session_detail_from_dict(payload: dict) -> SessionDetails:
         reasoning_output_tokens=_as_optional_int(payload.get("reasoning_output_tokens")),
         total_tokens_from_rollout=_as_optional_int(payload.get("total_tokens_from_rollout")),
         started_at=datetime.fromisoformat(started_at) if started_at else None,
+        recorded_cost_usd=float(recorded_cost) if recorded_cost is not None else None,
     )
 
 

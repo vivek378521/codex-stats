@@ -25,6 +25,12 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(args.dashboard_output, "dashboard.html")
         self.assertTrue(args.no_open)
 
+    def test_dashboard_source_flag_repeats(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--source", "codex", "--source", "opencode"])
+        self.assertEqual(args.sources, ["codex", "opencode"])
+        self.assertEqual(parser.parse_args([]).sources, None)
+
     def test_export_parser(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["export", "stats.json", "--since", "30d"])

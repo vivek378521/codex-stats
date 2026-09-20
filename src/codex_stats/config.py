@@ -15,6 +15,13 @@ default_usd_per_1k_tokens = 0.01
 # gpt-5.4 = 0.02
 # gpt-5-mini = 0.005
 
+[pricing.source_usd_per_1k_tokens]
+# Per-tool overrides when a tool does not record its own cost.
+# codex = 0.01
+# opencode = 0.01
+# claude = 0.015
+# hermes = 0.008
+
 [display]
 color = "auto"
 history_limit = 10
@@ -51,11 +58,17 @@ class Paths:
 class PricingConfig:
     default_usd_per_1k_tokens: float = 0.01
     model_rates: dict[str, float] | None = None
+    source_rates: dict[str, float] | None = None
 
     def rate_for_model(self, model: str | None) -> float:
         if model and self.model_rates and model in self.model_rates:
             return self.model_rates[model]
         return self.default_usd_per_1k_tokens
+
+    def rate_for_source(self, source: str, model: str | None) -> float:
+        if source and self.source_rates and source in self.source_rates:
+            return self.source_rates[source]
+        return self.rate_for_model(model)
 
 
 @dataclass(frozen=True)
@@ -79,6 +92,7 @@ def load_config(paths: Paths) -> AppConfig:
     pricing = payload.get("pricing", {})
     default_rate = float(pricing.get("default_usd_per_1k_tokens", 0.01))
     model_rates = _flatten_model_rates(pricing.get("model_usd_per_1k_tokens", {}))
+    source_rates = {str(k): float(v) for k, v in pricing.get("source_usd_per_1k_tokens", {}).items()}
     display = payload.get("display", {})
     color = str(display.get("color", "auto"))
     if color not in {"auto", "always", "never"}:
@@ -90,7 +104,11 @@ def load_config(paths: Paths) -> AppConfig:
     if compare_days <= 0:
         raise ValueError("display.compare_days must be greater than 0")
     return AppConfig(
-        pricing=PricingConfig(default_usd_per_1k_tokens=default_rate, model_rates=model_rates),
+        pricing=PricingConfig(
+            default_usd_per_1k_tokens=default_rate,
+            model_rates=model_rates,
+            source_rates=source_rates,
+        ),
         display=DisplayConfig(color=color, history_limit=history_limit, compare_days=compare_days),
     )
 
@@ -110,6 +128,7 @@ def load_config_view(paths: Paths) -> ConfigView:
         exists=paths.config_file.exists(),
         pricing_default_usd_per_1k_tokens=app_config.pricing.default_usd_per_1k_tokens,
         pricing_model_overrides=app_config.pricing.model_rates or {},
+        pricing_source_overrides=app_config.pricing.source_rates or {},
         display=DisplayConfigView(
             color=app_config.display.color,
             history_limit=app_config.display.history_limit,

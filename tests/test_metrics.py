@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from codex_stats.metrics import (
     build_watch_alerts,
     build_report,
     details_for_last_days,
+    estimate_detail_cost,
     filter_details_by_project,
     parse_since_days,
     run_doctor,
@@ -49,6 +51,8 @@ from codex_stats.metrics import (
     summarize_projects,
     summarize_details,
     summarize_expensive_session,
+    summarize_source_breakdown_from_details,
+    summarize_source_daily_from_details,
     summarize_today,
     summarize_takeaways,
     summarize_top_sessions_from_details,
@@ -56,8 +60,9 @@ from codex_stats.metrics import (
     summarize_week,
     summarize_work_rhythm,
 )
-from codex_stats.models import DashboardData, WatchAlert
+from codex_stats.models import BreakdownEntry, DashboardData, WatchAlert
 from codex_stats.otel import build_otlp_metrics_payload, parse_key_value_pairs, write_otlp_metrics_json
+from codex_stats.sources import iter_sources, source_label
 from codex_stats.transfer import export_payload, read_import, read_imports, read_imports_with_summary, write_merged_export
 from codex_stats.watch_state import build_watch_scope_key, load_watch_state, save_watch_state
 
@@ -66,6 +71,14 @@ class MetricsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         root = Path(self.tmpdir.name)
+        self._source_env_overrides = {
+            "CODEX_STATS_OPENCODE_HOME": os.environ.get("CODEX_STATS_OPENCODE_HOME"),
+            "CODEX_STATS_CLAUDE_PROJECTS_DIR": os.environ.get("CODEX_STATS_CLAUDE_PROJECTS_DIR"),
+            "CODEX_STATS_HERMES_HOME": os.environ.get("CODEX_STATS_HERMES_HOME"),
+        }
+        os.environ["CODEX_STATS_OPENCODE_HOME"] = str(root / "empty-opencode")
+        os.environ["CODEX_STATS_CLAUDE_PROJECTS_DIR"] = str(root / "empty-claude")
+        os.environ["CODEX_STATS_HERMES_HOME"] = str(root / "empty-hermes")
         codex_home = root / ".codex"
         sessions_dir = codex_home / "sessions" / "2026" / "04" / "03"
         sessions_dir.mkdir(parents=True)
@@ -190,6 +203,11 @@ class MetricsTestCase(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        for key, value in self._source_env_overrides.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmpdir.cleanup()
 
     def test_session_details_are_read_from_local_state(self) -> None:
@@ -518,9 +536,9 @@ class MetricsTestCase(unittest.TestCase):
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         dashboard = _build_dashboard(self.paths, now=now)
         html = format_dashboard_html(dashboard)
-        week_assets = format_dashboard_svg_assets(dashboard.windows[1])
+        week_assets = format_dashboard_svg_assets(dashboard.windows[1], scope_label="Overview")
         self.assertIn("<!DOCTYPE html>", html)
-        self.assertIn("Codex usage at a glance.", html)
+        self.assertIn("Every tool, one view.", html)
         self.assertIn("The selected tab updates the full page.", html)
         self.assertIn("Copy Summary", html)
         self.assertIn("data-copy-feedback", html)
@@ -535,16 +553,16 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn('data-window="week"', html)
         self.assertIn('data-window="month"', html)
         self.assertIn('data-window="all"', html)
-        self.assertIn("Codex Stats Week", html)
+        self.assertIn("Overview Stats Week", html)
         self.assertIn("Top project: project with 280 tokens across 2 requests.", html)
         self.assertIn("Key Takeaways", html)
         self.assertIn("Project Drilldown", html)
         self.assertIn("Project Token Trend", html)
-        self.assertIn('data-project-target="week-project-0"', html)
+        self.assertIn('data-project-target="overview-week-project-0"', html)
         self.assertIn("Projects, Sessions, and History", html)
         self.assertEqual(set(week_assets), {"page-card", "summary-card", "cost-card", "focus-card", "projects-card", "heatmap-card"})
         self.assertIn("Single-image export of the active dashboard view.", week_assets["page-card"])
-        self.assertIn("Codex Stats Week", week_assets["summary-card"])
+        self.assertIn("Overview Stats Week", week_assets["summary-card"])
         self.assertIn("WINDOW TOTAL", week_assets["cost-card"])
         self.assertIn("Heatmap", week_assets["heatmap-card"])
 
@@ -606,6 +624,150 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIsNotNone(day_window.work_rhythm)
         self.assertEqual(len(day_window.project_drilldowns), 1)
         self.assertEqual(day_window.project_drilldowns[0].name, "project")
+
+    def test_dashboard_scopes_cover_all_tools(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now)
+        self.assertEqual(
+            [scope.key for scope in dashboard.scopes],
+            ["overview", "codex", "opencode", "claude", "hermes"],
+        )
+        self.assertEqual(len(dashboard.windows), 20)
+        for scope in dashboard.scopes:
+            self.assertEqual([window.key for window in scope.windows], ["day", "week", "month", "all"])
+            self.assertEqual(scope.windows[1].label, "Week")
+        self.assertEqual(dashboard.windows[0].key, "day")
+        self.assertEqual(dashboard.windows[1].key, "week")
+        overview_week = dashboard.windows[1]
+        self.assertEqual(overview_week.summary.label, "last 7 days")
+        self.assertIsNotNone(overview_week.tool_breakdown)
+        assert overview_week.tool_breakdown is not None
+        self.assertEqual([entry.name for entry in overview_week.tool_breakdown], ["Codex"])
+        self.assertEqual(overview_week.tool_breakdown[0].total_tokens, 280)
+        self.assertIsNotNone(overview_week.tool_daily_points)
+        self.assertIsNone(dashboard.scopes[1].windows[1].tool_daily_points)
+        self.assertIsNone(dashboard.scopes[1].windows[1].tool_breakdown)
+
+    def test_windows_only_dashboard_gets_overview_scope(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        empty_window = _build_window(
+            key="day",
+            label="Day",
+            description="Day view",
+            current_details=[],
+            previous_details=[],
+            current_label="today",
+            previous_label="yesterday",
+            trend_days=1,
+            all_details=[],
+            pricing=load_pricing_config(self.paths),
+            now=now,
+        )
+        dashboard = DashboardData(generated_at=now, windows=[empty_window])
+        self.assertEqual([scope.key for scope in dashboard.scopes], ["overview"])
+        self.assertEqual(dashboard.scopes[0].label, "Overview")
+        self.assertEqual(len(dashboard.windows), 1)
+        round_trip = dashboard.to_dict()
+        self.assertEqual(round_trip["scopes"][0]["key"], "overview")
+
+    def test_source_ingesters_skip_missing_data(self) -> None:
+        sources = iter_sources(self.paths)
+        self.assertEqual([source.key for source in sources], ["codex", "opencode", "claude", "hermes"])
+        self.assertTrue(sources[0].available)
+        self.assertFalse(any(source.available for source in sources[1:]))
+        self.assertEqual(len(sources[0].ingest()), 1)
+        for source in sources[1:]:
+            self.assertEqual(source.ingest(), [])
+
+    def test_source_breakdown_sums_usage(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        pricing = load_pricing_config(self.paths)
+        base_detail = get_session_details(self.paths, get_session(self.paths))
+        codex_detail = replace(
+            base_detail,
+            session=replace(base_detail.session, source="codex", tokens_used=base_detail.session.tokens_used, session_id="session-1"),
+        )
+        opencode_detail = replace(
+            codex_detail,
+            session=replace(codex_detail.session, source="opencode", session_id="session-2", tokens_used=codex_detail.session.tokens_used),
+            request_count=codex_detail.request_count,
+        )
+        entries = summarize_source_breakdown_from_details([codex_detail, opencode_detail], pricing)
+        self.assertEqual([entry.name for entry in entries], ["Codex", "OpenCode"])
+        self.assertEqual([entry.sessions for entry in entries], [1, 1])
+        self.assertEqual([entry.requests for entry in entries], [2, 2])
+        self.assertEqual([entry.total_tokens for entry in entries], [280, 280])
+        self.assertGreater(entries[0].estimated_cost_usd, 0)
+
+    def test_source_label_falls_back(self) -> None:
+        self.assertEqual(source_label("codex"), "Codex")
+        self.assertEqual(source_label("claude"), "Claude Code")
+        self.assertEqual(source_label("pi"), "Pi")
+
+    def test_recorded_cost_wins_over_estimate(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        pricing = load_pricing_config(self.paths)
+        base_detail = get_session_details(self.paths, get_session(self.paths))
+        estimated = estimate_detail_cost(base_detail, pricing)
+        with_cost = replace(base_detail, recorded_cost_usd=12.5)
+        self.assertEqual(estimate_detail_cost(with_cost, pricing), 12.5)
+        with_zero_cost = replace(base_detail, recorded_cost_usd=0.0)
+        self.assertEqual(estimate_detail_cost(with_zero_cost, pricing), estimated)
+        self.assertGreater(estimated, 0)
+
+    def test_source_daily_trend_points(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        pricing = load_pricing_config(self.paths)
+        base_detail = get_session_details(self.paths, get_session(self.paths))
+        codex_detail = replace(
+            base_detail,
+            session=replace(base_detail.session, source="codex", session_id="session-1", created_at=now - timedelta(days=1)),
+        )
+        opencode_detail = replace(
+            codex_detail,
+            session=replace(codex_detail.session, source="opencode", session_id="session-2"),
+        )
+        points = summarize_source_daily_from_details(
+            [codex_detail, opencode_detail],
+            days=7,
+            now=now,
+            pricing=pricing,
+        )
+        self.assertEqual(len(points), 2)
+        self.assertEqual({point.source for point in points}, {"codex", "opencode"})
+        for point in points:
+            self.assertEqual(point.total_tokens, 280)
+            self.assertGreater(point.estimated_cost_usd, 0)
+        outside = summarize_source_daily_from_details(
+            [codex_detail],
+            days=7,
+            now=now,
+            pricing=pricing,
+        )
+        opencode_points = [point for point in outside if point.source == "opencode"]
+        self.assertTrue(any(point.source == "codex" for point in outside))
+
+    def test_dashboard_source_filter(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now, sources=["codex"])
+        self.assertEqual([scope.key for scope in dashboard.scopes], ["overview", "codex"])
+        with self.assertRaises(ValueError):
+            _build_dashboard(self.paths, now=now, sources=["pi"])
+
+    def test_export_round_trip_preserves_recorded_cost(self) -> None:
+        detail = replace(
+            get_session_details(self.paths, get_session(self.paths)),
+            recorded_cost_usd=7.77,
+        )
+        payload = detail.to_dict()
+        self.assertEqual(payload["recorded_cost_usd"], 7.77)
+        export_path = Path(self.tmpdir.name) / "recorded.json"
+        export_path.write_text(
+            json.dumps({"schema_version": 1, "exported_at": "2026-04-03T18:30:00+05:30", "sessions": [payload]}),
+            encoding="utf-8",
+        )
+        restored = read_imports([export_path])[0]
+        self.assertEqual(restored.recorded_cost_usd, 7.77)
 
     def test_report_svg_output(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
