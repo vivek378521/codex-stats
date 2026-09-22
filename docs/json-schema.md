@@ -1,140 +1,82 @@
 # JSON Schemas
 
-`codex-stats` exposes stable JSON-oriented structures for automation.
-
-## Summary
-
-Used by:
-
-- `codex-stats --json`
-- `codex-stats today --json`
-- `codex-stats week --json`
-- `codex-stats month --json`
-- `codex-stats project <name> --json`
-
-Fields:
-
-- `label`
-- `sessions`
-- `requests`
-- `input_tokens`
-- `output_tokens`
-- `cached_input_tokens`
-- `reasoning_output_tokens`
-- `total_tokens`
-- `estimated_cost_usd`
-- `top_model`
-- `average_tokens_per_request`
-- `cache_ratio`
-- `largest_session_tokens`
-
-## Report
-
-Used by:
-
-- `codex-stats report weekly --format json`
-- `codex-stats report monthly --format json`
-
-Fields:
-
-- `period`
-- `project_name`
-- `summary`
-- `comparison`
-- `projects`
-- `top_sessions`
-- `costs`
-- `insights`
+`codex-stats` exposes one stable JSON-oriented structure for automation: the
+normalized export written by `codex-stats export`.
 
 ## Export
 
 Used by:
 
 - `codex-stats export stats.json`
+- `codex-stats export stats.json --since 30d`
 
-Fields:
+Top-level fields:
 
-- `schema_version`
-- `exported_at`
-- `sessions`
+- `schema_version` — currently `1`
+- `exported_at` — ISO-8601 timestamp of when the export was written
+- `sessions` — list of normalized session records, sorted newest first
 
-Each `session` entry contains normalized local session metadata plus rollout-derived token counts.
+Each `session` entry contains the normalized local session metadata plus
+rollout-derived token and cost data:
 
-## Doctor
+- `session`
+  - `session_id`
+  - `created_at` — ISO-8601
+  - `updated_at` — ISO-8601
+  - `cwd` — working directory the session ran in
+  - `project_name` — derived from the session's working directory
+  - `model` — model name, or `null`
+  - `model_provider`
+  - `tokens_used` — token count recorded by the tool itself
+  - `rollout_path`
+  - `git_branch` — or `null`
+  - `git_origin_url` — or `null`
+  - `source` — `codex`, `opencode`, `claude`, or `hermes`
+- `request_count`
+- `input_tokens` — or `null`
+- `output_tokens` — or `null`
+- `cached_input_tokens` — or `null`
+- `reasoning_output_tokens` — or `null`
+- `total_tokens_from_rollout` — or `null`
+- `effective_total_tokens` — the best available total token count for the session
+- `started_at` — ISO-8601, or `null`
+- `recorded_cost_usd` — the tool's own recorded cost when available, else `null`
 
-Used by:
+`--since Nd` limits the export to a rolling window of recent sessions (for
+example `--since 30d` for the last 30 days).
 
-- `codex-stats doctor --json`
+### Example
 
-Fields:
-
-- `checks`
-
-Each check includes:
-
-- `name`
-- `ok`
-- `detail`
-- `severity`
-
-`severity` is currently one of:
-
-- `error`
-- `warning`
-
-## Config
-
-Used by:
-
-- `codex-stats config show --json`
-
-Fields:
-
-- `config_path`
-- `exists`
-- `pricing_default_usd_per_1k_tokens`
-- `pricing_model_overrides`
-- `display`
-
-`display` contains:
-
-- `color`
-- `history_limit`
-- `compare_days`
-
-## Import
-
-Used by:
-
-- `codex-stats import a.json b.json --json`
-
-Fields:
-
-- `import_summary`
-- `summary`
-- `models`
-- `projects`
-- `history`
-- `top`
-- `costs`
-- `insights`
-
-`import_summary` contains:
-
-- `files_read`
-- `sessions_loaded`
-- `duplicates_removed`
-- `merged_sessions`
-- `oldest_session_at`
-- `newest_session_at`
-
-## Merge
-
-Used by:
-
-- `codex-stats merge merged.json a.json b.json --json`
-
-Fields:
-
-- `output_path`
-- `import_summary`
+```json
+{
+  "schema_version": 1,
+  "exported_at": "2026-09-22T10:00:00+00:00",
+  "sessions": [
+    {
+      "session": {
+        "session_id": "abc123",
+        "created_at": "2026-09-21T14:03:11+00:00",
+        "updated_at": "2026-09-21T14:47:02+00:00",
+        "cwd": "/Users/dev/my-project",
+        "project_name": "my-project",
+        "model": "gpt-5.4",
+        "model_provider": "openai",
+        "tokens_used": 223342,
+        "rollout_path": "~/.codex/sessions/2026/09/21/rollout-abc123.jsonl",
+        "git_branch": "main",
+        "git_origin_url": "git@github.com:dev/my-project.git",
+        "source": "codex"
+      },
+      "request_count": 6,
+      "input_tokens": 250,
+      "output_tokens": 30,
+      "cached_input_tokens": 50,
+      "reasoning_output_tokens": 7,
+      "total_tokens_from_rollout": 280,
+      "effective_total_tokens": 280,
+      "started_at": "2026-09-21T14:03:09+00:00",
+      "recorded_cost_usd": null
+    }
+  ]
+}
+```

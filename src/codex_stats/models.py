@@ -197,31 +197,9 @@ class CompareReport:
             "previous": self.previous.to_dict(),
             "total_tokens_delta": self.total_tokens_delta,
             "total_tokens_delta_pct": self.total_tokens_delta_pct,
-            "requests_delta": self.requests_delta,
-            "cost_delta_usd": self.cost_delta_usd,
-        }
-
-
-@dataclass(frozen=True)
-class DoctorCheck:
-    name: str
-    ok: bool
-    detail: str
-    severity: str = "error"
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class WatchAlert:
-    severity: str
-    name: str
-    detail: str
-    is_new: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+"requests_delta": self.requests_delta,
+        "cost_delta_usd": self.cost_delta_usd,
+    }
 
 
 @dataclass(frozen=True)
@@ -267,32 +245,6 @@ class WorkRhythm:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-@dataclass(frozen=True)
-class ReportData:
-    period: str
-    project_name: str | None
-    summary: TimeSummary
-    comparison: CompareReport
-    projects: list[BreakdownEntry]
-    top_sessions: list[TopEntry]
-    costs: CostSummary
-    insights: InsightReport
-    activity_heatmap: list[HeatmapCell]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "period": self.period,
-            "project_name": self.project_name,
-            "summary": self.summary.to_dict(),
-            "comparison": self.comparison.to_dict(),
-            "projects": [entry.to_dict() for entry in self.projects],
-            "top_sessions": [entry.to_dict() for entry in self.top_sessions],
-            "costs": self.costs.to_dict(),
-            "insights": self.insights.to_dict(),
-            "activity_heatmap": [cell.to_dict() for cell in self.activity_heatmap],
-        }
 
 
 @dataclass(frozen=True)
@@ -433,36 +385,6 @@ class DashboardData:
         return {
             "generated_at": self.generated_at.isoformat(),
             "scopes": [scope.to_dict() for scope in self.scopes],
-        }
-
-
-@dataclass(frozen=True)
-class DisplayConfigView:
-    color: str
-    history_limit: int
-    compare_days: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class ConfigView:
-    config_path: str
-    exists: bool
-    pricing_default_usd_per_1k_tokens: float
-    pricing_model_overrides: dict[str, float]
-    pricing_source_overrides: dict[str, float]
-    display: DisplayConfigView
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "config_path": self.config_path,
-            "exists": self.exists,
-            "pricing_default_usd_per_1k_tokens": self.pricing_default_usd_per_1k_tokens,
-            "pricing_model_overrides": self.pricing_model_overrides,
-            "pricing_source_overrides": self.pricing_source_overrides,
-            "display": self.display.to_dict(),
         }
 
 

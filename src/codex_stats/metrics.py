@@ -5,15 +5,14 @@ from datetime import date, datetime, timedelta, tzinfo
 import re
 from statistics import median
 
-from .config import Paths, PricingConfig, load_config, load_pricing_config
-from .ingest import get_session_details, iter_session_details
+from .config import Paths, PricingConfig
+from .ingest import iter_session_details
 from .models import (
     BreakdownEntry,
     CompareReport,
     CostSummary,
     DashboardBadge,
     DailyPoint,
-    DoctorCheck,
     HeatmapCell,
     HistoryEntry,
     InsightReport,
@@ -23,8 +22,6 @@ from .models import (
     TimeSummary,
     ToolDailyPoint,
     TopEntry,
-    ReportData,
-    WatchAlert,
     WorkRhythm,
 )
 from .sources import source_label
@@ -40,31 +37,6 @@ def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> floa
         detail.effective_total_tokens(),
         pricing.rate_for_source(detail.session.source, detail.session.model),
     )
-
-
-def summarize_today(paths: Paths, now: datetime | None = None) -> TimeSummary:
-    current_time = now or datetime.now().astimezone()
-    return summarize_period(paths, "today", current_time.date(), current_time.date(), current_time.tzinfo)
-
-
-def summarize_week(paths: Paths, now: datetime | None = None) -> TimeSummary:
-    current_time = now or datetime.now().astimezone()
-    end_day = current_time.date()
-    start_day = end_day - timedelta(days=6)
-    return summarize_period(paths, "week", start_day, end_day, current_time.tzinfo)
-
-
-def summarize_month(paths: Paths, now: datetime | None = None) -> TimeSummary:
-    current_time = now or datetime.now().astimezone()
-    end_day = current_time.date()
-    start_day = end_day - timedelta(days=29)
-    return summarize_period(paths, "month", start_day, end_day, current_time.tzinfo)
-
-
-def summarize_last_days(paths: Paths, days: int, now: datetime | None = None) -> TimeSummary:
-    details = details_for_last_days(paths, days, now=now)
-    safe_days = max(days, 1)
-    return summarize_details(f"last {safe_days} days", details)
 
 
 def details_for_last_days(paths: Paths, days: int, now: datetime | None = None) -> list[SessionDetails]:
@@ -91,22 +63,6 @@ def parse_since_days(value: str) -> int:
     if not match:
         raise ValueError("Expected --since in the form Nd, for example 30d")
     return int(match.group(1))
-
-
-def summarize_period(
-    paths: Paths,
-    label: str,
-    start_day: date,
-    end_day: date,
-    timezone: tzinfo | None,
-) -> TimeSummary:
-    details = [
-        detail
-        for detail in iter_session_details(paths)
-        if start_day <= local_date(detail.session.created_at, timezone) <= end_day
-    ]
-    pricing = load_pricing_config(paths)
-    return summarize_details(label, details, pricing)
 
 
 def summarize_details(label: str, details: list[SessionDetails], pricing: PricingConfig | None = None) -> TimeSummary:
@@ -155,51 +111,9 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
     )
 
 
-def summarize_imported_details(
-    details: list[SessionDetails],
-    label: str = "imported",
-    pricing: PricingConfig | None = None,
-) -> TimeSummary:
-    return summarize_details(label, details, pricing)
-
-
 def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
     target_timezone = timezone or value.astimezone().tzinfo
     return value.astimezone(target_timezone).date()
-
-
-def summarize_models(paths: Paths) -> list[BreakdownEntry]:
-    details = iter_session_details(paths)
-    return summarize_models_from_details(details, load_pricing_config(paths))
-
-
-def summarize_models_from_details(
-    details: list[SessionDetails],
-    pricing: PricingConfig | None = None,
-) -> list[BreakdownEntry]:
-    pricing = pricing or PricingConfig()
-    grouped: dict[str, list[SessionDetails]] = defaultdict(list)
-    for detail in details:
-        grouped[detail.session.model or "unknown"].append(detail)
-    return _build_breakdown(grouped, pricing)
-
-
-def summarize_projects(paths: Paths) -> list[BreakdownEntry]:
-    details = iter_session_details(paths)
-    return summarize_projects_from_details(details, load_pricing_config(paths))
-
-
-def summarize_project_drilldown(
-    paths: Paths,
-    project_name: str,
-    days: int | None = None,
-    now: datetime | None = None,
-) -> TimeSummary:
-    pricing = load_pricing_config(paths)
-    details = details_for_last_days(paths, days, now=now) if days else iter_session_details(paths)
-    filtered = filter_details_by_project(details, project_name)
-    label = project_name if days is None else f"{project_name} last {max(days, 1)} days"
-    return summarize_details(label, filtered, pricing)
 
 
 def summarize_source_breakdown_from_details(
@@ -421,11 +335,6 @@ def summarize_work_rhythm(
     )
 
 
-def summarize_history(paths: Paths, limit: int = 10) -> list[HistoryEntry]:
-    details = iter_session_details(paths)
-    return summarize_history_from_details(details, load_pricing_config(paths), limit=limit)
-
-
 def summarize_history_from_details(
     details: list[SessionDetails],
     pricing: PricingConfig | None = None,
@@ -451,14 +360,6 @@ def summarize_history_from_details(
             )
         )
     return history
-
-
-def summarize_daily(paths: Paths, days: int = 7, now: datetime | None = None) -> list[DailyPoint]:
-    current_time = now or datetime.now().astimezone()
-    safe_days = max(days, 1)
-    details = details_for_last_days(paths, safe_days, now=current_time)
-    pricing = load_pricing_config(paths)
-    return summarize_daily_from_details(details, days=safe_days, now=current_time, pricing=pricing)
 
 
 def summarize_daily_from_details(
@@ -491,22 +392,6 @@ def summarize_daily_from_details(
     return points
 
 
-def summarize_compare(paths: Paths, days: int = 7, now: datetime | None = None) -> CompareReport:
-    current_time = now or datetime.now().astimezone()
-    safe_days = max(days, 1)
-    pricing = load_pricing_config(paths)
-    current_details = details_for_last_days(paths, safe_days, now=current_time)
-    previous_end = current_time - timedelta(days=safe_days)
-    previous_details = details_for_last_days(paths, safe_days, now=previous_end)
-    return summarize_compare_from_details(
-        current_details,
-        previous_details,
-        current_label=f"last {safe_days} days",
-        previous_label=f"prev {safe_days} days",
-        pricing=pricing,
-    )
-
-
 def summarize_compare_from_details(
     current_details: list[SessionDetails],
     previous_details: list[SessionDetails],
@@ -530,126 +415,6 @@ def summarize_compare_from_details(
         requests_delta=current_summary.requests - previous_summary.requests,
         cost_delta_usd=round(current_summary.estimated_cost_usd - previous_summary.estimated_cost_usd, 4),
     )
-
-
-def summarize_compare_named(paths: Paths, current_label: str, previous_label: str, now: datetime | None = None) -> CompareReport:
-    current_time = now or datetime.now().astimezone()
-    pricing = load_pricing_config(paths)
-    current_summary = _summary_for_named_window(paths, current_label, current_time, pricing)
-    previous_summary = _summary_for_named_window(paths, previous_label, current_time, pricing)
-    total_tokens_delta = current_summary.total_tokens - previous_summary.total_tokens
-    total_tokens_delta_pct = None
-    if previous_summary.total_tokens:
-        total_tokens_delta_pct = (total_tokens_delta / previous_summary.total_tokens) * 100.0
-    return CompareReport(
-        current=current_summary,
-        previous=previous_summary,
-        total_tokens_delta=total_tokens_delta,
-        total_tokens_delta_pct=total_tokens_delta_pct,
-        requests_delta=current_summary.requests - previous_summary.requests,
-        cost_delta_usd=round(current_summary.estimated_cost_usd - previous_summary.estimated_cost_usd, 4),
-    )
-
-
-def run_doctor(paths: Paths) -> list[DoctorCheck]:
-    checks: list[DoctorCheck] = []
-    checks.append(
-        DoctorCheck(
-            name="codex_home",
-            ok=paths.codex_home.exists(),
-            detail=f"Found {paths.codex_home}" if paths.codex_home.exists() else f"Missing {paths.codex_home}",
-        )
-    )
-    checks.append(
-        DoctorCheck(
-            name="state_db",
-            ok=paths.state_db.exists(),
-            detail=f"Found {paths.state_db}" if paths.state_db.exists() else f"Missing {paths.state_db}",
-        )
-    )
-    checks.append(
-        DoctorCheck(
-            name="sessions_dir",
-            ok=paths.sessions_dir.exists(),
-            detail=f"Found {paths.sessions_dir}" if paths.sessions_dir.exists() else f"Missing {paths.sessions_dir}",
-        )
-    )
-    checks.append(
-        DoctorCheck(
-            name="config_file",
-            ok=paths.config_file.exists(),
-            detail=f"Found {paths.config_file}" if paths.config_file.exists() else f"Missing {paths.config_file}; using built-in defaults",
-            severity="warning",
-        )
-    )
-    details = iter_session_details(paths) if paths.state_db.exists() else []
-    checks.append(
-        DoctorCheck(
-            name="session_count",
-            ok=bool(details),
-            detail=f"{len(details)} session(s) detected",
-            severity="warning",
-        )
-    )
-    rollout_count = sum(1 for detail in details if detail.session.rollout_path.exists())
-    checks.append(
-        DoctorCheck(
-            name="rollout_files",
-            ok=rollout_count == len(details),
-            detail=f"{rollout_count}/{len(details)} rollout files present" if details else "No sessions to validate",
-        )
-    )
-    token_snapshots = sum(1 for detail in details if detail.total_tokens_from_rollout is not None)
-    checks.append(
-        DoctorCheck(
-            name="token_snapshots",
-            ok=token_snapshots == len(details),
-            detail=f"{token_snapshots}/{len(details)} sessions have rollout token snapshots" if details else "No sessions to validate",
-            severity="warning",
-        )
-    )
-    try:
-        app_config = load_config(paths)
-        checks.append(
-            DoctorCheck(
-                name="pricing_config",
-                ok=True,
-                detail=f"default={app_config.pricing.default_usd_per_1k_tokens:.4f}/1k, models={len(app_config.pricing.model_rates or {})}",
-            )
-        )
-        checks.append(
-            DoctorCheck(
-                name="display_config",
-                ok=True,
-                detail=f"color={app_config.display.color}, history_limit={app_config.display.history_limit}, compare_days={app_config.display.compare_days}",
-            )
-        )
-    except Exception as exc:
-        checks.append(
-            DoctorCheck(
-                name="pricing_config",
-                ok=False,
-                detail=f"Invalid config: {exc}",
-            )
-        )
-        checks.append(
-            DoctorCheck(
-                name="display_config",
-                ok=False,
-                detail=f"Invalid config: {exc}",
-            )
-        )
-    return checks
-
-
-def summarize_costs(paths: Paths, now: datetime | None = None) -> CostSummary:
-    current_time = now or datetime.now().astimezone()
-    pricing = load_pricing_config(paths)
-    today = summarize_today(paths, now=current_time)
-    week = summarize_week(paths, now=current_time)
-    month = summarize_month(paths, now=current_time)
-    details = iter_session_details(paths)
-    return summarize_costs_from_details(details, pricing=pricing, today=today, week=week, month=month, now=current_time)
 
 
 def summarize_costs_from_details(
@@ -686,14 +451,6 @@ def summarize_costs_from_details(
         projected_monthly_cost_usd=projected_monthly,
         highest_session_cost_usd=highest_session_cost_usd,
     )
-
-
-def summarize_insights(paths: Paths, now: datetime | None = None) -> InsightReport:
-    current_time = now or datetime.now().astimezone()
-    pricing = load_pricing_config(paths)
-    month = summarize_month(paths, now=current_time)
-    details = iter_session_details(paths)
-    return summarize_insights_from_details(details, pricing=pricing, month=month, now=current_time)
 
 
 def summarize_insights_from_details(
@@ -756,166 +513,6 @@ def summarize_insights_from_details(
     )
 
 
-def build_watch_alerts(
-    summary: TimeSummary,
-    compare: CompareReport,
-    insights: InsightReport,
-    *,
-    cost_threshold_usd: float | None = None,
-    token_threshold: int | None = None,
-    request_threshold: int | None = None,
-    delta_pct_threshold: float | None = None,
-) -> list[WatchAlert]:
-    alerts: list[WatchAlert] = []
-
-    if cost_threshold_usd is not None and summary.estimated_cost_usd >= cost_threshold_usd:
-        alerts.append(
-            WatchAlert(
-                severity="critical",
-                name="cost_threshold",
-                detail=f"Estimated cost ${summary.estimated_cost_usd:.2f} exceeded threshold ${cost_threshold_usd:.2f}.",
-            )
-        )
-    if token_threshold is not None and summary.total_tokens >= token_threshold:
-        alerts.append(
-            WatchAlert(
-                severity="critical",
-                name="token_threshold",
-                detail=f"Total tokens {summary.total_tokens:,} exceeded threshold {token_threshold:,}.",
-            )
-        )
-    if request_threshold is not None and summary.requests >= request_threshold:
-        alerts.append(
-            WatchAlert(
-                severity="warning",
-                name="request_threshold",
-                detail=f"Requests {summary.requests} exceeded threshold {request_threshold}.",
-            )
-        )
-    if (
-        delta_pct_threshold is not None
-        and compare.total_tokens_delta_pct is not None
-        and compare.total_tokens_delta_pct >= delta_pct_threshold
-    ):
-        alerts.append(
-            WatchAlert(
-                severity="warning",
-                name="token_delta",
-                detail=f"Token usage increased {compare.total_tokens_delta_pct:.1f}% versus the previous window.",
-            )
-        )
-    if compare.total_tokens_delta_pct is not None and compare.total_tokens_delta_pct >= 200.0:
-        alerts.append(
-            WatchAlert(
-                severity="critical",
-                name="token_spike",
-                detail=f"Token usage spiked {compare.total_tokens_delta_pct:.1f}% versus the previous window.",
-            )
-        )
-    elif compare.total_tokens_delta_pct is not None and compare.total_tokens_delta_pct >= 50.0:
-        alerts.append(
-            WatchAlert(
-                severity="warning",
-                name="token_spike",
-                detail=f"Token usage rose {compare.total_tokens_delta_pct:.1f}% versus the previous window.",
-            )
-        )
-
-    anomaly_severity = {
-        "Oversized session detected": "critical",
-        "Requests are unusually large": "critical",
-        "Heavy cost concentration in one session": "warning",
-        "Sudden usage spike relative to your other sessions": "warning",
-        "Low cache efficiency": "warning",
-    }
-    for anomaly in insights.anomalies:
-        alerts.append(
-            WatchAlert(
-                severity=anomaly_severity.get(anomaly, "warning"),
-                name="insight_anomaly",
-                detail=anomaly,
-            )
-        )
-
-    if insights.large_session_count >= 3:
-        alerts.append(
-            WatchAlert(
-                severity="warning",
-                name="large_sessions",
-                detail=f"{insights.large_session_count} large sessions detected in the current window.",
-            )
-        )
-
-    deduped: dict[tuple[str, str], WatchAlert] = {}
-    for alert in alerts:
-        key = (alert.name, alert.detail)
-        existing = deduped.get(key)
-        if existing is None or existing.severity == "warning" and alert.severity == "critical":
-            deduped[key] = alert
-    return list(deduped.values())
-
-
-def apply_watch_state(
-    details: list[SessionDetails],
-    alerts: list[WatchAlert],
-    *,
-    seen_session_ids: set[str] | None = None,
-    seen_alert_keys: set[tuple[str, str]] | None = None,
-    baseline_ready: bool = False,
-) -> tuple[list[WatchAlert], set[str], set[tuple[str, str]]]:
-    seen_session_ids = set(seen_session_ids or set())
-    seen_alert_keys = set(seen_alert_keys or set())
-    current_session_ids = {detail.session.session_id for detail in details}
-    current_alert_keys = {(alert.name, alert.detail) for alert in alerts}
-
-    new_session_alerts: list[WatchAlert] = []
-    if baseline_ready:
-        new_session_ids = sorted(current_session_ids - seen_session_ids)
-        for session_id in new_session_ids:
-            detail = next(detail for detail in details if detail.session.session_id == session_id)
-            new_session_alerts.append(
-                WatchAlert(
-                    severity="warning",
-                    name="new_session",
-                    detail=(
-                        f"New session in {detail.session.project_name} using {detail.session.model or 'unknown'} "
-                        f"with {detail.effective_total_tokens():,} tokens so far."
-                    ),
-                    is_new=True,
-                )
-            )
-
-    enriched_alerts: list[WatchAlert] = []
-    for alert in alerts:
-        key = (alert.name, alert.detail)
-        enriched_alerts.append(
-            WatchAlert(
-                severity=alert.severity,
-                name=alert.name,
-                detail=alert.detail,
-                is_new=baseline_ready and key not in seen_alert_keys,
-            )
-        )
-
-    updated_alerts = new_session_alerts + enriched_alerts
-    return updated_alerts, current_session_ids, current_alert_keys | {(alert.name, alert.detail) for alert in new_session_alerts}
-
-
-def summarize_top_sessions(paths: Paths, limit: int = 5) -> list[TopEntry]:
-    return summarize_top_sessions_from_details(iter_session_details(paths), load_pricing_config(paths), limit=limit)
-
-
-def summarize_activity_heatmap(
-    paths: Paths,
-    *,
-    days: int | None = None,
-    now: datetime | None = None,
-) -> list[HeatmapCell]:
-    details = details_for_last_days(paths, days, now=now) if days else iter_session_details(paths)
-    timezone = (now or datetime.now().astimezone()).tzinfo
-    return summarize_activity_heatmap_from_details(details, timezone=timezone)
-
-
 def summarize_activity_heatmap_from_details(
     details: list[SessionDetails],
     *,
@@ -961,71 +558,6 @@ def summarize_top_sessions_from_details(
     ]
 
 
-def build_report(
-    paths: Paths,
-    period: str = "weekly",
-    project_name: str | None = None,
-    now: datetime | None = None,
-) -> ReportData:
-    current_time = now or datetime.now().astimezone()
-    pricing = load_pricing_config(paths)
-    if period == "weekly":
-        details = details_for_last_days(paths, 7, now=current_time)
-        previous = summarize_compare_named(paths, "week", "last-week", now=current_time)
-    elif period == "monthly":
-        details = details_for_last_days(paths, 30, now=current_time)
-        previous = summarize_compare_named(paths, "month", "last-month", now=current_time)
-    else:
-        raise ValueError(f"Unsupported period: {period}")
-
-    filtered_details = filter_details_by_project(details, project_name)
-    label = period if project_name is None else f"{period} {project_name}"
-    summary = summarize_details(label, filtered_details, pricing)
-    if project_name is not None:
-        previous_current = filter_details_by_project(details_for_last_days(paths, 7 if period == "weekly" else 30, now=current_time), project_name)
-        previous_previous = filter_details_by_project(
-            details_for_last_days(paths, 7 if period == "weekly" else 30, now=current_time - timedelta(days=7 if period == "weekly" else 30)),
-            project_name,
-        )
-        previous = CompareReport(
-            current=summarize_details(summary.label, previous_current, pricing),
-            previous=summarize_details(
-                f"prev {period}",
-                previous_previous,
-                pricing,
-            ),
-            total_tokens_delta=0,
-            total_tokens_delta_pct=None,
-            requests_delta=0,
-            cost_delta_usd=0.0,
-        )
-        total_tokens_delta = previous.current.total_tokens - previous.previous.total_tokens
-        total_tokens_delta_pct = None
-        if previous.previous.total_tokens:
-            total_tokens_delta_pct = (total_tokens_delta / previous.previous.total_tokens) * 100.0
-        previous = CompareReport(
-            current=previous.current,
-            previous=previous.previous,
-            total_tokens_delta=total_tokens_delta,
-            total_tokens_delta_pct=total_tokens_delta_pct,
-            requests_delta=previous.current.requests - previous.previous.requests,
-            cost_delta_usd=round(previous.current.estimated_cost_usd - previous.previous.estimated_cost_usd, 4),
-        )
-
-    report = ReportData(
-        period=period,
-        project_name=project_name,
-        summary=summary,
-        comparison=previous,
-        projects=summarize_projects_from_details(filtered_details, pricing)[:5] if project_name is None else [],
-        top_sessions=summarize_top_sessions_from_details(filtered_details, pricing, limit=5),
-        costs=summarize_costs_from_details(filtered_details, pricing=pricing, today=summary, week=summary, month=summary, now=current_time),
-        insights=summarize_insights_from_details(filtered_details, pricing=pricing, month=summary, now=current_time),
-        activity_heatmap=summarize_activity_heatmap_from_details(filtered_details, timezone=current_time.tzinfo),
-    )
-    return report
-
-
 def _fmt_ratio_pct(value: float | None) -> str:
     if value is None:
         return "n/a"
@@ -1056,34 +588,6 @@ def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingC
             )
         )
     return sorted(entries, key=lambda entry: (-entry.total_tokens, entry.name))
-
-
-def _summary_for_named_window(
-    paths: Paths,
-    label: str,
-    now: datetime,
-    pricing: PricingConfig,
-) -> TimeSummary:
-    day = now.date()
-    if label == "today":
-        details = details_for_last_days(paths, 1, now=now)
-        return summarize_details("today", details, pricing)
-    if label == "yesterday":
-        details = details_for_last_days(paths, 1, now=now - timedelta(days=1))
-        return summarize_details("yesterday", details, pricing)
-    if label == "week":
-        details = details_for_last_days(paths, 7, now=now)
-        return summarize_details("week", details, pricing)
-    if label == "last-week":
-        details = details_for_last_days(paths, 7, now=now - timedelta(days=7))
-        return summarize_details("last-week", details, pricing)
-    if label == "month":
-        details = details_for_last_days(paths, 30, now=now)
-        return summarize_details("month", details, pricing)
-    if label == "last-month":
-        details = details_for_last_days(paths, 30, now=now - timedelta(days=30))
-        return summarize_details("last-month", details, pricing)
-    raise ValueError(f"Unsupported compare label: {label}")
 
 
 def _project_concentration(details: list[SessionDetails], *, top_n: int) -> float | None:

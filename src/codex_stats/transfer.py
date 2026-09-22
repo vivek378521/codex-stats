@@ -9,10 +9,10 @@ from .metrics import details_for_last_days, parse_since_days
 from .models import ImportSummary, SessionDetails, SessionRecord
 
 
-def export_payload(paths, since: str | None = None) -> dict:
+def export_payload(paths, since: str | None = None, now: datetime | None = None) -> dict:
     details = iter_session_details(paths)
     if since:
-        details = details_for_last_days(paths, parse_since_days(since))
+        details = details_for_last_days(paths, parse_since_days(since), now=now)
     return {
         "schema_version": 1,
         "exported_at": datetime.now(tz=UTC).isoformat(),
@@ -28,8 +28,8 @@ def export_payload_from_details(details: list[SessionDetails]) -> dict:
     }
 
 
-def write_export(paths, output_path: Path, since: str | None = None) -> Path:
-    payload = export_payload(paths, since=since)
+def write_export(paths, output_path: Path, since: str | None = None, now: datetime | None = None) -> Path:
+    payload = export_payload(paths, since=since, now=now)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return output_path

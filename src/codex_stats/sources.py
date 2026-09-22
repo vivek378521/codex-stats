@@ -128,16 +128,6 @@ def source_label(source_key: str) -> str:
     return SOURCE_LABELS.get(source_key, source_key.capitalize())
 
 
-def iter_all_details() -> list[SessionDetails]:
-    all_details: list[SessionDetails] = []
-    for source in iter_sources():
-        try:
-            all_details.extend(source.ingest() or [])
-        except Exception:
-            continue
-    return all_details
-
-
 def _dt_from_unix_seconds(value: float | int | None) -> datetime | None:
     if value is None:
         return None

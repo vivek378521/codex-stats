@@ -14,57 +14,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.cli import _build_dashboard, _build_window
 from codex_stats.config import Paths, load_pricing_config
-from codex_stats.display import (
-    format_dashboard_html,
-    format_dashboard_svg_assets,
-    format_report_html,
-    format_report_svg,
-    format_report_svg_assets,
-    format_watch_dashboard,
-)
+from codex_stats.display import format_dashboard_html, format_dashboard_svg_assets
 from codex_stats.ingest import get_session, get_session_details
 from codex_stats.metrics import (
-    apply_watch_state,
-    build_watch_alerts,
-    build_report,
     details_for_last_days,
     estimate_detail_cost,
     filter_details_by_project,
     parse_since_days,
-    run_doctor,
     summarize_activity_heatmap_from_details,
     summarize_badges,
-    summarize_compare,
     summarize_compare_from_details,
-    summarize_compare_named,
-    summarize_costs,
-    summarize_daily,
+    summarize_costs_from_details,
     summarize_daily_from_details,
-    summarize_history,
-    summarize_history_from_details,
-    summarize_insights,
-    summarize_insights_from_details,
-    summarize_models,
-    summarize_month,
-    summarize_project_drilldown,
-    summarize_project_drilldowns_from_details,
-    summarize_projects,
     summarize_details,
     summarize_expensive_session,
+    summarize_history_from_details,
+    summarize_insights_from_details,
+    summarize_project_drilldowns_from_details,
+    summarize_projects_from_details,
     summarize_source_breakdown_from_details,
     summarize_source_daily_from_details,
-    summarize_today,
     summarize_takeaways,
     summarize_top_sessions_from_details,
-    summarize_top_sessions,
-    summarize_week,
     summarize_work_rhythm,
 )
-from codex_stats.models import BreakdownEntry, DashboardData, WatchAlert
-from codex_stats.otel import build_otlp_metrics_payload, parse_key_value_pairs, write_otlp_metrics_json
+from codex_stats.models import BreakdownEntry, DashboardData
 from codex_stats.sources import iter_sources, source_label
-from codex_stats.transfer import export_payload, read_import, read_imports, read_imports_with_summary, write_merged_export
-from codex_stats.watch_state import build_watch_scope_key, load_watch_state, save_watch_state
+from codex_stats.transfer import (
+    export_payload,
+    read_import,
+    read_imports,
+    read_imports_with_summary,
+    write_merged_export,
+)
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -195,11 +177,9 @@ class MetricsTestCase(unittest.TestCase):
         self.paths = Paths(
             codex_home=codex_home,
             state_db=self.state_db,
-            logs_db=codex_home / "logs_1.sqlite",
             sessions_dir=codex_home / "sessions",
             config_dir=codex_home / "config",
             config_file=codex_home / "config" / "config.toml",
-            watch_state_file=codex_home / "config" / "watch-state.json",
         )
 
     def tearDown(self) -> None:
@@ -219,44 +199,10 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(details.output_tokens, 30)
         self.assertEqual(details.effective_total_tokens(), 280)
 
-    def test_today_summary_aggregates_sessions(self) -> None:
-        summary = summarize_today(self.paths, now=datetime.fromisoformat("2026-04-03T18:30:00+05:30"))
-        self.assertEqual(summary.sessions, 1)
-        self.assertEqual(summary.requests, 2)
-        self.assertEqual(summary.total_tokens, 280)
-        self.assertEqual(summary.top_model, "gpt-5.4")
-        self.assertGreater(summary.average_session_duration_minutes, 0.0)
-        self.assertGreater(summary.tokens_per_minute, 0.0)
-        self.assertEqual(summary.longest_active_streak_days, 1)
-
-    def test_week_and_month_summaries_include_session(self) -> None:
+    def test_details_for_last_days(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        week = summarize_week(self.paths, now=now)
-        month = summarize_month(self.paths, now=now)
-        self.assertEqual(week.total_tokens, 280)
-        self.assertEqual(month.total_tokens, 280)
-
-    def test_model_and_project_breakdowns(self) -> None:
-        models = summarize_models(self.paths)
-        projects = summarize_projects(self.paths)
-        self.assertEqual(models[0].name, "gpt-5.4")
-        self.assertEqual(models[0].total_tokens, 280)
-        self.assertEqual(projects[0].name, "project")
-        self.assertEqual(projects[0].requests, 2)
-
-    def test_history_costs_and_insights(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        history = summarize_history(self.paths, limit=5)
-        costs = summarize_costs(self.paths, now=now)
-        insights = summarize_insights(self.paths, now=now)
-        self.assertEqual(len(history), 1)
-        self.assertEqual(history[0].project_name, "project")
-        self.assertGreater(costs.month_cost_usd, 0.0)
-        self.assertEqual(insights.large_session_count, 0)
-        self.assertGreater(insights.average_tokens_per_request, 0.0)
-        self.assertIn("Heavy cost concentration in one session", insights.anomalies)
-        self.assertIn("Low cache efficiency", insights.anomalies)
-        self.assertIn("Split exploratory work into smaller sessions.", insights.recommendations)
+        details = details_for_last_days(self.paths, 7, now=now)
+        self.assertEqual(len(details), 1)
 
     def test_export_and_import_round_trip(self) -> None:
         payload = export_payload(self.paths)
@@ -266,23 +212,50 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(len(imported), 1)
         self.assertEqual(imported[0].session.project_name, "project")
 
-    def test_details_for_last_days(self) -> None:
+    def test_projects_history_costs_and_insights(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         details = details_for_last_days(self.paths, 7, now=now)
-        self.assertEqual(len(details), 1)
+        pricing = load_pricing_config(self.paths)
+        projects = summarize_projects_from_details(details, pricing)
+        history = summarize_history_from_details(details, pricing, limit=5)
+        costs = summarize_costs_from_details(
+            details,
+            pricing=pricing,
+            today=summarize_details("today", details, pricing),
+            week=summarize_details("week", details, pricing),
+            month=summarize_details("month", details, pricing),
+            now=now,
+        )
+        insights = summarize_insights_from_details(details, pricing=pricing, now=now)
+        self.assertEqual(projects[0].name, "project")
+        self.assertEqual(projects[0].requests, 2)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].project_name, "project")
+        self.assertGreater(costs.month_cost_usd, 0.0)
+        self.assertEqual(insights.large_session_count, 0)
+        self.assertGreater(insights.average_tokens_per_request, 0.0)
+        self.assertIn("Heavy cost concentration in one session", insights.anomalies)
+        self.assertIn("Low cache efficiency", insights.anomalies)
+        self.assertIn("Split exploratory work into smaller sessions.", insights.recommendations)
 
-    def test_daily_compare_and_doctor(self) -> None:
+    def test_daily_and_compare_from_details(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        daily = summarize_daily(self.paths, days=7, now=now)
-        compare = summarize_compare(self.paths, days=7, now=now)
-        checks = run_doctor(self.paths)
+        details = details_for_last_days(self.paths, 7, now=now)
+        daily = summarize_daily_from_details(details, days=7, now=now)
+        compare = summarize_compare_from_details(
+            details,
+            [],
+            current_label="last 7 days",
+            previous_label="prev 7 days",
+        )
         self.assertEqual(len(daily), 7)
         self.assertEqual(daily[-1].total_tokens, 280)
         self.assertEqual(compare.current.total_tokens, 280)
-        self.assertTrue(any(check.name == "state_db" and check.ok for check in checks))
+        self.assertEqual(compare.previous.total_tokens, 0)
 
     def test_top_sessions_and_multi_import(self) -> None:
-        top = summarize_top_sessions(self.paths, limit=1)
+        details = details_for_last_days(self.paths, 7, now=datetime.fromisoformat("2026-04-03T18:30:00+05:30"))
+        top = summarize_top_sessions_from_details(details, limit=1)
         self.assertEqual(top[0].project_name, "project")
         payload = export_payload(self.paths)
         export_path_a = Path(self.tmpdir.name) / "a.json"
@@ -297,22 +270,16 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(import_summary.sessions_loaded, 2)
         self.assertEqual(import_summary.duplicates_removed, 1)
 
-    def test_compare_named_and_report(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        report = summarize_compare_named(self.paths, "today", "yesterday", now=now)
-        weekly = build_report(self.paths, "weekly", now=now)
-        self.assertEqual(report.current.total_tokens, 280)
-        self.assertEqual(report.previous.total_tokens, 0)
-        self.assertEqual(weekly.period, "weekly")
-        self.assertEqual(weekly.summary.total_tokens, 280)
-        self.assertEqual(weekly.comparison.previous.total_tokens, 0)
-        self.assertIsNone(weekly.project_name)
-
     def test_project_drilldown_and_filtered_top(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        summary = summarize_project_drilldown(self.paths, "project", days=30, now=now)
         details = details_for_last_days(self.paths, 30, now=now)
-        drilldowns = summarize_project_drilldowns_from_details(details, days=30, now=now)
+        pricing = load_pricing_config(self.paths)
+        summary = summarize_details(
+            "project",
+            filter_details_by_project(details, "project"),
+            pricing,
+        )
+        drilldowns = summarize_project_drilldowns_from_details(details, days=30, now=now, pricing=pricing)
         top = summarize_top_sessions_from_details(details, limit=5, project_name="project")
         self.assertEqual(summary.total_tokens, 280)
         self.assertEqual(summary.requests, 2)
@@ -329,7 +296,7 @@ class MetricsTestCase(unittest.TestCase):
         summary = summarize_details("last 7 days", details)
         compare = summarize_compare_from_details(details, [], current_label="last 7 days", previous_label="prev 7 days")
         insights = summarize_insights_from_details(details, month=summary, now=now)
-        costs = summarize_costs(self.paths, now=now)
+        costs = summarize_costs_from_details(details, today=summary, week=summary, month=summary, now=now)
         takeaways = summarize_takeaways(summary=summary, comparison=compare, insights=insights, costs=costs)
         self.assertTrue(any("Cache reuse is low" in item for item in takeaways))
         self.assertTrue(any("Current pace projects" in item for item in takeaways))
@@ -360,15 +327,14 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIsNotNone(rhythm.peak_hour)
 
     def test_export_payload_since_and_parser(self) -> None:
-        payload = export_payload(self.paths, since="30d")
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        payload = export_payload(self.paths, since="30d", now=now)
         self.assertEqual(len(payload["sessions"]), 1)
         self.assertEqual(parse_since_days("30d"), 30)
         with self.assertRaises(ValueError):
             parse_since_days("30")
 
-    def test_project_report_and_merge_export(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        report = build_report(self.paths, "weekly", project_name="project", now=now)
+    def test_merge_export_dedupes_sessions(self) -> None:
         export_path_a = Path(self.tmpdir.name) / "a.json"
         export_path_b = Path(self.tmpdir.name) / "b.json"
         export_path_out = Path(self.tmpdir.name) / "merged.json"
@@ -376,161 +342,8 @@ class MetricsTestCase(unittest.TestCase):
         export_path_b.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
         _, import_summary = write_merged_export([export_path_a, export_path_b], export_path_out)
         merged_payload = json.loads(export_path_out.read_text(encoding="utf-8"))
-        self.assertEqual(report.project_name, "project")
-        self.assertEqual(report.summary.total_tokens, 280)
-        self.assertEqual(report.projects, [])
         self.assertEqual(len(merged_payload["sessions"]), 1)
         self.assertEqual(import_summary.merged_sessions, 1)
-
-    def test_otlp_payload_and_write(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        payload = build_otlp_metrics_payload(
-            self.paths,
-            since="30d",
-            daily_days=7,
-            service_name="codex-stats-test",
-            resource_attributes={"deployment.environment": "test"},
-            now=now,
-        )
-        resource_metrics = payload["resourceMetrics"]
-        self.assertEqual(len(resource_metrics), 1)
-        scope_metrics = resource_metrics[0]["scopeMetrics"]
-        self.assertEqual(len(scope_metrics), 1)
-        metrics = scope_metrics[0]["metrics"]
-        metric_names = {metric["name"] for metric in metrics}
-        self.assertIn("codex_stats_tokens", metric_names)
-        self.assertIn("codex_stats_daily_tokens", metric_names)
-        self.assertIn("codex_stats_daily_requests", metric_names)
-        attributes = resource_metrics[0]["resource"]["attributes"]
-        attribute_map = {attribute["key"]: attribute["value"]["stringValue"] for attribute in attributes}
-        self.assertEqual(attribute_map["service.name"], "codex-stats-test")
-        self.assertEqual(attribute_map["deployment.environment"], "test")
-        self.assertEqual(attribute_map["codex.stats.window"], "30d")
-
-        tokens_metric = next(metric for metric in metrics if metric["name"] == "codex_stats_tokens")
-        self.assertFalse(tokens_metric["sum"]["isMonotonic"])
-        total_point = next(point for point in tokens_metric["sum"]["dataPoints"] if not point["attributes"])
-        project_point = next(
-            point
-            for point in tokens_metric["sum"]["dataPoints"]
-            if any(attribute["key"] == "project" and attribute["value"]["stringValue"] == "project" for attribute in point["attributes"])
-        )
-        self.assertEqual(total_point["asInt"], "280")
-        self.assertEqual(project_point["asInt"], "280")
-
-        output_path = Path(self.tmpdir.name) / "otlp-metrics.json"
-        write_otlp_metrics_json(self.paths, output_path, since="30d", daily_days=7, now=now)
-        written_payload = json.loads(output_path.read_text(encoding="utf-8"))
-        self.assertEqual(written_payload["resourceMetrics"][0]["scopeMetrics"][0]["scope"]["name"], "codex-stats")
-
-    def test_parse_key_value_pairs(self) -> None:
-        pairs = parse_key_value_pairs(["a=1", "b=two"])
-        self.assertEqual(pairs, {"a": "1", "b": "two"})
-        with self.assertRaises(ValueError):
-            parse_key_value_pairs(["broken"])
-
-    def test_watch_dashboard_helpers(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        pricing = None
-        current_details = filter_details_by_project(details_for_last_days(self.paths, 7, now=now), "project")
-        previous_details = filter_details_by_project(details_for_last_days(self.paths, 7, now=now - timedelta(days=7)), "project")
-        summary = summarize_details("last 7 days", current_details)
-        compare = summarize_compare_from_details(
-            current_details,
-            previous_details,
-            current_label="last 7 days",
-            previous_label="prev 7 days",
-            pricing=pricing,
-        )
-        daily = summarize_daily_from_details(current_details, days=7, now=now)
-        history = summarize_history_from_details(current_details, limit=3)
-        top = summarize_top_sessions_from_details(current_details, limit=3)
-        insights = summarize_insights_from_details(current_details, month=summary, now=now)
-        alerts = build_watch_alerts(
-            summary,
-            compare,
-            insights,
-            cost_threshold_usd=0.001,
-            token_threshold=100,
-            request_threshold=1,
-            delta_pct_threshold=10.0,
-        )
-        rendered = format_watch_dashboard(
-            summary,
-            compare,
-            daily,
-            top,
-            history,
-            insights,
-            alerts,
-            now=now,
-            interval_seconds=2.0,
-            scope_label="project",
-        )
-        self.assertIn("Codex Stats Watch [project]", rendered)
-        self.assertIn("Press Ctrl-C to stop.", rendered)
-        self.assertIn("Daily Usage", rendered)
-        self.assertIn("Alerts", rendered)
-        self.assertTrue(any(alert.name == "cost_threshold" for alert in alerts))
-        self.assertTrue(any(alert.name == "token_threshold" for alert in alerts))
-
-    def test_apply_watch_state_marks_new_alerts_after_baseline(self) -> None:
-        session = get_session(self.paths, "session-1")
-        assert session is not None
-        details = [get_session_details(self.paths, session)]
-        baseline_alerts = build_watch_alerts(
-            summarize_details("last 7 days", details),
-            summarize_compare_from_details(details, [], current_label="last 7 days", previous_label="prev 7 days"),
-            summarize_insights_from_details(details, month=summarize_details("last 7 days", details)),
-            token_threshold=100,
-        )
-        alerts, seen_sessions, seen_alerts = apply_watch_state(details, baseline_alerts, baseline_ready=False)
-        self.assertTrue(all(not alert.is_new for alert in alerts))
-
-        follow_up_alerts = baseline_alerts + [WatchAlert(severity="warning", name="manual_test", detail="new condition")]
-        updated, _, _ = apply_watch_state(
-            details,
-            follow_up_alerts,
-            seen_session_ids=seen_sessions,
-            seen_alert_keys=seen_alerts,
-            baseline_ready=True,
-        )
-        self.assertTrue(any(alert.name == "manual_test" and alert.is_new for alert in updated))
-
-    def test_watch_state_persists_by_scope(self) -> None:
-        scope_key = build_watch_scope_key(
-            days=7,
-            project_name="project",
-            cost_threshold_usd=10.0,
-            token_threshold=1000,
-            request_threshold=5,
-            delta_pct_threshold=50.0,
-        )
-        save_watch_state(
-            self.paths,
-            scope_key,
-            seen_session_ids={"session-1"},
-            seen_alert_keys={("token_threshold", "Total tokens exceeded")},
-        )
-        loaded = load_watch_state(self.paths, scope_key)
-        self.assertEqual(loaded.seen_session_ids, {"session-1"})
-        self.assertEqual(loaded.seen_alert_keys, {("token_threshold", "Total tokens exceeded")})
-        other_scope = load_watch_state(self.paths, "days=30|project=other")
-        self.assertEqual(other_scope.seen_session_ids, set())
-        self.assertEqual(other_scope.seen_alert_keys, set())
-
-    def test_report_html_output(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        report = build_report(self.paths, "weekly", now=now)
-        daily_points = summarize_daily(self.paths, days=7, now=now)
-        html = format_report_html(report, daily_points=daily_points)
-        self.assertIn("<!DOCTYPE html>", html)
-        self.assertIn("Codex Stats Weekly Report", html)
-        self.assertIn("Top Sessions", html)
-        self.assertIn("Top Projects", html)
-        self.assertIn("Generated by codex-stats", html)
-        self.assertIn("<svg", html)
-        self.assertIn("Daily Token Trend", html)
 
     def test_dashboard_html_output(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -744,7 +557,6 @@ class MetricsTestCase(unittest.TestCase):
             now=now,
             pricing=pricing,
         )
-        opencode_points = [point for point in outside if point.source == "opencode"]
         self.assertTrue(any(point.source == "codex" for point in outside))
 
     def test_dashboard_source_filter(self) -> None:
@@ -768,23 +580,6 @@ class MetricsTestCase(unittest.TestCase):
         )
         restored = read_imports([export_path])[0]
         self.assertEqual(restored.recorded_cost_usd, 7.77)
-
-    def test_report_svg_output(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        report = build_report(self.paths, "weekly", now=now)
-        daily_points = summarize_daily(self.paths, days=7, now=now)
-        svg = format_report_svg(report, daily_points=daily_points)
-        assets = format_report_svg_assets(report, daily_points=daily_points)
-        self.assertIn("<svg", svg)
-        self.assertIn("Compact share card for release notes, README embeds, and social posts.", svg)
-        self.assertIn("ANOMALIES", svg)
-        self.assertIn("Generated by codex-stats", svg)
-        self.assertEqual(set(assets), {"page-card", "summary-card", "cost-card", "focus-card", "projects-card", "heatmap-card"})
-        self.assertIn("Single-image export of the active dashboard view.", assets["page-card"])
-        self.assertIn("Cost Snapshot", assets["cost-card"])
-        self.assertIn("Focus Card", assets["focus-card"])
-        self.assertIn("Project Snapshot", assets["projects-card"])
-        self.assertIn("Heatmap", assets["heatmap-card"])
 
     def test_dashboard_html_includes_work_patterns_and_heatmap(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")

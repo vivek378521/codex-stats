@@ -17,8 +17,6 @@ This is the prioritized path for making `codex-stats` a cleaner browser-first st
    Surface clearer headlines for `Today`, `Last 7 Days`, `Last 30 Days`, and `All Time`.
 2. Session and project drilldowns
    Let people click from the high-level dashboard into one project or one session without leaving the browser flow.
-3. Save-ready report views
-   Add cleaner layouts tuned specifically for PDF export, README embeds, and social/share cards.
 
 ## Later
 
@@ -31,9 +29,7 @@ This is the prioritized path for making `codex-stats` a cleaner browser-first st
 
 ## Nice To Have
 
-1. Lightweight watch view
-   Reintroduce a simple live-refresh mode only if it fits the browser-first product cleanly.
-2. Project grouping
+1. Project grouping
    Allow aliases such as `frontend`, `backend`, or `client-work` to combine several repos.
-3. Publishing helpers
+2. Publishing helpers
    Generate release-note-ready or changelog-ready stat summaries automatically.

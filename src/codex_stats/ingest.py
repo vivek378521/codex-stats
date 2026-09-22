@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Paths
@@ -146,14 +146,6 @@ def get_session_details(paths: Paths, session: SessionRecord) -> SessionDetails:
         total_tokens_from_rollout=_as_optional_int(rollout_details["total_tokens_from_rollout"]),
         started_at=started_at,
     )
-
-
-def sessions_for_day(paths: Paths, target_day: date, timezone: tzinfo | None = None) -> list[SessionRecord]:
-    return [
-        session
-        for session in iter_sessions(paths)
-        if session.created_at.astimezone(timezone or UTC).date() == target_day
-    ]
 
 
 def _as_optional_int(value: object) -> int | None:
