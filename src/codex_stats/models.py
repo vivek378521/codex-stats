@@ -38,6 +38,17 @@ class SessionRecord:
 
 
 @dataclass(frozen=True)
+class FileEdit:
+    path: str
+    action: str
+    insertions: int
+    deletions: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class SessionDetails:
     session: SessionRecord
     request_count: int
@@ -48,6 +59,7 @@ class SessionDetails:
     total_tokens_from_rollout: int | None
     started_at: datetime | None
     recorded_cost_usd: float | None = None
+    file_edits: tuple[FileEdit, ...] = ()
 
     def effective_total_tokens(self) -> int:
         if self.total_tokens_from_rollout is not None:
@@ -71,6 +83,7 @@ class SessionDetails:
             "effective_total_tokens": self.effective_total_tokens(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "recorded_cost_usd": self.recorded_cost_usd,
+            "file_edits": [edit.to_dict() for edit in self.file_edits],
         }
         return payload
 
@@ -269,6 +282,7 @@ class DashboardWindow:
     project_drilldowns: list["ProjectDrilldown"]
     tool_breakdown: list[BreakdownEntry] | None = None
     tool_daily_points: list["ToolDailyPoint"] | None = None
+    file_impact: list["FileImpactEntry"] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -292,6 +306,7 @@ class DashboardWindow:
             "project_drilldowns": [drilldown.to_dict() for drilldown in self.project_drilldowns],
             "tool_breakdown": [entry.to_dict() for entry in self.tool_breakdown] if self.tool_breakdown else None,
             "tool_daily_points": [point.to_dict() for point in self.tool_daily_points] if self.tool_daily_points else None,
+            "file_impact": [entry.to_dict() for entry in self.file_impact],
         }
 
 
@@ -309,6 +324,21 @@ class ToolDailyPoint:
             "total_tokens": self.total_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
         }
+
+
+@dataclass(frozen=True)
+class FileImpactEntry:
+    path: str
+    edits: int
+    sessions: int
+    insertions: int
+    deletions: int
+    created: int
+    updated: int
+    deleted: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)

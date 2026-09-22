@@ -13,6 +13,7 @@ from .models import (
     CostSummary,
     DashboardBadge,
     DailyPoint,
+    FileImpactEntry,
     HeatmapCell,
     HistoryEntry,
     InsightReport,
@@ -219,6 +220,7 @@ def summarize_takeaways(
     insights: InsightReport,
     comparison: CompareReport | None = None,
     costs: CostSummary | None = None,
+    file_impact: list[FileImpactEntry] | None = None,
     max_items: int = 4,
     scope_label: str | None = None,
 ) -> list[str]:
@@ -227,6 +229,13 @@ def summarize_takeaways(
         direction = "up" if comparison.total_tokens_delta_pct >= 0 else "down"
         takeaways.append(
             f"Usage moved {direction} {abs(comparison.total_tokens_delta_pct):.1f}% versus {comparison.previous.label}."
+        )
+    if file_impact:
+        edited_files = len(file_impact)
+        added_lines = sum(entry.insertions for entry in file_impact)
+        removed_lines = sum(entry.deletions for entry in file_impact)
+        takeaways.append(
+            f"File work touched {edited_files} file{'s' if edited_files != 1 else ''}, adding {added_lines:,} lines and removing {removed_lines:,} lines."
         )
     if summary.project_concentration_top1_pct is not None and summary.project_concentration_top1_pct >= 0.6:
         takeaways.append(
@@ -556,6 +565,46 @@ def summarize_top_sessions_from_details(
         )
         for detail in ordered[:limit]
     ]
+
+
+def summarize_files_from_details(
+    details: list[SessionDetails],
+    limit: int = 10,
+) -> list[FileImpactEntry]:
+    grouped: dict[str, dict] = defaultdict(
+        lambda: {
+            "edits": 0,
+            "sessions": set(),
+            "insertions": 0,
+            "deletions": 0,
+            "created": 0,
+            "updated": 0,
+            "deleted": 0,
+        }
+    )
+    for detail in details:
+        for edit in detail.file_edits:
+            bucket = grouped[edit.path]
+            bucket["edits"] += 1
+            bucket["sessions"].add(detail.session.session_id)
+            bucket["insertions"] += edit.insertions
+            bucket["deletions"] += edit.deletions
+            bucket[edit.action] += 1
+    entries = [
+        FileImpactEntry(
+            path=path,
+            edits=bucket["edits"],
+            sessions=len(bucket["sessions"]),
+            insertions=bucket["insertions"],
+            deletions=bucket["deletions"],
+            created=bucket["created"],
+            updated=bucket["updated"],
+            deleted=bucket["deleted"],
+        )
+        for path, bucket in grouped.items()
+    ]
+    entries.sort(key=lambda entry: (-entry.edits, -(entry.insertions + entry.deletions), entry.path))
+    return entries[: max(limit, 0)]
 
 
 def _fmt_ratio_pct(value: float | None) -> str:

@@ -1427,6 +1427,8 @@ def _format_dashboard_window_section(
           </div>
         </section>
 
+        {_format_file_impact_panel(window)}
+
         <section class="panel">
           <div class="section-header">
             <div>
@@ -1715,6 +1717,72 @@ def _format_work_rhythm_card(window: DashboardWindow) -> str:
     """
 
 
+def _format_file_impact_panel(window: DashboardWindow) -> str:
+    if not window.file_impact:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Where Lines Changed</p>
+              <h2>Most Edited Files</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No file edits recorded yet.", "File-level edits are captured from Codex and Claude Code rollouts. OpenCode and Hermes scopes track usage totals only, so file impact can stay empty for those scopes.")}
+        </section>
+        """
+    chart_svg = _svg_bar_chart(
+        [(entry.path, float(entry.insertions)) for entry in window.file_impact[:6]],
+        bar_color="#0f766e",
+        value_formatter=lambda value: f"+{int(value):,}",
+        empty_label="No file edit data available for this view.",
+    )
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.path)}</td>
+          <td>{entry.edits}</td>
+          <td>{entry.sessions}</td>
+          <td>+{entry.insertions:,}</td>
+          <td>-{entry.deletions:,}</td>
+        </tr>
+        """
+        for entry in window.file_impact[:10]
+    )
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Where Lines Changed</p>
+              <h2>Most Edited Files</h2>
+            </div>
+          </div>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Additions by File</h3>
+              {chart_svg}
+            </div>
+            <div class="chart-card">
+              <h3>File Activity</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>File</th>
+                      <th>Edits</th>
+                      <th>Sessions</th>
+                      <th>Additions</th>
+                      <th>Deletions</th>
+                    </tr>
+                  </thead>
+                  <tbody>{rows}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+        """
+
+
 def _format_empty_showcase(title: str, detail: str) -> str:
     return f"""
     <div class="empty-showcase">
@@ -1780,6 +1848,11 @@ def _format_window_copy_summary(window: DashboardWindow, *, scope_label: str = "
         lines.append(
             f"Top project: {top_project.name} with {top_project.total_tokens:,} tokens across {top_project.requests} requests."
         )
+    if window.file_impact:
+        top_file = window.file_impact[0]
+        lines.append(
+            f"Top file: {top_file.path} with {top_file.edits} edits and {top_file.insertions + top_file.deletions:,} lines changed."
+        )
     return "\n".join(lines)
 
 
@@ -1838,6 +1911,12 @@ def _svg_line_chart(
     )
 
 
+def _fit_label(label: str, max_chars: int) -> str:
+    if len(label) <= max_chars:
+        return label
+    return "…" + label[-(max_chars - 1) :]
+
+
 def _svg_bar_chart(
     bars: list[tuple[str, float]],
     *,
@@ -1854,12 +1933,14 @@ def _svg_bar_chart(
     bar_max_width = width - (padding * 2) - label_width - 90
     height = padding * 2 + row_height * len(bars)
     max_value = max(value for _, value in bars) if max(value for _, value in bars) > 0 else 1.0
+    max_label_chars = max(8, int(label_width / 6.0) - 2)
     rows = []
     for index, (label, value) in enumerate(bars):
         y = padding + index * row_height
         bar_width = (value / max_value) * bar_max_width
+        fitted = _fit_label(label, max_label_chars)
         rows.append(
-            f'<text x="{padding}" y="{y + 20}" font-size="12" fill="#1f1a17">{escape(label)}</text>'
+            f'<text x="{padding}" y="{y + 20}" font-size="12" fill="#1f1a17">{escape(fitted)}<title>{escape(label)}</title></text>'
             f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_max_width:.1f}" height="16" rx="8" fill="rgba(72,53,36,0.08)" />'
             f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_width:.1f}" height="16" rx="8" fill="{bar_color}" />'
             f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'

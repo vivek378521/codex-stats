@@ -11,6 +11,7 @@ It reads local session data from every coding assistant installed on the machine
 - estimated token-based cost (or each tool's own recorded cost when available)
 - per-tool cost overrides and a stacked per-tool token trend on the Overview
 - anomaly-aware usage insights and recommendations
+- file-level impact tracking: a "Most Edited Files" panel showing per-file edit counts and add/delete line totals parsed from Codex and Claude Code rollouts
 - export for cross-device snapshots
 - shareable JPG cards and browser PDF export from the dashboard
 

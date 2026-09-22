@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Callable
 
 from .config import Paths
-from .ingest import iter_session_details as _codex_iter_session_details
-from .models import SessionDetails, SessionRecord
+from .ingest import file_edit_from_args, is_file_editing_tool, iter_session_details as _codex_iter_session_details
+from .models import FileEdit, SessionDetails, SessionRecord
 
 SOURCE_CODEX = "codex"
 SOURCE_OPENCODE = "opencode"
@@ -280,6 +280,7 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
     cache_write_tokens = 0
     model_counter: Counter[str] = Counter()
     cwd: str | None = None
+    edits: list[FileEdit] = []
     with path.open("r", encoding="utf-8", errors="ignore") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -307,12 +308,21 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
             if isinstance(message.get("model"), str):
                 model_counter[message["model"]] += 1
             usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            input_tokens += _as_int(usage.get("input_tokens"))
-            output_tokens += _as_int(usage.get("output_tokens"))
-            cache_read_tokens += _as_int(usage.get("cache_read_input_tokens"))
-            cache_write_tokens += _as_int(usage.get("cache_creation_input_tokens"))
+            if isinstance(usage, dict):
+                input_tokens += _as_int(usage.get("input_tokens"))
+                output_tokens += _as_int(usage.get("output_tokens"))
+                cache_read_tokens += _as_int(usage.get("cache_read_input_tokens"))
+                cache_write_tokens += _as_int(usage.get("cache_creation_input_tokens"))
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    tool_name = block.get("name")
+                    tool_input = block.get("input")
+                    if not is_file_editing_tool(tool_name) or not isinstance(tool_input, dict):
+                        continue
+                    edits.extend(_claude_edits_from_tool_use(tool_name, tool_input))
 
     if not timestamps:
         return None
@@ -343,7 +353,41 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
         reasoning_output_tokens=None,
         total_tokens_from_rollout=total_tokens,
         started_at=created_at,
+        file_edits=tuple(edits),
     )
+
+
+def _claude_edits_from_tool_use(tool_name: object, tool_input: dict) -> list[FileEdit]:
+    if str(tool_name).lower() in ("multiedit", "multi_edit", "multi-edit"):
+        file_path = _edit_path_from_tool_input(tool_input)
+        edits: list[FileEdit] = []
+        sub_edits = tool_input.get("edits")
+        if isinstance(sub_edits, list):
+            for sub in sub_edits:
+                if not isinstance(sub, dict):
+                    continue
+                sub_args = {
+                    "file_path": file_path,
+                    "old_string": sub.get("old_string"),
+                    "new_string": sub.get("new_string"),
+                }
+                edit = file_edit_from_args(tool_name, sub_args)
+                if edit is not None:
+                    edits.append(edit)
+        edit = file_edit_from_args(tool_name, tool_input)
+        if edit is not None:
+            edits.append(edit)
+        return edits
+    edit = file_edit_from_args(tool_name, tool_input)
+    return [edit] if edit is not None else []
+
+
+def _edit_path_from_tool_input(tool_input: dict) -> str | None:
+    for key in ("file_path", "filepath", "path", "file"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _decode_claude_project_path(encoded: str) -> str:

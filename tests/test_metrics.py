@@ -15,7 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_stats.cli import _build_dashboard, _build_window
 from codex_stats.config import Paths, load_pricing_config
 from codex_stats.display import format_dashboard_html, format_dashboard_svg_assets
-from codex_stats.ingest import get_session, get_session_details
+from codex_stats.ingest import (
+    _read_rollout,
+    file_edits_from_patch,
+    get_session,
+    get_session_details,
+)
 from codex_stats.metrics import (
     details_for_last_days,
     estimate_detail_cost,
@@ -28,6 +33,7 @@ from codex_stats.metrics import (
     summarize_daily_from_details,
     summarize_details,
     summarize_expensive_session,
+    summarize_files_from_details,
     summarize_history_from_details,
     summarize_insights_from_details,
     summarize_project_drilldowns_from_details,
@@ -39,7 +45,7 @@ from codex_stats.metrics import (
     summarize_work_rhythm,
 )
 from codex_stats.models import BreakdownEntry, DashboardData
-from codex_stats.sources import iter_sources, source_label
+from codex_stats.sources import _ingest_claude, iter_sources, source_label
 from codex_stats.transfer import (
     export_payload,
     read_import,
@@ -172,6 +178,36 @@ class MetricsTestCase(unittest.TestCase):
                     },
                 },
             },
+            {
+                "timestamp": "2026-04-03T13:18:24.100Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "agent_message": {
+                        "tool_call": {
+                            "name": "mcp__update_file",
+                            "arguments": json.dumps(
+                                {
+                                    "file_path": "src/main.py",
+                                    "old_string": "def main():\n    return\n",
+                                    "new_string": "def main():\n    return 42\n",
+                                }
+                            ),
+                        }
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-04-03T13:18:24.200Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "mcp__create_file",
+                    "mcp__create_file": {
+                        "file_path": "src/new_module.py",
+                        "content": "print('hello')\nprint('world')\n",
+                    },
+                },
+            },
         ]
         rollout_path.write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8")
         self.paths = Paths(
@@ -198,11 +234,149 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(details.input_tokens, 250)
         self.assertEqual(details.output_tokens, 30)
         self.assertEqual(details.effective_total_tokens(), 280)
+        self.assertEqual(len(details.file_edits), 2)
+        update, created = details.file_edits
+        self.assertEqual((update.path, update.action, update.insertions, update.deletions), ("src/main.py", "updated", 1, 1))
+        self.assertEqual((created.path, created.action, created.insertions, created.deletions), ("src/new_module.py", "created", 2, 0))
 
     def test_details_for_last_days(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         details = details_for_last_days(self.paths, 7, now=now)
         self.assertEqual(len(details), 1)
+
+    def test_file_impact_aggregation_and_dashboard(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = details_for_last_days(self.paths, 7, now=now)
+        impact = summarize_files_from_details(details)
+        self.assertEqual(len(impact), 2)
+        main, module = impact
+        self.assertEqual(main.path, "src/main.py")
+        self.assertEqual(main.edits, 1)
+        self.assertEqual(main.sessions, 1)
+        self.assertEqual((main.insertions, main.deletions), (1, 1))
+        self.assertEqual(main.updated, 1)
+        self.assertEqual(module.path, "src/new_module.py")
+        self.assertEqual(module.created, 1)
+        self.assertEqual(module.insertions, 2)
+        self.assertEqual(sum(entry.edits for entry in impact), 2)
+        dashboard = _build_dashboard(self.paths, now=now)
+        html = format_dashboard_html(dashboard)
+        self.assertIn("Most Edited Files", html)
+        self.assertIn("src/main.py", html)
+        self.assertEqual(impact[0].to_dict()["path"], "src/main.py")
+
+    def test_takeaway_mentions_file_work(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = details_for_last_days(self.paths, 7, now=now)
+        summary = summarize_details("last 7 days", details)
+        insights = summarize_insights_from_details(details, month=summary, now=now)
+        file_impact = summarize_files_from_details(details)
+        takeaways = summarize_takeaways(
+            summary=summary,
+            insights=insights,
+            file_impact=file_impact,
+            max_items=5,
+        )
+        self.assertTrue(any("adding 3 lines and removing 1 lines" in item for item in takeaways))
+
+    def test_claude_transcript_parses_file_edits(self) -> None:
+        projects_dir = Path(self.tmpdir.name) / "claude-projects"
+        project_dir = projects_dir / "tmp-claude-project"
+        project_dir.mkdir(parents=True)
+        transcript = [
+            {
+                "timestamp": "2026-04-03T13:17:23.324Z",
+                "type": "user",
+                "cwd": "/tmp/claude-project",
+                "message": {"role": "user", "content": "hi"},
+            },
+            {
+                "timestamp": "2026-04-03T13:17:25.324Z",
+                "type": "assistant",
+                "cwd": "/tmp/claude-project",
+                "message": {
+                    "model": "claude-opus-4",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Edit",
+                            "input": {"file_path": "src/app.py", "old_string": "old", "new_string": "brand new line"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "name": "Write",
+                            "input": {"file_path": "src/new.txt", "content": "line1\nline2"},
+                        },
+                    ],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
+        ]
+        (project_dir / "abc123.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in transcript),
+            encoding="utf-8",
+        )
+        details = _ingest_claude(projects_dir)
+        self.assertEqual(len(details), 1)
+        edits = details[0].file_edits
+        self.assertEqual(len(edits), 2)
+        edit_block, write_block = edits
+        self.assertEqual(edit_block.path, "src/app.py")
+        self.assertEqual(edit_block.action, "updated")
+        self.assertEqual((edit_block.insertions, edit_block.deletions), (1, 1))
+        self.assertEqual(write_block.path, "src/new.txt")
+        self.assertEqual(write_block.action, "created")
+        self.assertEqual(write_block.insertions, 2)
+
+    def test_parse_custom_tool_call_apply_patch(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: /tmp/thing.py\n"
+            "+def greet():\n"
+            "+    return 'hi'\n"
+            "*** Update File: /tmp/app.py\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "@@\n"
+            "+extra\n"
+            "*** Delete File: /tmp/rolledup.txt\n"
+            "-gone\n"
+            "*** End Patch\n"
+        )
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "apply_patch",
+                "status": "completed",
+                "input": patch,
+            },
+        }
+        rollout = Path(self.tmpdir.name) / "rollout-apply.jsonl"
+        rollout.write_text(json.dumps(event) + "\n", encoding="utf-8")
+        _, edits = _read_rollout(rollout)
+        by = {(e.action, e.path): (e.insertions, e.deletions) for e in edits}
+        self.assertEqual(by[("created", "/tmp/thing.py")], (2, 0))
+        self.assertEqual(by[("updated", "/tmp/app.py")], (2, 1))
+        self.assertEqual(by[("deleted", "/tmp/rolledup.txt")], (0, 1))
+
+    def test_file_edits_from_patch_splits_multiple_files(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: a.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            "-x\n"
+            "+y\n"
+            "+z\n"
+            "*** Add File: b.py\n"
+            "+print('b')\n"
+            "*** End Patch\n"
+        )
+        edits = file_edits_from_patch("apply_patch", patch)
+        self.assertEqual({(e.path, e.action) for e in edits}, {("a.py", "updated"), ("b.py", "created")})
+        self.assertEqual(edits[0].insertions, 2)
+        self.assertEqual(edits[0].deletions, 1)
 
     def test_export_and_import_round_trip(self) -> None:
         payload = export_payload(self.paths)
