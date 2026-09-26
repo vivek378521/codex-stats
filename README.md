@@ -78,20 +78,35 @@ transcripts, and the Hermes database, then normalizes everything into one sessio
   `input_tokens`; Anthropic (Claude) reports them *separately*. `codex-stats` normalizes
   both conventions at ingest, so the cache ratio is always a real fraction between 0 and 1
   and the four components always sum to the provider's own total.
-- A small default rate table ships for known models, and it is a **dated snapshot** — check
-  the `RATE_SNAPSHOT_DATE` constant in `src/codex_stats/config.py` and update it when
-  published prices move. Any model missing from the table falls back to
-  `default_usd_per_1k_tokens`, and the dashboard labels those sessions
-  ("N sessions on a fallback rate") rather than presenting a silently wrong number.
+- A default rate table ships for known models, taken from each provider's published
+  pricing page and converted from USD per million tokens to USD per 1k. It is a **dated
+  snapshot**: see `RATE_SNAPSHOT_DATE` and `RATE_SNAPSHOT_SOURCES` in
+  `src/codex_stats/config.py`, and update it when published prices move.
+  - OpenAI rates are standard processing, short context. OpenAI only bills explicit cache
+    writes from GPT-5.6 onward; earlier models use implicit caching, so their cache-write
+    rate is 0. Long-context (>272k) pricing is not modeled.
+  - Anthropic rates are standard pricing with 5-minute cache writes (1.25x base input).
+    1-hour writes (2x), Batch (-50%), fast mode, and the 1.1x data-residency multiplier
+    are not modeled.
+  - Model names are matched exactly first, then with a provider prefix stripped, so
+    `anthropic/claude-opus-4.6` resolves to the same rates as `claude-opus-4.6`.
+- Any model that cannot be identified — most often a third-party alias such as a
+  provider's internal codename — falls back to `DEFAULT_FALLBACK_RATES`, a mid-tier
+  published rate rather than a flat rate. A flat fallback badly overestimates
+  cache-heavy sessions, because cache reads are normally about 10x cheaper than fresh
+  input. The dashboard labels these sessions ("N sessions on a fallback rate") rather
+  than presenting a silently wrong number. Set `default_usd_per_1k_tokens` to use a
+  single flat rate for them instead.
 - Override rates per model in `~/.config/codex-stats/config.toml`:
 
   ```toml
   [pricing]
-  default_usd_per_1k_tokens = 0.01
+  # optional: replace the fallback for unidentifiable models with one flat rate
+  # default_usd_per_1k_tokens = 0.003
 
   [pricing.model_usd_per_1k_tokens.gpt-5.4]
-  input = 0.003
-  cached_read = 0.0003
+  input = 0.0025
+  cached_read = 0.00025
   cache_write = 0.0
   output = 0.015
 

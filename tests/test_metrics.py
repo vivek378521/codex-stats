@@ -24,6 +24,7 @@ from codex_stats.ingest import (
 )
 from codex_stats.metrics import (
     estimate_detail_cost,
+    uses_recorded_cost,
     filter_details_by_project,
     local_date,
     summarize_activity_heatmap_from_details,
@@ -834,6 +835,18 @@ class MetricsTestCase(unittest.TestCase):
             session=replace(get_session(self.paths), model="mystery-alias"),
         )
         self.assertEqual(summarize_details("x", [aliased]).unrated_sessions, 1)
+
+    def test_recorded_zero_cost_is_estimated_and_flagged(self) -> None:
+        # A tool that reports cost = 0 has given no usable figure, so the session is
+        # estimated and must be reported as unrated rather than counted as rated.
+        detail = replace(
+            get_session_details(self.paths, get_session(self.paths)),
+            session=replace(get_session(self.paths), model="mystery-alias"),
+            recorded_cost_usd=0.0,
+        )
+        self.assertFalse(uses_recorded_cost(detail))
+        self.assertGreater(estimate_detail_cost(detail, PricingConfig()), 0.0)
+        self.assertEqual(summarize_details("x", [detail]).unrated_sessions, 1)
 
     def test_dashboard_html_includes_work_patterns_and_heatmap(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")

@@ -26,8 +26,17 @@ from .models import (
 )
 from .sources import source_label
 
+def uses_recorded_cost(detail: SessionDetails) -> bool:
+    """Whether a session's cost comes from the tool's own figure rather than an estimate.
+
+    A recorded 0 is treated as no usable figure, so those sessions are estimated and must
+    also be reported as unrated when the model has no published rate.
+    """
+    return detail.recorded_cost_usd is not None and detail.recorded_cost_usd > 0
+
+
 def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> float:
-    if detail.recorded_cost_usd is not None and detail.recorded_cost_usd > 0:
+    if uses_recorded_cost(detail):
         return round(detail.recorded_cost_usd, 4)
     rates, _ = pricing.rates_for(detail.session.source, detail.session.model)
     return rates.cost_for(detail.token_split())
@@ -65,7 +74,7 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
     unrated_sessions = sum(
         1
         for detail in details
-        if detail.recorded_cost_usd is None
+        if not uses_recorded_cost(detail)
         and pricing.rates_for(detail.session.source, detail.session.model)[1]
     )
     largest_session_tokens = max((detail.effective_total_tokens() for detail in details), default=0)

@@ -7,7 +7,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_stats.config import ModelRates, Paths, PricingConfig, load_config
+from codex_stats.config import (
+    DEFAULT_FALLBACK_RATES,
+    DEFAULT_MODEL_RATES,
+    ModelRates,
+    Paths,
+    PricingConfig,
+    load_config,
+)
 
 
 class ConfigTestCase(unittest.TestCase):
@@ -30,7 +37,7 @@ class ConfigTestCase(unittest.TestCase):
         self.assertEqual(config.display.color, "auto")
         self.assertEqual(config.display.history_limit, 10)
         self.assertEqual(config.display.compare_days, 7)
-        self.assertEqual(config.pricing.default_usd_per_1k_tokens, 0.01)
+        self.assertIsNone(config.pricing.default_usd_per_1k_tokens)
 
     def test_load_config_reads_effective_values(self) -> None:
         self.paths.config_dir.mkdir(parents=True, exist_ok=True)
@@ -86,7 +93,49 @@ output = 0.015
         self.assertTrue(unrated)
         known, unrated_known = pricing.rates_for("codex", "gpt-5.4")
         self.assertFalse(unrated_known)
-        self.assertEqual(known.cached_read_usd_per_1k, 0.0003)
+        self.assertEqual(known.cached_read_usd_per_1k, 0.00025)
+
+    def test_default_fallback_is_component_aware(self) -> None:
+        pricing = PricingConfig()
+        rates, unrated = pricing.rates_for("claude", "stealth")
+        self.assertTrue(unrated)
+        self.assertEqual(rates, DEFAULT_FALLBACK_RATES)
+        self.assertLess(rates.cached_read_usd_per_1k, rates.input_usd_per_1k)
+        self.assertLess(rates.input_usd_per_1k, rates.output_usd_per_1k)
+
+    def test_published_rates_match_official_per_token_prices(self) -> None:
+        # gpt-5.6-terra: $2.00 input / $0.20 cached / $2.50 write / $12.00 output per 1M.
+        self.assertEqual(
+            DEFAULT_MODEL_RATES["gpt-5.6-terra"],
+            ModelRates(0.002, 0.0002, 0.0025, 0.012),
+        )
+        # gpt-5.5: $5.00 input / $0.50 cached / no cache write / $30.00 output per 1M.
+        self.assertEqual(
+            DEFAULT_MODEL_RATES["gpt-5.5"],
+            ModelRates(0.005, 0.0005, 0.0, 0.030),
+        )
+        # claude-opus-4.6: $5.00 input / $0.50 read / $6.25 5m write / $25.00 output per 1M.
+        self.assertEqual(
+            DEFAULT_MODEL_RATES["claude-opus-4.6"],
+            ModelRates(0.005, 0.0005, 0.00625, 0.025),
+        )
+
+    def test_provider_prefixed_model_resolves_to_base_rates(self) -> None:
+        pricing = PricingConfig()
+        for source, model in (
+            ("hermes", "anthropic/claude-opus-4.6"),
+            ("claude", "anthropic/claude-haiku-4.5"),
+            ("codex", "gpt-5.6-terra"),
+        ):
+            rates, unrated = pricing.rates_for(source, model)
+            self.assertFalse(unrated, f"{source}/{model} should resolve to published rates")
+            self.assertEqual(rates, DEFAULT_MODEL_RATES[model.rsplit('/', 1)[-1]])
+
+    def test_explicit_model_key_wins_over_prefix_stripping(self) -> None:
+        pricing = PricingConfig(model_rates={"claude-opus-4.6": ModelRates.uniform(0.5)})
+        rates, unrated = pricing.rates_for("hermes", "anthropic/claude-opus-4.6")
+        self.assertEqual(rates, ModelRates.uniform(0.5))
+        self.assertFalse(unrated)
 
     def test_source_rate_overrides_model_table(self) -> None:
         pricing = PricingConfig(
