@@ -35,71 +35,31 @@ from .models import (
     SessionDetails,
 )
 from .sources import Source, iter_sources
-from .transfer import write_export
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    return argparse.ArgumentParser(
         prog="codex-stats",
-        description="Open a local Codex usage dashboard in the browser or export normalized stats.",
+        description="Open a local coding-agent usage dashboard in the browser.",
     )
-    parser.add_argument(
-        "--output",
-        dest="dashboard_output",
-        help="Write dashboard HTML to a file instead of a temp file.",
-    )
-    parser.add_argument("--no-open", action="store_true", help="Write the dashboard without opening the browser.")
-    parser.add_argument(
-        "--source",
-        action="append",
-        dest="sources",
-        metavar="SOURCE",
-        help="Only include the given tool scope (codex, opencode, claude, hermes). Repeatable: --source codex --source opencode.",
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    export_parser = subparsers.add_parser("export", help="Export normalized local stats to JSON.")
-    export_parser.add_argument("output", help="Output JSON file.")
-    export_parser.add_argument("--since", help="Only export the last Nd of sessions, for example 30d.")
-    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    build_parser().parse_args(argv)
     paths = Paths.discover()
 
-    if args.command == "export":
-        output_path = write_export(paths, Path(args.output).expanduser(), since=args.since)
-        print(f"Exported stats to {output_path}")
-        return 0
-
-    if args.command is not None:
-        parser.print_help()
-        return 1
-
-    dashboard = _build_dashboard(paths, sources=args.sources)
-    output_path = _write_dashboard_output(format_dashboard_html(dashboard), args.dashboard_output)
+    dashboard = _build_dashboard(paths)
+    output_path = _write_dashboard_output(format_dashboard_html(dashboard))
     print(f"Wrote dashboard to {output_path}")
-    if not args.no_open:
-        _open_report_in_browser(output_path)
-        print(f"Opened dashboard in browser: {output_path}")
+    _open_report_in_browser(output_path)
+    print(f"Opened dashboard in browser: {output_path}")
     return 0
 
 
-def _build_dashboard(paths: Paths, now: datetime | None = None, sources: list[str] | None = None) -> DashboardData:
+def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData:
     current_time = now or datetime.now().astimezone()
     pricing = load_pricing_config(paths)
-    all_sources = iter_sources(paths)
-    if sources:
-        requested = set(sources)
-        missing = sorted(requested - {source.key for source in all_sources})
-        if missing:
-            known = ", ".join(sorted(source.key for source in all_sources)) or "none"
-            raise ValueError(f"Unknown source(s): {', '.join(missing)}. Known sources: {known}")
-        selected_sources = [source for source in all_sources if source.key in requested]
-    else:
-        selected_sources = all_sources
+    selected_sources = iter_sources(paths)
     source_details = {source.key: source.ingest() for source in selected_sources}
     all_details = [detail for source in selected_sources for detail in source_details[source.key]]
 
@@ -391,14 +351,10 @@ def _all_time_trend_days(details: list[SessionDetails], now: datetime) -> int:
     return min(max(span_days, 1), 90)
 
 
-def _write_dashboard_output(content: str, output: str | None) -> Path:
-    if output:
-        output_path = Path(output).expanduser()
-    else:
-        handle = tempfile.NamedTemporaryFile(prefix="codex-stats-dashboard-", suffix=".html", delete=False)
-        handle.close()
-        output_path = Path(handle.name)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def _write_dashboard_output(content: str) -> Path:
+    handle = tempfile.NamedTemporaryFile(prefix="codex-stats-dashboard-", suffix=".html", delete=False)
+    handle.close()
+    output_path = Path(handle.name)
     output_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
     return output_path
 

@@ -416,16 +416,3 @@ class DashboardData:
             "generated_at": self.generated_at.isoformat(),
             "scopes": [scope.to_dict() for scope in self.scopes],
         }
-
-
-@dataclass(frozen=True)
-class ImportSummary:
-    files_read: int
-    sessions_loaded: int
-    duplicates_removed: int
-    merged_sessions: int
-    oldest_session_at: str | None
-    newest_session_at: str | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)

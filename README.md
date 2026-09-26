@@ -12,12 +12,12 @@ It reads local session data from every coding assistant installed on the machine
 - per-tool cost overrides and a stacked per-tool token trend on the Overview
 - anomaly-aware usage insights and recommendations
 - file-level impact tracking: a "Most Edited Files" panel showing per-file edit counts and add/delete line totals parsed from Codex and Claude Code rollouts
-- export for cross-device snapshots
 - shareable JPG cards and browser PDF export from the dashboard
 
 ## Data Sources
 
-Each source is detected automatically and skipped when no data is present:
+Every tool below always gets a tab, whether or not local data exists. Tools with no
+sessions render an empty state instead of being hidden.
 
 | Tool | Location | Notes |
 | --- | --- | --- |
@@ -45,18 +45,14 @@ python3 -m pip install codex-stats
 
 ## Command Reference
 
-- `codex-stats`
-  Generate a standalone dashboard HTML file and open it in the default browser.
-- `codex-stats --output codex-stats-dashboard.html`
-  Write the dashboard HTML to a fixed path.
-- `codex-stats --output codex-stats-dashboard.html --no-open`
-  Write the dashboard HTML without opening the browser.
-- `codex-stats --source codex --source opencode`
-  Restrict the dashboard to the given tool scopes (repeat the flag to pick multiple).
-- `codex-stats export codex-stats-export.json`
-  Export normalized local stats to JSON.
-- `codex-stats export codex-stats-export.json --since 30d`
-  Export only a rolling window of recent sessions.
+There is exactly one command, and it takes no options:
+
+```bash
+codex-stats
+```
+
+It reads local session data, writes a standalone dashboard HTML file to a temporary
+path, and opens it in your default browser.
 
 Inside the dashboard, use the action bar to:
 
@@ -85,7 +81,6 @@ transcripts, and the Hermes database, then normalizes everything into one sessio
   ```
 
 - Output depends on local file formats remaining compatible.
-- `export --since Nd` limits snapshots to a rolling window before sharing.
 
 ## Roadmap
 

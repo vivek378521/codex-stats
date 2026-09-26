@@ -20,12 +20,12 @@ from codex_stats.ingest import (
     file_edits_from_patch,
     get_session,
     get_session_details,
+    iter_session_details,
 )
 from codex_stats.metrics import (
-    details_for_last_days,
     estimate_detail_cost,
     filter_details_by_project,
-    parse_since_days,
+    local_date,
     summarize_activity_heatmap_from_details,
     summarize_badges,
     summarize_compare_from_details,
@@ -44,15 +44,19 @@ from codex_stats.metrics import (
     summarize_top_sessions_from_details,
     summarize_work_rhythm,
 )
-from codex_stats.models import BreakdownEntry, DashboardData
+from codex_stats.models import DashboardData
 from codex_stats.sources import _ingest_claude, iter_sources, source_label
-from codex_stats.transfer import (
-    export_payload,
-    read_import,
-    read_imports,
-    read_imports_with_summary,
-    write_merged_export,
-)
+
+
+def _details(paths: Paths, days: int, now: datetime | None = None) -> list:
+    current_time = now or datetime.now().astimezone()
+    end_day = current_time.date()
+    start_day = end_day - timedelta(days=max(days, 1) - 1)
+    return [
+        detail
+        for detail in iter_session_details(paths)
+        if start_day <= local_date(detail.session.created_at, current_time.tzinfo) <= end_day
+    ]
 
 
 class MetricsTestCase(unittest.TestCase):
@@ -239,14 +243,9 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual((update.path, update.action, update.insertions, update.deletions), ("src/main.py", "updated", 1, 1))
         self.assertEqual((created.path, created.action, created.insertions, created.deletions), ("src/new_module.py", "created", 2, 0))
 
-    def test_details_for_last_days(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
-        self.assertEqual(len(details), 1)
-
     def test_file_impact_aggregation_and_dashboard(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         impact = summarize_files_from_details(details)
         self.assertEqual(len(impact), 2)
         main, module = impact
@@ -267,7 +266,7 @@ class MetricsTestCase(unittest.TestCase):
 
     def test_takeaway_mentions_file_work(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         summary = summarize_details("last 7 days", details)
         insights = summarize_insights_from_details(details, month=summary, now=now)
         file_impact = summarize_files_from_details(details)
@@ -378,17 +377,9 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(edits[0].insertions, 2)
         self.assertEqual(edits[0].deletions, 1)
 
-    def test_export_and_import_round_trip(self) -> None:
-        payload = export_payload(self.paths)
-        export_path = Path(self.tmpdir.name) / "export.json"
-        export_path.write_text(json.dumps(payload), encoding="utf-8")
-        imported = read_import(export_path)
-        self.assertEqual(len(imported), 1)
-        self.assertEqual(imported[0].session.project_name, "project")
-
     def test_projects_history_costs_and_insights(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         pricing = load_pricing_config(self.paths)
         projects = summarize_projects_from_details(details, pricing)
         history = summarize_history_from_details(details, pricing, limit=5)
@@ -414,7 +405,7 @@ class MetricsTestCase(unittest.TestCase):
 
     def test_daily_and_compare_from_details(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         daily = summarize_daily_from_details(details, days=7, now=now)
         compare = summarize_compare_from_details(
             details,
@@ -427,26 +418,14 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(compare.current.total_tokens, 280)
         self.assertEqual(compare.previous.total_tokens, 0)
 
-    def test_top_sessions_and_multi_import(self) -> None:
-        details = details_for_last_days(self.paths, 7, now=datetime.fromisoformat("2026-04-03T18:30:00+05:30"))
+    def test_top_sessions(self) -> None:
+        details = _details(self.paths, 7, now=datetime.fromisoformat("2026-04-03T18:30:00+05:30"))
         top = summarize_top_sessions_from_details(details, limit=1)
         self.assertEqual(top[0].project_name, "project")
-        payload = export_payload(self.paths)
-        export_path_a = Path(self.tmpdir.name) / "a.json"
-        export_path_b = Path(self.tmpdir.name) / "b.json"
-        export_path_a.write_text(json.dumps(payload), encoding="utf-8")
-        export_path_b.write_text(json.dumps(payload), encoding="utf-8")
-        merged = read_imports([export_path_a, export_path_b])
-        self.assertEqual(len(merged), 1)
-        merged_with_summary, import_summary = read_imports_with_summary([export_path_a, export_path_b])
-        self.assertEqual(len(merged_with_summary), 1)
-        self.assertEqual(import_summary.files_read, 2)
-        self.assertEqual(import_summary.sessions_loaded, 2)
-        self.assertEqual(import_summary.duplicates_removed, 1)
 
     def test_project_drilldown_and_filtered_top(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 30, now=now)
+        details = _details(self.paths, 30, now=now)
         pricing = load_pricing_config(self.paths)
         summary = summarize_details(
             "project",
@@ -466,7 +445,7 @@ class MetricsTestCase(unittest.TestCase):
 
     def test_takeaways_summarize_usage_story(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         summary = summarize_details("last 7 days", details)
         compare = summarize_compare_from_details(details, [], current_label="last 7 days", previous_label="prev 7 days")
         insights = summarize_insights_from_details(details, month=summary, now=now)
@@ -477,7 +456,7 @@ class MetricsTestCase(unittest.TestCase):
 
     def test_badges_and_expensive_session(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         summary = summarize_details("last 7 days", details)
         daily = summarize_daily_from_details(details, days=7, now=now)
         heatmap = summarize_activity_heatmap_from_details(details, timezone=now.tzinfo)
@@ -492,32 +471,13 @@ class MetricsTestCase(unittest.TestCase):
 
     def test_work_rhythm_summary(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        details = details_for_last_days(self.paths, 7, now=now)
+        details = _details(self.paths, 7, now=now)
         daily = summarize_daily_from_details(details, days=7, now=now)
         heatmap = summarize_activity_heatmap_from_details(details, timezone=now.tzinfo)
         rhythm = summarize_work_rhythm(daily, heatmap)
         self.assertIn("work", rhythm.headline.lower())
         self.assertIsNotNone(rhythm.peak_day)
         self.assertIsNotNone(rhythm.peak_hour)
-
-    def test_export_payload_since_and_parser(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        payload = export_payload(self.paths, since="30d", now=now)
-        self.assertEqual(len(payload["sessions"]), 1)
-        self.assertEqual(parse_since_days("30d"), 30)
-        with self.assertRaises(ValueError):
-            parse_since_days("30")
-
-    def test_merge_export_dedupes_sessions(self) -> None:
-        export_path_a = Path(self.tmpdir.name) / "a.json"
-        export_path_b = Path(self.tmpdir.name) / "b.json"
-        export_path_out = Path(self.tmpdir.name) / "merged.json"
-        export_path_a.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
-        export_path_b.write_text(json.dumps(export_payload(self.paths)), encoding="utf-8")
-        _, import_summary = write_merged_export([export_path_a, export_path_b], export_path_out)
-        merged_payload = json.loads(export_path_out.read_text(encoding="utf-8"))
-        self.assertEqual(len(merged_payload["sessions"]), 1)
-        self.assertEqual(import_summary.merged_sessions, 1)
 
     def test_dashboard_html_output(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -733,27 +693,13 @@ class MetricsTestCase(unittest.TestCase):
         )
         self.assertTrue(any(point.source == "codex" for point in outside))
 
-    def test_dashboard_source_filter(self) -> None:
+    def test_dashboard_includes_every_detected_source(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
-        dashboard = _build_dashboard(self.paths, now=now, sources=["codex"])
-        self.assertEqual([scope.key for scope in dashboard.scopes], ["overview", "codex"])
-        with self.assertRaises(ValueError):
-            _build_dashboard(self.paths, now=now, sources=["pi"])
-
-    def test_export_round_trip_preserves_recorded_cost(self) -> None:
-        detail = replace(
-            get_session_details(self.paths, get_session(self.paths)),
-            recorded_cost_usd=7.77,
+        dashboard = _build_dashboard(self.paths, now=now)
+        self.assertEqual(
+            [scope.key for scope in dashboard.scopes],
+            ["overview", "codex", "opencode", "claude", "hermes"],
         )
-        payload = detail.to_dict()
-        self.assertEqual(payload["recorded_cost_usd"], 7.77)
-        export_path = Path(self.tmpdir.name) / "recorded.json"
-        export_path.write_text(
-            json.dumps({"schema_version": 1, "exported_at": "2026-04-03T18:30:00+05:30", "sessions": [payload]}),
-            encoding="utf-8",
-        )
-        restored = read_imports([export_path])[0]
-        self.assertEqual(restored.recorded_cost_usd, 7.77)
 
     def test_dashboard_html_includes_work_patterns_and_heatmap(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")

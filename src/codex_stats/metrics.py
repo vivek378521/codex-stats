@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, tzinfo
-import re
 from statistics import median
 
-from .config import Paths, PricingConfig
-from .ingest import iter_session_details
+from .config import PricingConfig
 from .models import (
     BreakdownEntry,
     CompareReport,
@@ -40,30 +38,11 @@ def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> floa
     )
 
 
-def details_for_last_days(paths: Paths, days: int, now: datetime | None = None) -> list[SessionDetails]:
-    current_time = now or datetime.now().astimezone()
-    safe_days = max(days, 1)
-    end_day = current_time.date()
-    start_day = end_day - timedelta(days=safe_days - 1)
-    return [
-        detail
-        for detail in iter_session_details(paths)
-        if start_day <= local_date(detail.session.created_at, current_time.tzinfo) <= end_day
-    ]
-
-
 def filter_details_by_project(details: list[SessionDetails], project_name: str | None) -> list[SessionDetails]:
     if not project_name:
         return details
     lowered = project_name.lower()
     return [detail for detail in details if detail.session.project_name.lower() == lowered]
-
-
-def parse_since_days(value: str) -> int:
-    match = re.fullmatch(r"(\d+)d", value.strip().lower())
-    if not match:
-        raise ValueError("Expected --since in the form Nd, for example 30d")
-    return int(match.group(1))
 
 
 def summarize_details(label: str, details: list[SessionDetails], pricing: PricingConfig | None = None) -> TimeSummary:

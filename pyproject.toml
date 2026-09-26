@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codex-stats"
 version = "1.8.0"
-description = "Local AI usage observability CLI for Codex sessions."
+description = "Local AI usage observability dashboard for coding agent sessions."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
