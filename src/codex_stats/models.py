@@ -48,6 +48,40 @@ class FileEdit:
         return asdict(self)
 
 
+CACHED_WITHIN_INPUT = "cached_within_input"
+CACHED_SEPARATE = "cached_separate"
+
+
+@dataclass(frozen=True)
+class TokenSplit:
+    fresh_input: int = 0
+    cached_read: int = 0
+    cache_write: int = 0
+    output: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.fresh_input + self.cached_read + self.cache_write + self.output
+
+    @property
+    def input_total(self) -> int:
+        return self.fresh_input + self.cached_read
+
+    def cache_ratio(self) -> float | None:
+        if not self.input_total:
+            return None
+        return self.cached_read / self.input_total
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fresh_input": self.fresh_input,
+            "cached_read": self.cached_read,
+            "cache_write": self.cache_write,
+            "output": self.output,
+            "total": self.total,
+        }
+
+
 @dataclass(frozen=True)
 class SessionDetails:
     session: SessionRecord
@@ -60,6 +94,34 @@ class SessionDetails:
     started_at: datetime | None
     recorded_cost_usd: float | None = None
     file_edits: tuple[FileEdit, ...] = ()
+    cache_write_tokens: int | None = None
+    token_accounting: str = CACHED_WITHIN_INPUT
+
+    def fresh_input_tokens(self) -> int:
+        raw = self.input_tokens or 0
+        if self.token_accounting == CACHED_WITHIN_INPUT:
+            return max(raw - (self.cached_input_tokens or 0), 0)
+        return raw
+
+    def cached_read_tokens(self) -> int:
+        return self.cached_input_tokens or 0
+
+    def cache_creation_tokens(self) -> int:
+        return self.cache_write_tokens or 0
+
+    def billable_output_tokens(self) -> int:
+        output = self.output_tokens or 0
+        if self.token_accounting == CACHED_WITHIN_INPUT:
+            return output
+        return output + (self.reasoning_output_tokens or 0)
+
+    def token_split(self) -> TokenSplit:
+        return TokenSplit(
+            fresh_input=self.fresh_input_tokens(),
+            cached_read=self.cached_read_tokens(),
+            cache_write=self.cache_creation_tokens(),
+            output=self.billable_output_tokens(),
+        )
 
     def effective_total_tokens(self) -> int:
         if self.total_tokens_from_rollout is not None:
@@ -78,7 +140,10 @@ class SessionDetails:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "reasoning_output_tokens": self.reasoning_output_tokens,
+            "token_accounting": self.token_accounting,
+            "token_split": self.token_split().to_dict(),
             "total_tokens_from_rollout": self.total_tokens_from_rollout,
             "effective_total_tokens": self.effective_total_tokens(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -113,6 +178,18 @@ class TimeSummary:
     project_concentration_top3_pct: float | None
     longest_active_streak_days: int
     model_switching_rate: float | None
+    fresh_input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    unrated_sessions: int = 0
+
+    def token_split(self) -> TokenSplit:
+        return TokenSplit(
+            fresh_input=self.fresh_input_tokens,
+            cached_read=self.cache_read_tokens,
+            cache_write=self.cache_write_tokens,
+            output=self.output_tokens,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.cli import _build_dashboard, _build_window
-from codex_stats.config import Paths, load_pricing_config
+from codex_stats.config import Paths, PricingConfig, load_pricing_config
 from codex_stats.display import format_dashboard_html, format_dashboard_svg_assets
 from codex_stats.ingest import (
     _read_rollout,
@@ -44,7 +44,7 @@ from codex_stats.metrics import (
     summarize_top_sessions_from_details,
     summarize_work_rhythm,
 )
-from codex_stats.models import DashboardData
+from codex_stats.models import CACHED_SEPARATE, CACHED_WITHIN_INPUT, DashboardData
 from codex_stats.sources import _ingest_claude, iter_sources, source_label
 
 
@@ -700,6 +700,140 @@ class MetricsTestCase(unittest.TestCase):
             [scope.key for scope in dashboard.scopes],
             ["overview", "codex", "opencode", "claude", "hermes"],
         )
+
+    def _write_claude_transcript(self, usage: dict) -> Path:
+        root = Path(self.tmpdir.name) / "claude-projects"
+        project_dir = root / "-tmp-claude"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        events = [
+            {"timestamp": "2026-04-03T13:17:23.324Z", "type": "user", "cwd": "/tmp/claude", "message": {"role": "user", "content": "hi"}},
+            {
+                "timestamp": "2026-04-03T13:17:25.324Z",
+                "type": "assistant",
+                "cwd": "/tmp/claude",
+                "message": {"model": "claude-opus-4", "content": [], "usage": usage},
+            },
+        ]
+        (project_dir / "conv1.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events), encoding="utf-8"
+        )
+        return root
+
+    def test_cache_ratio_stays_bounded_for_both_provider_conventions(self) -> None:
+        codex_detail = get_session_details(self.paths, get_session(self.paths))
+        self.assertEqual(codex_detail.token_accounting, CACHED_WITHIN_INPUT)
+        codex_split = codex_detail.token_split()
+        self.assertEqual(codex_split.fresh_input, 200)
+        self.assertEqual(codex_split.cached_read, 50)
+        self.assertEqual(codex_split.cache_write, 0)
+        self.assertEqual(codex_split.output, 30)
+        self.assertAlmostEqual(codex_split.cache_ratio() or 0.0, 50 / 250)
+
+        # Anthropic reports cache reads outside input_tokens, so a naive
+        # cached/input ratio exceeds 1.0 and previously rendered as 1511%.
+        projects_dir = self._write_claude_transcript(
+            {
+                "input_tokens": 15,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 40,
+            }
+        )
+        claude_detail = _ingest_claude(projects_dir)[0]
+        self.assertEqual(claude_detail.token_accounting, CACHED_SEPARATE)
+        claude_split = claude_detail.token_split()
+        self.assertEqual(claude_split.fresh_input, 15)
+        self.assertEqual(claude_split.cached_read, 900)
+        self.assertEqual(claude_split.cache_write, 40)
+        self.assertEqual(claude_split.output, 5)
+        self.assertAlmostEqual(claude_split.cache_ratio() or 0.0, 900 / 915)
+        self.assertLessEqual(claude_split.cache_ratio() or 0.0, 1.0)
+
+    def test_cache_write_tokens_are_not_discarded(self) -> None:
+        projects_dir = self._write_claude_transcript(
+            {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_input_tokens": 100,
+                "cache_creation_input_tokens": 33,
+            }
+        )
+        detail = _ingest_claude(projects_dir)[0]
+        self.assertEqual(detail.cache_creation_tokens(), 33)
+        self.assertEqual(detail.token_split().total, 145)
+
+    def test_canonical_split_reconciles_with_provider_total(self) -> None:
+        for detail in [get_session_details(self.paths, get_session(self.paths))]:
+            self.assertEqual(detail.token_split().total, detail.effective_total_tokens())
+        projects_dir = self._write_claude_transcript(
+            {
+                "input_tokens": 15,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 40,
+            }
+        )
+        for detail in _ingest_claude(projects_dir):
+            self.assertEqual(detail.token_split().total, detail.effective_total_tokens())
+
+    def test_summary_cache_ratio_is_bounded_and_splits_components(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        summary = summarize_details("all", _details(self.paths, 7, now=now))
+        self.assertIsNotNone(summary.cache_ratio)
+        assert summary.cache_ratio is not None
+        self.assertGreaterEqual(summary.cache_ratio, 0.0)
+        self.assertLessEqual(summary.cache_ratio, 1.0)
+        self.assertEqual(summary.fresh_input_tokens, 200)
+        self.assertEqual(summary.cache_read_tokens, 50)
+        self.assertEqual(summary.cache_write_tokens, 0)
+        self.assertEqual(summary.fresh_input_tokens + summary.cache_read_tokens, summary.input_tokens)
+
+    def test_mixed_convention_sessions_do_not_exceed_one(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        codex_detail = get_session_details(self.paths, get_session(self.paths))
+        projects_dir = self._write_claude_transcript(
+            {"input_tokens": 15, "output_tokens": 5, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 40}
+        )
+        claude_detail = _ingest_claude(projects_dir)[0]
+        mixed = summarize_details("mixed", [codex_detail, claude_detail])
+        self.assertIsNotNone(mixed.cache_ratio)
+        assert mixed.cache_ratio is not None
+        self.assertLessEqual(mixed.cache_ratio, 1.0)
+        self.assertEqual(mixed.cache_read_tokens, 950)
+        self.assertEqual(mixed.cache_write_tokens, 40)
+        self.assertEqual(mixed.fresh_input_tokens, 215)
+
+    def test_component_pricing_beats_flat_rate_on_cache_heavy_usage(self) -> None:
+        detail = replace(
+            get_session_details(self.paths, get_session(self.paths)),
+            input_tokens=1_000_000,
+            cached_input_tokens=900_000,
+            output_tokens=10_000,
+            reasoning_output_tokens=0,
+            total_tokens_from_rollout=1_010_000,
+        )
+        pricing = PricingConfig(default_usd_per_1k_tokens=0.01)
+        flat = round(detail.effective_total_tokens() / 1000.0 * 0.01, 4)
+        component = estimate_detail_cost(detail, pricing)
+        self.assertLess(component, flat)
+        self.assertGreater(component, 0.0)
+
+    def test_recorded_cost_beats_estimated_cost(self) -> None:
+        detail = replace(
+            get_session_details(self.paths, get_session(self.paths)),
+            recorded_cost_usd=7.77,
+        )
+        self.assertEqual(estimate_detail_cost(detail, PricingConfig()), 7.77)
+
+    def test_unrated_models_are_counted(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        summary = summarize_details("all", _details(self.paths, 7, now=now))
+        self.assertEqual(summary.unrated_sessions, 0)
+        aliased = replace(
+            get_session_details(self.paths, get_session(self.paths)),
+            session=replace(get_session(self.paths), model="mystery-alias"),
+        )
+        self.assertEqual(summarize_details("x", [aliased]).unrated_sessions, 1)
 
     def test_dashboard_html_includes_work_patterns_and_heatmap(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")

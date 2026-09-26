@@ -69,15 +69,39 @@ transcripts, and the Hermes database, then normalizes everything into one sessio
 
 ## Notes
 
-- Costs are estimates by default. When a tool records its own cost (OpenCode, Hermes),
-  that value wins for the session. Per-tool rates can be set in `~/.config/codex-stats/config.toml`:
+- When a tool records its own cost (OpenCode, Hermes), that recorded value wins for the
+  session and no estimate is used.
+- Otherwise cost is priced **per token component**, because cached reads and output are
+  not the same price as fresh input. Every session is normalized to four buckets:
+  fresh input, cache reads, cache writes, and output.
+- Providers disagree on how they report cache reads. OpenAI (Codex) counts them *inside*
+  `input_tokens`; Anthropic (Claude) reports them *separately*. `codex-stats` normalizes
+  both conventions at ingest, so the cache ratio is always a real fraction between 0 and 1
+  and the four components always sum to the provider's own total.
+- A small default rate table ships for known models, and it is a **dated snapshot** — check
+  the `RATE_SNAPSHOT_DATE` constant in `src/codex_stats/config.py` and update it when
+  published prices move. Any model missing from the table falls back to
+  `default_usd_per_1k_tokens`, and the dashboard labels those sessions
+  ("N sessions on a fallback rate") rather than presenting a silently wrong number.
+- Override rates per model in `~/.config/codex-stats/config.toml`:
 
   ```toml
+  [pricing]
+  default_usd_per_1k_tokens = 0.01
+
+  [pricing.model_usd_per_1k_tokens.gpt-5.4]
+  input = 0.003
+  cached_read = 0.0003
+  cache_write = 0.0
+  output = 0.015
+
+  # a single scalar still works and applies to all four components
+  [pricing.model_usd_per_1k_tokens]
+  some-alias-model = 0.004
+
+  # a source rate overrides the model table
   [pricing.source_usd_per_1k_tokens]
-  codex = 0.01
-  opencode = 0.01
   claude = 0.015
-  hermes = 0.008
   ```
 
 - Output depends on local file formats remaining compatible.

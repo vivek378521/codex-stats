@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Paths
-from .models import FileEdit, SessionDetails, SessionRecord
+from .models import CACHED_WITHIN_INPUT, FileEdit, SessionDetails, SessionRecord
 
 
 def _dt_from_unix(timestamp: int) -> datetime:
@@ -412,10 +412,12 @@ def get_session_details(paths: Paths, session: SessionRecord) -> SessionDetails:
         input_tokens=_as_optional_int(rollout_details["input_tokens"]),
         output_tokens=_as_optional_int(rollout_details["output_tokens"]),
         cached_input_tokens=_as_optional_int(rollout_details["cached_input_tokens"]),
+        cache_write_tokens=0,
         reasoning_output_tokens=_as_optional_int(rollout_details["reasoning_output_tokens"]),
         total_tokens_from_rollout=_as_optional_int(rollout_details["total_tokens_from_rollout"]),
         started_at=started_at,
         file_edits=tuple(edits),
+        token_accounting=CACHED_WITHIN_INPUT,
     )
 
 

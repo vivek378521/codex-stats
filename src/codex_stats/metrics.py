@@ -19,23 +19,18 @@ from .models import (
     SessionSpotlight,
     SessionDetails,
     TimeSummary,
+    TokenSplit,
     ToolDailyPoint,
     TopEntry,
     WorkRhythm,
 )
 from .sources import source_label
 
-def estimate_cost_usd(total_tokens: int, usd_per_1k_tokens: float) -> float:
-    return round((total_tokens / 1000.0) * usd_per_1k_tokens, 4)
-
-
 def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> float:
     if detail.recorded_cost_usd is not None and detail.recorded_cost_usd > 0:
         return round(detail.recorded_cost_usd, 4)
-    return estimate_cost_usd(
-        detail.effective_total_tokens(),
-        pricing.rate_for_source(detail.session.source, detail.session.model),
-    )
+    rates, _ = pricing.rates_for(detail.session.source, detail.session.model)
+    return rates.cost_for(detail.token_split())
 
 
 def filter_details_by_project(details: list[SessionDetails], project_name: str | None) -> list[SessionDetails]:
@@ -57,7 +52,22 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
     model_counter = Counter(detail.session.model for detail in details if detail.session.model)
     top_model = model_counter.most_common(1)[0][0] if model_counter else None
     average_tokens_per_request = total_tokens / requests if requests else 0.0
-    cache_ratio = (cached_input_tokens / input_tokens) if input_tokens else None
+    split = TokenSplit()
+    for detail in details:
+        part = detail.token_split()
+        split = TokenSplit(
+            fresh_input=split.fresh_input + part.fresh_input,
+            cached_read=split.cached_read + part.cached_read,
+            cache_write=split.cache_write + part.cache_write,
+            output=split.output + part.output,
+        )
+    cache_ratio = split.cache_ratio()
+    unrated_sessions = sum(
+        1
+        for detail in details
+        if detail.recorded_cost_usd is None
+        and pricing.rates_for(detail.session.source, detail.session.model)[1]
+    )
     largest_session_tokens = max((detail.effective_total_tokens() for detail in details), default=0)
     requests_per_session = requests / sessions_count if sessions_count else 0.0
     session_totals = [detail.effective_total_tokens() for detail in details]
@@ -88,6 +98,10 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
         project_concentration_top3_pct=_project_concentration(details, top_n=3),
         longest_active_streak_days=_longest_active_streak_days(details),
         model_switching_rate=_model_switching_rate(details),
+        fresh_input_tokens=split.fresh_input,
+        cache_read_tokens=split.cached_read,
+        cache_write_tokens=split.cache_write,
+        unrated_sessions=unrated_sessions,
     )
 
 

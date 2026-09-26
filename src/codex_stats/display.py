@@ -1353,6 +1353,7 @@ def _format_dashboard_window_section(
               <span class="label">Estimated Cost</span>
               <strong class="value">${window.summary.estimated_cost_usd:.2f}</strong>
               <span class="hint">Projected month ${window.costs.projected_monthly_cost_usd:.2f}</span>
+              <span class="hint">{_format_cost_basis_hint(window.summary)}</span>
             </div>
             <div class="metric">
               <span class="label">Avg per Request</span>
@@ -1830,6 +1831,22 @@ def _format_tool_share(window: DashboardWindow) -> str:
           <div class="tool-share">{"".join(rows)}</div>
         </section>
         """
+
+
+def _format_cost_basis_hint(summary) -> str:
+    split = summary.token_split()
+    parts = [
+        f"input {split.fresh_input:,}",
+        f"cached {split.cached_read:,}",
+    ]
+    if split.cache_write:
+        parts.append(f"cache writes {split.cache_write:,}")
+    parts.append(f"output {split.output:,}")
+    hint = "Priced per component: " + ", ".join(parts)
+    if summary.unrated_sessions:
+        noun = "session" if summary.unrated_sessions == 1 else "sessions"
+        hint += f" - {summary.unrated_sessions} {noun} on a fallback rate"
+    return hint
 
 
 def _format_window_copy_summary(window: DashboardWindow, *, scope_label: str = "Codex") -> str:

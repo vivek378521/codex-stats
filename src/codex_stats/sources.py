@@ -11,7 +11,7 @@ from typing import Callable
 
 from .config import Paths
 from .ingest import file_edit_from_args, is_file_editing_tool, iter_session_details as _codex_iter_session_details
-from .models import FileEdit, SessionDetails, SessionRecord
+from .models import CACHED_SEPARATE, FileEdit, SessionDetails, SessionRecord
 
 SOURCE_CODEX = "codex"
 SOURCE_OPENCODE = "opencode"
@@ -209,8 +209,9 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
         input_tokens = _as_int(row["tokens_input"])
         output_tokens = _as_int(row["tokens_output"])
         reasoning_tokens = _as_int(row["tokens_reasoning"])
-        cached_input_tokens = _as_int(row["tokens_cache_read"]) + _as_int(row["tokens_cache_write"])
-        total_tokens = input_tokens + output_tokens + reasoning_tokens + cached_input_tokens
+        cache_read_tokens = _as_int(row["tokens_cache_read"])
+        cache_write_tokens = _as_int(row["tokens_cache_write"])
+        total_tokens = input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens
         model = _opencode_model_name(row["model"])
         session = SessionRecord(
             session_id=row["id"],
@@ -231,11 +232,13 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
                 request_count=request_counts.get(row["id"], 0),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                cached_input_tokens=cached_input_tokens,
+                cached_input_tokens=_as_int(row["tokens_cache_read"]),
+                cache_write_tokens=_as_int(row["tokens_cache_write"]),
                 reasoning_output_tokens=reasoning_tokens,
                 total_tokens_from_rollout=total_tokens,
                 started_at=created_at,
                 recorded_cost_usd=_as_float(row["cost"]),
+                token_accounting=CACHED_SEPARATE,
             )
         )
     return details
@@ -350,10 +353,12 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
         reasoning_output_tokens=None,
         total_tokens_from_rollout=total_tokens,
         started_at=created_at,
         file_edits=tuple(edits),
+        token_accounting=CACHED_SEPARATE,
     )
 
 
@@ -464,11 +469,13 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
                 request_count=_as_int(row["message_count"]),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                cached_input_tokens=cache_read_tokens + cache_write_tokens,
+                cached_input_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
                 reasoning_output_tokens=reasoning_tokens,
                 total_tokens_from_rollout=total_tokens,
                 started_at=created_at,
                 recorded_cost_usd=_as_float(row["estimated_cost_usd"]),
+                token_accounting=CACHED_SEPARATE,
             )
         )
     return details
