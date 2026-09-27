@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import Paths, PricingConfig, load_pricing_config
 from .display import format_dashboard_html
+from .leaderboard import LeaderboardConfig, LeaderboardSubmitServer
 from .metrics import (
     local_date,
     summarize_activity_heatmap_from_details,
@@ -49,11 +50,43 @@ def main(argv: list[str] | None = None) -> int:
     paths = Paths.discover()
 
     dashboard = _build_dashboard(paths)
-    output_path = _write_dashboard_output(format_dashboard_html(dashboard))
+    submit_server = _start_leaderboard(dashboard)
+    output_path = _write_dashboard_output(
+        format_dashboard_html(dashboard, leaderboard=_leaderboard_preview(submit_server))
+    )
     print(f"Wrote dashboard to {output_path}")
     _open_report_in_browser(output_path)
     print(f"Opened dashboard in browser: {output_path}")
+    if submit_server is None:
+        return 0
+    print("Leaderboard enabled: use Submit to Leaderboard in the dashboard. Press Ctrl+C to stop.")
+    try:
+        submit_server.wait()
+    except KeyboardInterrupt:
+        print("\nLeaderboard submit endpoint stopped.")
+    finally:
+        submit_server.close()
     return 0
+
+
+def _start_leaderboard(dashboard: DashboardData) -> LeaderboardSubmitServer | None:
+    """Bring up the loopback submit endpoint when the leaderboard is configured.
+
+    Binding here, before the dashboard is rendered, is what lets the generated
+    HTML carry a URL that is already live.
+    """
+    config = LeaderboardConfig.from_env()
+    if config is None:
+        return None
+    server = LeaderboardSubmitServer(config, dashboard)
+    server.start()
+    return server
+
+
+def _leaderboard_preview(server: LeaderboardSubmitServer | None) -> dict[str, object] | None:
+    if server is None:
+        return None
+    return server.preview()
 
 
 def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData:
