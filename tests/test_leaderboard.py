@@ -16,7 +16,10 @@ from codex_stats.cli import _build_dashboard
 from codex_stats.config import Paths
 from codex_stats.display import format_dashboard_html
 from codex_stats.leaderboard import (
+    DEFAULT_BASE_URL,
+    DEFAULT_SUBMIT_KEY,
     ENV_BASE_URL,
+    ENV_DISABLE,
     ENV_SUBMIT_KEY,
     LeaderboardConfig,
     LeaderboardError,
@@ -146,7 +149,10 @@ BREAKDOWN = [
 
 class LeaderboardConfigTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._saved = {name: os.environ.pop(name, None) for name in (ENV_BASE_URL, ENV_SUBMIT_KEY)}
+        self._saved = {
+            name: os.environ.pop(name, None)
+            for name in (ENV_BASE_URL, ENV_SUBMIT_KEY, ENV_DISABLE)
+        }
 
     def tearDown(self) -> None:
         for name, value in self._saved.items():
@@ -155,18 +161,36 @@ class LeaderboardConfigTests(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    def test_disabled_until_both_variables_are_set(self) -> None:
-        self.assertIsNone(LeaderboardConfig.from_env())
+    def test_enabled_by_default_without_any_variables(self) -> None:
+        config = LeaderboardConfig.from_env()
+        self.assertIsNotNone(config)
+        assert config is not None
+        self.assertEqual(config.base_url, DEFAULT_BASE_URL)
+        self.assertEqual(config.submit_key, DEFAULT_SUBMIT_KEY.encode("utf-8"))
+
+    def test_can_be_disabled(self) -> None:
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            os.environ[ENV_DISABLE] = value
+            self.assertIsNone(LeaderboardConfig.from_env(), value)
+
+    def test_unrelated_disable_value_does_not_disable(self) -> None:
+        for value in ("", "0", "false", "no", "maybe"):
+            os.environ[ENV_DISABLE] = value
+            self.assertIsNotNone(LeaderboardConfig.from_env(), value)
+
+    def test_variables_override_the_baked_in_defaults(self) -> None:
         os.environ[ENV_BASE_URL] = "https://example.vercel.app"
-        self.assertIsNone(LeaderboardConfig.from_env())
         os.environ[ENV_SUBMIT_KEY] = "secret"
-        self.assertIsNotNone(LeaderboardConfig.from_env())
+        config = LeaderboardConfig.from_env()
+        assert config is not None
+        self.assertEqual(config.base_url, "https://example.vercel.app")
+        self.assertEqual(config.submit_key, b"secret")
 
     def test_trailing_slash_is_trimmed(self) -> None:
         os.environ[ENV_BASE_URL] = "https://example.vercel.app/"
-        os.environ[ENV_SUBMIT_KEY] = "secret"
         config = LeaderboardConfig.from_env()
         self.assertIsNotNone(config)
+        assert config is not None
         self.assertEqual(config.base_url, "https://example.vercel.app")
 
 

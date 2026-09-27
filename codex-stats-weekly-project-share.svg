@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-label="Project Share">
+  <rect width="1200" height="720" fill="#f6efe4"/>
+  <rect x="40" y="36" width="1120" height="648" rx="30" fill="#fffaf2" stroke="rgba(66,48,31,0.10)"/>
+  <text x="72" y="94" font-size="18" letter-spacing="3" fill="#0f766e">CODEX STATS</text>
+  <text x="72" y="148" font-size="42" font-weight="700" fill="#1f1a17">Project Share</text>
+  <text x="72" y="184" font-size="22" fill="#6d645d">Codex Stats Weekly Report</text>
+  <g transform="translate(72 220)"><svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 760 70" role="img" aria-label="Bar chart"><text x="18" y="38" font-size="12" fill="#1f1a17">codex_stats</text><rect x="188" y="24" width="464.0" height="16" rx="8" fill="rgba(72,53,36,0.08)" /><rect x="188" y="24" width="464.0" height="16" rx="8" fill="#0f766e" /><text x="662" y="37" font-size="12" fill="#6d645d">54,638,637</text></svg></g>
+</svg>

@@ -34,6 +34,27 @@ REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_BODY_BYTES = 4096
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 
+# Baked in so a fresh install can submit with no setup. The env vars still win,
+# which is what lets the key be rotated without cutting a release, and lets
+# tests point at a local server.
+#
+# This is a deliberate integrity trade-off, not a secret worth protecting. Once
+# this ships, the key is public, so anyone can sign a submission for their own
+# device id. What stays protected: stats still come from the local database
+# rather than the browser, device ids are not disclosed by the read API, and no
+# one can overwrite another person's row without knowing their id. What is lost
+# is the ability to stop someone claiming a larger number for themselves, or
+# flooding the board with invented rows. Guarding against that has to happen
+# server-side (rate limits, row caps), not here.
+DEFAULT_BASE_URL = "https://codex-stats-leaderboard.vercel.app"
+DEFAULT_SUBMIT_KEY = "554f68344e64f04e870de3640b7bf5a35d33903f2d084a0b679fca54a7959cf3"
+
+# Submitting publishes a username and token totals to a third-party server, so
+# there has to be a way to refuse that even though the feature is now on by
+# default. This is the only way to get the button back to hidden.
+ENV_DISABLE = "CODEX_STATS_DISABLE_LEADERBOARD"
+_TRUTHY = {"1", "true", "yes", "on"}
+
 # ``tool_breakdown`` entries carry display labels, so map them back to source keys.
 _LABEL_TO_SOURCE = {label: key for key, label in SOURCE_LABELS.items()}
 
@@ -49,8 +70,10 @@ class LeaderboardConfig:
 
     @classmethod
     def from_env(cls) -> LeaderboardConfig | None:
-        base_url = os.environ.get(ENV_BASE_URL, "").strip()
-        submit_key = os.environ.get(ENV_SUBMIT_KEY, "").strip()
+        if os.environ.get(ENV_DISABLE, "").strip().lower() in _TRUTHY:
+            return None
+        base_url = os.environ.get(ENV_BASE_URL, "").strip() or DEFAULT_BASE_URL
+        submit_key = os.environ.get(ENV_SUBMIT_KEY, "").strip() or DEFAULT_SUBMIT_KEY
         if not base_url or not submit_key:
             return None
         return cls(base_url=base_url.rstrip("/"), submit_key=submit_key.encode("utf-8"))
