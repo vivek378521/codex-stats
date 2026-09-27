@@ -9,3 +9,6 @@ build/
 .DS_Store
 pip-wheel-metadata/
 *.log
+
+# Scratch files from local dashboard previews
+tmp-*

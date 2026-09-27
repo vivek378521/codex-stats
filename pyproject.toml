@@ -1,30 +1,58 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-stats"
-version = "1.9.0"
-description = "Local AI usage observability dashboard for coding agent sessions."
+version = "1.10.0"
+description = "Local-first usage dashboard and leaderboard for AI coding agent sessions: tokens, cost and activity across Codex, OpenCode, Claude Code and Hermes, read straight from the databases those tools already keep on your machine."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+# SPDX form (PEP 639). The License classifier is deliberately absent: setuptools
+# rejects having both, and the old license = { text = ... } table is deprecated.
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "Vivek" }
 ]
-keywords = ["codex", "cli", "analytics", "sqlite", "usage"]
+keywords = [
+  "ai",
+  "analytics",
+  "claude",
+  "cli",
+  "codex",
+  "cost",
+  "dashboard",
+  "developer-tools",
+  "hermes",
+  "leaderboard",
+  "local-first",
+  "metrics",
+  "observability",
+  "opencode",
+  "privacy",
+  "reporting",
+  "sqlite",
+  "terminal",
+  "tokens",
+  "usage",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
   "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Monitoring",
   "Topic :: Utilities",
 ]
+# "Typing :: Typed" is deliberately absent: it promises an inline py.typed
+# marker, and the package does not ship one. Add both together if that changes.
 
 [project.optional-dependencies]
 dev = [
@@ -38,6 +66,9 @@ codex-stats = "codex_stats.cli:main"
 Homepage = "https://github.com/vivek378521/codex-stats"
 Repository = "https://github.com/vivek378521/codex-stats"
 Issues = "https://github.com/vivek378521/codex-stats/issues"
+Changelog = "https://github.com/vivek378521/codex-stats/blob/main/CHANGELOG.md"
+Leaderboard = "https://codex-stats-leaderboard.vercel.app"
+Funding = "https://github.com/sponsors/vivek378521"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
