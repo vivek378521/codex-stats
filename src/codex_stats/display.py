@@ -461,6 +461,13 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       font-size: 0.92rem;
       line-height: 1.45;
     }}
+    .panel-hint {{
+      display: block;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.5;
+    }}
     .split {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1637,6 +1644,8 @@ def _format_dashboard_window_section(
 
         {_format_file_impact_panel(window)}
 
+        {_format_behavior_panel(window)}
+
         <section class="panel">
           <div class="section-header">
             <div>
@@ -1989,6 +1998,133 @@ def _format_file_impact_panel(window: DashboardWindow) -> str:
           </div>
         </section>
         """
+
+
+def _format_behavior_panel(window: DashboardWindow) -> str:
+    behavior = window.behavior
+    if behavior is None or not behavior.supported or not behavior.total_calls:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What the Agent Did</p>
+              <h2>Tool Behavior</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No tool calls recorded for this view.", "This is either a genuinely quiet range, or a scope that does not report tool use. Tool calls are read from Codex rollouts, Claude Code transcripts, the OpenCode part table, and the Hermes message log; switch to All Time to see which applies.")}
+        </section>
+        """
+
+    category_svg = _svg_bar_chart(
+        [(entry.label, float(entry.calls)) for entry in behavior.categories],
+        bar_color="#0f766e",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No tool categories recorded for this view.",
+    )
+    tool_svg = _svg_bar_chart(
+        [(entry.name, float(entry.calls)) for entry in behavior.tools[:8]],
+        bar_color="#7c3aed",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No individual tools recorded for this view.",
+    )
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.name)}</td>
+          <td>{escape(entry.category.title())}</td>
+          <td>{entry.calls:,}</td>
+          <td>{entry.errors:,}</td>
+          <td>{entry.recovered_errors:,}</td>
+          <td>{escape(_fmt_percent(entry.error_rate))}</td>
+        </tr>
+        """
+        for entry in behavior.tools[:10]
+    )
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What the Agent Did</p>
+              <h2>Tool Behavior</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>{behavior.total_calls:,}</strong><span>Tool calls</span></div>
+              <div class="spotlight-kpi"><strong>{escape(_fmt_percent(behavior.error_rate))}</strong><span>Failed</span></div>
+              <div class="spotlight-kpi"><strong>{escape(_fmt_percent(behavior.repeat_rate))}</strong><span>Repeated</span></div>
+              <div class="spotlight-kpi"><strong>{escape(_fmt_behavior_percent(behavior.repeat_time_rate))}</strong><span>Repeated time</span></div>
+              <div class="spotlight-kpi"><strong>{_fmt_behavior_ratio(behavior.read_write_ratio)}</strong><span>Read per edit</span></div>
+            </div>
+          </div>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Calls by Category</h3>
+              {category_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Most Used Tools</h3>
+              {tool_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Failure Detail</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Tool</th>
+                      <th>Category</th>
+                      <th>Calls</th>
+                      <th>Failed</th>
+                      <th>Recovered</th>
+                      <th>Error rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>{rows}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <p class="panel-hint">{escape(_format_behavior_note(behavior))}</p>
+        </section>
+        """
+
+
+def _format_behavior_note(behavior) -> str:
+    sessions_noun = "session" if behavior.sessions_with_calls == 1 else "sessions"
+    note = (
+        "Categories are normalized across tools, so exec_command, Bash and bash all count "
+        f"as Execute. Repeated calls are counted within a single session, across "
+        f"{behavior.sessions_with_calls:,} {sessions_noun} with tool use."
+    )
+    if behavior.abandoned_turns:
+        turn_noun = "turn was" if behavior.abandoned_turns == 1 else "turns were"
+        note += f" {behavior.abandoned_turns} {turn_noun} abandoned before finishing."
+    else:
+        note += " Abandoned turns are only recorded where the source reports them (Codex)."
+    if behavior.total_duration_ms:
+        timed_noun = "call" if behavior.timed_calls == 1 else "calls"
+        note += (
+            f" Repeated time is the share of tool-call time spent on repeat work, measured over the "
+            f"{behavior.timed_calls:,} timed {timed_noun} (OpenCode and Claude record durations; Codex does not)."
+        )
+    else:
+        note += " This scope does not record tool-call durations, so repeated time is unavailable."
+    note += " A recovered failure is one that was later retried to success in the same session; "
+    note += "recovery is an exact command match, so a retry that changes the command is not counted."
+    return note
+
+
+def _fmt_behavior_percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.0f}%"
+
+
+def _fmt_behavior_ratio(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value >= 10:
+        return f"{value:.0f}"
+    return f"{value:.1f}"
 
 
 def _format_empty_showcase(title: str, detail: str) -> str:

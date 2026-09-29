@@ -9,6 +9,42 @@ from typing import Any
 DEFAULT_SOURCE = "codex"
 
 
+TOOL_STATUS_COMPLETED = "completed"
+TOOL_STATUS_ERROR = "error"
+TOOL_STATUS_UNKNOWN = "unknown"
+
+TOOL_CATEGORY_READ = "read"
+TOOL_CATEGORY_EDIT = "edit"
+TOOL_CATEGORY_EXEC = "exec"
+TOOL_CATEGORY_SEARCH = "search"
+TOOL_CATEGORY_WEB = "web"
+TOOL_CATEGORY_AGENT = "agent"
+TOOL_CATEGORY_PLAN = "plan"
+TOOL_CATEGORY_OTHER = "other"
+
+TOOL_CATEGORY_ORDER: tuple[str, ...] = (
+    TOOL_CATEGORY_READ,
+    TOOL_CATEGORY_EDIT,
+    TOOL_CATEGORY_EXEC,
+    TOOL_CATEGORY_SEARCH,
+    TOOL_CATEGORY_WEB,
+    TOOL_CATEGORY_AGENT,
+    TOOL_CATEGORY_PLAN,
+    TOOL_CATEGORY_OTHER,
+)
+
+TOOL_CATEGORY_LABELS: dict[str, str] = {
+    TOOL_CATEGORY_READ: "Read",
+    TOOL_CATEGORY_EDIT: "Edit",
+    TOOL_CATEGORY_EXEC: "Execute",
+    TOOL_CATEGORY_SEARCH: "Search",
+    TOOL_CATEGORY_WEB: "Web",
+    TOOL_CATEGORY_AGENT: "Subagent",
+    TOOL_CATEGORY_PLAN: "Plan",
+    TOOL_CATEGORY_OTHER: "Other",
+}
+
+
 @dataclass(frozen=True)
 class SessionRecord:
     session_id: str
@@ -83,6 +119,35 @@ class TokenSplit:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """A single tool invocation recorded by a coding agent.
+
+    ``name`` is the raw name the CLI used, ``category`` is the normalized bucket shared
+    across every source, and ``fingerprint`` identifies the call's arguments so repeated
+    invocations of the same work can be detected inside a session.
+    """
+
+    name: str
+    category: str
+    fingerprint: str
+    status: str = TOOL_STATUS_UNKNOWN
+    duration_ms: int | None = None
+
+    @property
+    def is_error(self) -> bool:
+        return self.status == TOOL_STATUS_ERROR
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "category": self.category,
+            "fingerprint": self.fingerprint,
+            "status": self.status,
+            "duration_ms": self.duration_ms,
+        }
+
+
+@dataclass(frozen=True)
 class SessionDetails:
     session: SessionRecord
     request_count: int
@@ -96,6 +161,8 @@ class SessionDetails:
     file_edits: tuple[FileEdit, ...] = ()
     cache_write_tokens: int | None = None
     token_accounting: str = CACHED_WITHIN_INPUT
+    tool_calls: tuple[ToolCall, ...] = ()
+    abandoned_turns: int = 0
 
     def fresh_input_tokens(self) -> int:
         raw = self.input_tokens or 0
@@ -149,6 +216,8 @@ class SessionDetails:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "recorded_cost_usd": self.recorded_cost_usd,
             "file_edits": [edit.to_dict() for edit in self.file_edits],
+            "tool_calls": [call.to_dict() for call in self.tool_calls],
+            "abandoned_turns": self.abandoned_turns,
         }
         return payload
 
@@ -306,6 +375,116 @@ class TopEntry:
 
 
 @dataclass(frozen=True)
+class ToolUsageEntry:
+    name: str
+    category: str
+    calls: int
+    errors: int
+    total_duration_ms: int
+    recovered_errors: int = 0
+
+    @property
+    def error_rate(self) -> float | None:
+        if not self.calls:
+            return None
+        return self.errors / self.calls
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ToolCategoryEntry:
+    category: str
+    label: str
+    calls: int
+    errors: int
+
+    @property
+    def share(self) -> float:
+        return self.calls
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BehaviorSummary:
+    """What the agents actually did, as opposed to what they cost.
+
+    ``supported`` is false when no source in scope reported any tool calls, so an empty
+    panel can say "not tracked here" instead of implying the agent made no tool calls.
+    """
+
+    total_calls: int
+    error_calls: int
+    repeated_calls: int
+    sessions_with_calls: int
+    abandoned_turns: int
+    read_calls: int
+    edit_calls: int
+    categories: list[ToolCategoryEntry]
+    tools: list[ToolUsageEntry]
+    supported: bool = True
+    repeated_duration_ms: int = 0
+    total_duration_ms: int = 0
+    timed_calls: int = 0
+    recovered_errors: int = 0
+
+    @property
+    def error_rate(self) -> float | None:
+        if not self.total_calls:
+            return None
+        return self.error_calls / self.total_calls
+
+    @property
+    def repeat_rate(self) -> float | None:
+        if not self.total_calls:
+            return None
+        return self.repeated_calls / self.total_calls
+
+    @property
+    def repeat_time_rate(self) -> float | None:
+        if not self.total_duration_ms:
+            return None
+        return self.repeated_duration_ms / self.total_duration_ms
+
+    @property
+    def error_recovery_rate(self) -> float | None:
+        if not self.error_calls:
+            return None
+        return self.recovered_errors / self.error_calls
+
+    @property
+    def unrecovered_errors(self) -> int:
+        return self.error_calls - self.recovered_errors
+
+    @property
+    def read_write_ratio(self) -> float | None:
+        if not self.edit_calls:
+            return None
+        return self.read_calls / self.edit_calls
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_calls": self.total_calls,
+            "error_calls": self.error_calls,
+            "repeated_calls": self.repeated_calls,
+            "sessions_with_calls": self.sessions_with_calls,
+            "abandoned_turns": self.abandoned_turns,
+            "read_calls": self.read_calls,
+            "edit_calls": self.edit_calls,
+            "categories": [entry.to_dict() for entry in self.categories],
+            "tools": [entry.to_dict() for entry in self.tools],
+            "supported": self.supported,
+            "repeated_duration_ms": self.repeated_duration_ms,
+            "total_duration_ms": self.total_duration_ms,
+            "timed_calls": self.timed_calls,
+            "recovered_errors": self.recovered_errors,
+        }
+
+
+@dataclass(frozen=True)
 class DashboardBadge:
     label: str
     value: str
@@ -360,6 +539,7 @@ class DashboardWindow:
     tool_breakdown: list[BreakdownEntry] | None = None
     tool_daily_points: list["ToolDailyPoint"] | None = None
     file_impact: list["FileImpactEntry"] = field(default_factory=list, repr=False)
+    behavior: "BehaviorSummary | None" = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -384,6 +564,7 @@ class DashboardWindow:
             "tool_breakdown": [entry.to_dict() for entry in self.tool_breakdown] if self.tool_breakdown else None,
             "tool_daily_points": [point.to_dict() for point in self.tool_daily_points] if self.tool_daily_points else None,
             "file_impact": [entry.to_dict() for entry in self.file_impact],
+            "behavior": self.behavior.to_dict() if self.behavior else None,
         }
 
 

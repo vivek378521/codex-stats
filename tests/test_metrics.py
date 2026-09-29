@@ -355,7 +355,7 @@ class MetricsTestCase(unittest.TestCase):
         }
         rollout = Path(self.tmpdir.name) / "rollout-apply.jsonl"
         rollout.write_text(json.dumps(event) + "\n", encoding="utf-8")
-        _, edits = _read_rollout(rollout)
+        _, edits, _calls = _read_rollout(rollout)
         by = {(e.action, e.path): (e.insertions, e.deletions) for e in edits}
         self.assertEqual(by[("created", "/tmp/thing.py")], (2, 0))
         self.assertEqual(by[("updated", "/tmp/app.py")], (2, 1))

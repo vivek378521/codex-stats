@@ -6,6 +6,12 @@ from statistics import median
 
 from .config import PricingConfig
 from .models import (
+    TOOL_CATEGORY_EDIT,
+    TOOL_CATEGORY_LABELS,
+    TOOL_CATEGORY_ORDER,
+    TOOL_CATEGORY_OTHER,
+    TOOL_CATEGORY_READ,
+    BehaviorSummary,
     BreakdownEntry,
     CompareReport,
     CostSummary,
@@ -20,7 +26,9 @@ from .models import (
     SessionDetails,
     TimeSummary,
     TokenSplit,
+    ToolCategoryEntry,
     ToolDailyPoint,
+    ToolUsageEntry,
     TopEntry,
     WorkRhythm,
 )
@@ -223,6 +231,7 @@ def summarize_takeaways(
     comparison: CompareReport | None = None,
     costs: CostSummary | None = None,
     file_impact: list[FileImpactEntry] | None = None,
+    behavior: BehaviorSummary | None = None,
     max_items: int = 4,
     scope_label: str | None = None,
 ) -> list[str]:
@@ -253,6 +262,11 @@ def summarize_takeaways(
         takeaways.append(f"Current pace projects to ${costs.projected_monthly_cost_usd:.2f} for the month.")
     if insights.anomalies:
         takeaways.append(insights.anomalies[0] + ".")
+    behavior_lines = summarize_behavior_takeaways(behavior)
+    if behavior_lines:
+        # Measured behavior outranks the heuristic cost advice, so it is preferred when
+        # the takeaway list is full.
+        takeaways = takeaways[: max(max_items, 1) - len(behavior_lines)] + behavior_lines
     if not takeaways:
         label = scope_label or summary.label
         takeaways.append(f"{label.title()} usage looks balanced with no obvious warning patterns.")
@@ -607,6 +621,175 @@ def summarize_files_from_details(
     ]
     entries.sort(key=lambda entry: (-entry.edits, -(entry.insertions + entry.deletions), entry.path))
     return entries[: max(limit, 0)]
+
+
+def summarize_behavior_from_details(
+    details: list[SessionDetails],
+    *,
+    tool_limit: int = 12,
+) -> BehaviorSummary | None:
+    """Aggregate what the agents actually did, independently of what they cost.
+
+    Repeated calls are counted per session, because the same command run twice in one
+    session is redundant work, while the same command run once a week for a month is a
+    routine. ``supported`` is false when nothing in scope reported tool calls, so an
+    empty panel can distinguish "no tool use" from "this source does not record tool use".
+    """
+    all_calls = [call for detail in details for call in detail.tool_calls]
+    if not all_calls:
+        return BehaviorSummary(
+            total_calls=0,
+            error_calls=0,
+            repeated_calls=0,
+            sessions_with_calls=0,
+            abandoned_turns=sum(detail.abandoned_turns for detail in details),
+            read_calls=0,
+            edit_calls=0,
+            categories=[],
+            tools=[],
+            supported=False,
+        )
+
+    per_session: dict[str, Counter[str]] = defaultdict(Counter)
+    repeated = 0
+    repeated_duration_ms = 0
+    total_duration_ms = 0
+    timed_calls = 0
+    for detail in details:
+        seen = per_session[detail.session.session_id]
+        for call in detail.tool_calls:
+            seen[call.fingerprint] += 1
+            if seen[call.fingerprint] > 1:
+                repeated += 1
+                if call.duration_ms is not None:
+                    repeated_duration_ms += call.duration_ms
+            if call.duration_ms is not None:
+                total_duration_ms += call.duration_ms
+                timed_calls += 1
+
+    recovered_errors = 0
+    recovered_tool_errors: Counter[str] = Counter()
+    for detail in details:
+        pending: dict[str, int] = {}
+        for call in detail.tool_calls:
+            if call.is_error:
+                pending[call.fingerprint] = pending.get(call.fingerprint, 0) + 1
+            elif call.fingerprint in pending:
+                recovered = pending.pop(call.fingerprint)
+                recovered_errors += recovered
+                recovered_tool_errors[call.name] += recovered
+
+    category_calls: Counter[str] = Counter()
+    category_errors: Counter[str] = Counter()
+    tool_names: Counter[str] = Counter()
+    tool_errors: Counter[str] = Counter()
+    tool_durations: Counter[str] = Counter()
+    tool_categories: dict[str, str] = {}
+
+    for call in all_calls:
+        category_calls[call.category] += 1
+        tool_names[call.name] += 1
+        tool_categories.setdefault(call.name, call.category)
+        if call.is_error:
+            category_errors[call.category] += 1
+            tool_errors[call.name] += 1
+        if call.duration_ms is not None:
+            tool_durations[call.name] += call.duration_ms
+
+    categories = [
+        ToolCategoryEntry(
+            category=key,
+            label=TOOL_CATEGORY_LABELS.get(key, key.title()),
+            calls=category_calls[key],
+            errors=category_errors[key],
+        )
+        for key in TOOL_CATEGORY_ORDER
+        if category_calls[key]
+    ]
+    ranked_names = tool_names.most_common(max(tool_limit, 0))
+    tools = [
+        ToolUsageEntry(
+            name=name,
+            category=tool_categories.get(name, TOOL_CATEGORY_OTHER),
+            calls=count,
+            errors=tool_errors[name],
+            total_duration_ms=tool_durations[name],
+            recovered_errors=recovered_tool_errors[name],
+        )
+        for name, count in ranked_names
+    ]
+    return BehaviorSummary(
+        total_calls=len(all_calls),
+        error_calls=sum(1 for call in all_calls if call.is_error),
+        repeated_calls=repeated,
+        sessions_with_calls=sum(1 for counter in per_session.values() if counter),
+        abandoned_turns=sum(detail.abandoned_turns for detail in details),
+        read_calls=category_calls[TOOL_CATEGORY_READ],
+        edit_calls=category_calls[TOOL_CATEGORY_EDIT],
+        categories=categories,
+        tools=tools,
+        supported=True,
+        repeated_duration_ms=repeated_duration_ms,
+        total_duration_ms=total_duration_ms,
+        timed_calls=timed_calls,
+        recovered_errors=recovered_errors,
+    )
+
+
+def summarize_behavior_takeaways(behavior: BehaviorSummary | None) -> list[str]:
+    if behavior is None or not behavior.supported or not behavior.total_calls:
+        return []
+    lines: list[str] = []
+    if behavior.error_rate is not None and behavior.error_rate >= 0.05:
+        lines.append(
+            f"{behavior.error_rate * 100:.0f}% of tool calls failed "
+            f"({behavior.error_calls:,} of {behavior.total_calls:,})."
+        )
+    if behavior.repeat_rate is not None and behavior.repeat_rate >= 0.1:
+        lines.append(
+            f"{behavior.repeated_calls:,} calls repeated work already done in the same "
+            f"session ({behavior.repeat_rate * 100:.0f}% of all calls)."
+        )
+    if behavior.repeat_time_rate is not None and behavior.repeat_time_rate >= 0.2:
+        lines.append(
+            f"Repeated calls consumed {behavior.repeat_time_rate * 100:.0f}% of tool time "
+            f"({_fmt_tool_time(behavior.repeated_duration_ms)} of "
+            f"{_fmt_tool_time(behavior.total_duration_ms)})."
+        )
+    if behavior.error_calls >= 3 and behavior.error_recovery_rate is not None:
+        recovered = behavior.error_recovery_rate
+        if recovered < 0.5:
+            unrecovered_noun = "call" if behavior.unrecovered_errors == 1 else "calls"
+            lines.append(
+                f"Only {recovered * 100:.0f}% of the {behavior.error_calls:,} tool failures were "
+                f"retried to success in-session; {behavior.unrecovered_errors:,} failed {unrecovered_noun} "
+                "were never resolved."
+            )
+        elif recovered >= 0.7:
+            lines.append(
+                f"Resolved {behavior.recovered_errors:,} of {behavior.error_calls:,} tool failures "
+                "in-session by retrying."
+            )
+    if behavior.read_write_ratio is not None and behavior.read_write_ratio >= 8:
+        lines.append(
+            f"Read-heavy work: {behavior.read_calls:,} reads against "
+            f"{behavior.edit_calls:,} edits."
+        )
+    if behavior.abandoned_turns:
+        lines.append(
+            f"{behavior.abandoned_turns} turn{'s were' if behavior.abandoned_turns != 1 else ' was'} "
+            "abandoned before finishing."
+        )
+    return lines
+
+
+def _fmt_tool_time(ms: int) -> str:
+    if ms < 60_000:
+        return f"{ms / 1000:.0f}s"
+    minutes = ms / 60_000
+    if minutes < 60:
+        return f"{minutes:.0f}m"
+    return f"{minutes / 60:.1f}h"
 
 
 def _fmt_ratio_pct(value: float | None) -> str:

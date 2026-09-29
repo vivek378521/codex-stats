@@ -8,7 +8,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Paths
-from .models import CACHED_WITHIN_INPUT, FileEdit, SessionDetails, SessionRecord
+from .models import (
+    CACHED_WITHIN_INPUT,
+    TOOL_STATUS_COMPLETED,
+    TOOL_STATUS_ERROR,
+    TOOL_STATUS_UNKNOWN,
+    FileEdit,
+    SessionDetails,
+    SessionRecord,
+    ToolCall,
+)
+from .tools import make_tool_call, output_looks_failed
+
+_TOOL_CALL_TYPES = ("function_call", "custom_tool_call")
+_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
 
 
 def _dt_from_unix(timestamp: int) -> datetime:
@@ -82,7 +95,7 @@ def iter_session_details(paths: Paths) -> list[SessionDetails]:
     return [get_session_details(paths, session) for session in iter_sessions(paths)]
 
 
-def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdit]]:
+def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdit], list[ToolCall]]:
     details: dict[str, int | str | None] = {
         "request_count": 0,
         "input_tokens": None,
@@ -91,10 +104,16 @@ def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdi
         "reasoning_output_tokens": None,
         "total_tokens_from_rollout": None,
         "started_at": None,
+        "abandoned_turns": 0,
     }
     edits: list[FileEdit] = []
     if not path.exists():
-        return details, edits
+        return details, edits, []
+
+    # Tool calls are collected first and resolved against their outputs at the end,
+    # because a rollout writes the call before its result.
+    pending_calls: list[dict] = []
+    call_outputs: dict[str, object] = {}
 
     with path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
@@ -118,6 +137,22 @@ def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdi
             payload_type = payload.get("type")
             edits.extend(_edits_from_event(payload_type, payload))
 
+            if payload_type in _TOOL_CALL_TYPES:
+                pending_calls.append(
+                    {
+                        "name": payload.get("name"),
+                        "arguments": payload.get("arguments", payload.get("input")),
+                        "call_id": payload.get("call_id"),
+                        "status": payload.get("status"),
+                    }
+                )
+            elif payload_type in _TOOL_OUTPUT_TYPES:
+                call_id = payload.get("call_id")
+                if isinstance(call_id, str):
+                    call_outputs[call_id] = payload.get("output")
+            elif payload_type == "turn_aborted":
+                details["abandoned_turns"] = int(details["abandoned_turns"] or 0) + 1
+
             if event_type != "event_msg":
                 continue
 
@@ -133,7 +168,33 @@ def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdi
                     details["reasoning_output_tokens"] = total_usage.get("reasoning_output_tokens")
                     details["total_tokens_from_rollout"] = total_usage.get("total_tokens")
 
-    return details, edits
+    return details, edits, _resolve_tool_calls(pending_calls, call_outputs)
+
+
+def _resolve_tool_calls(pending_calls: list[dict], call_outputs: dict[str, object]) -> list[ToolCall]:
+    calls: list[ToolCall] = []
+    for record in pending_calls:
+        call_id = record.get("call_id")
+        output = call_outputs.get(call_id) if isinstance(call_id, str) else None
+        status = _codex_call_status(record.get("status"), output)
+        calls.append(
+            make_tool_call(
+                record.get("name"),
+                record.get("arguments"),
+                status=status,
+            )
+        )
+    return calls
+
+
+def _codex_call_status(recorded_status: object, output: object) -> str:
+    if isinstance(recorded_status, str) and recorded_status.lower() in ("error", "failed"):
+        return TOOL_STATUS_ERROR
+    if output_looks_failed(output):
+        return TOOL_STATUS_ERROR
+    if isinstance(recorded_status, str) and recorded_status.lower() in ("completed", "success"):
+        return TOOL_STATUS_COMPLETED
+    return TOOL_STATUS_COMPLETED if output is not None else TOOL_STATUS_UNKNOWN
 
 
 def is_file_editing_tool(name: object) -> bool:
@@ -400,7 +461,7 @@ def _edit_from_event_payload(payload_type: object, payload: dict) -> FileEdit | 
 
 
 def get_session_details(paths: Paths, session: SessionRecord) -> SessionDetails:
-    rollout_details, edits = _read_rollout(session.rollout_path)
+    rollout_details, edits, tool_calls = _read_rollout(session.rollout_path)
     started_at_raw = rollout_details["started_at"]
     started_at = None
     if isinstance(started_at_raw, str):
@@ -418,6 +479,8 @@ def get_session_details(paths: Paths, session: SessionRecord) -> SessionDetails:
         started_at=started_at,
         file_edits=tuple(edits),
         token_accounting=CACHED_WITHIN_INPUT,
+        tool_calls=tuple(tool_calls),
+        abandoned_turns=int(rollout_details["abandoned_turns"] or 0),
     )
 
 

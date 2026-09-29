@@ -11,7 +11,17 @@ from typing import Callable
 
 from .config import Paths
 from .ingest import file_edit_from_args, is_file_editing_tool, iter_session_details as _codex_iter_session_details
-from .models import CACHED_SEPARATE, FileEdit, SessionDetails, SessionRecord
+from .models import (
+    CACHED_SEPARATE,
+    TOOL_STATUS_COMPLETED,
+    TOOL_STATUS_ERROR,
+    TOOL_STATUS_UNKNOWN,
+    FileEdit,
+    SessionDetails,
+    SessionRecord,
+    ToolCall,
+)
+from .tools import make_tool_call
 
 SOURCE_CODEX = "codex"
 SOURCE_OPENCODE = "opencode"
@@ -21,6 +31,11 @@ SOURCE_HERMES = "hermes"
 CLAUDE_PROVIDER = "anthropic"
 HERMES_PROVIDER = "hermes"
 OPENCODE_PROVIDER = "opencode"
+
+# Claude Code's session-control tools record an ``is_error`` result when the user-flow is
+# cancelled or declined (a question dismissed, a plan rejected), which is not a command
+# failure. Reading those as errors would poison the failure rate with interaction noise.
+_CLAUDE_CONTROL_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
 
 
 @dataclass(frozen=True)
@@ -198,6 +213,7 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
                 """
             ).fetchall()
         } if rows else {}
+        tool_calls = _opencode_tool_calls(connection, {row["id"] for row in rows})
     finally:
         connection.close()
 
@@ -239,9 +255,85 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
                 started_at=created_at,
                 recorded_cost_usd=_as_float(row["cost"]),
                 token_accounting=CACHED_SEPARATE,
+                tool_calls=tuple(tool_calls.get(row["id"], ())),
             )
         )
     return details
+
+
+def _opencode_tool_calls(
+    connection: sqlite3.Connection,
+    session_ids: set[str],
+) -> dict[str, list[ToolCall]]:
+    """Read per-session tool calls out of the ``part`` table.
+
+    OpenCode records every tool invocation as a JSON part, which makes it the richest
+    source of the four: it carries an explicit status and start/end timestamps.
+    """
+    if not session_ids:
+        return {}
+    calls: dict[str, list[ToolCall]] = {}
+    try:
+        rows = connection.execute(
+            "SELECT session_id, data FROM part WHERE json_extract(data, '$.type') = 'tool'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # A single malformed JSON row makes json_extract raise; fall back to scanning the
+        # table and parsing each blob in Python so one corrupt part cannot take down the
+        # whole dashboard. See roadmap: source parsing resilience.
+        rows = connection.execute("SELECT session_id, data FROM part").fetchall()
+        parsed_rows: list = []
+        for row in rows:
+            try:
+                part = json.loads(row["data"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(part, dict) and part.get("type") == "tool":
+                parsed_rows.append(row)
+        rows = parsed_rows
+    for row in rows:
+        session_id = row["session_id"]
+        if session_id not in session_ids:
+            continue
+        try:
+            part = json.loads(row["data"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(part, dict):
+            continue
+        state = part.get("state")
+        state = state if isinstance(state, dict) else {}
+        arguments = state.get("input")
+        calls.setdefault(session_id, []).append(
+            make_tool_call(
+                part.get("tool"),
+                arguments,
+                status=_opencode_tool_status(state.get("status")),
+                duration_ms=_opencode_tool_duration_ms(state.get("time")),
+            )
+        )
+    return calls
+
+
+def _opencode_tool_status(raw: object) -> str:
+    if not isinstance(raw, str):
+        return TOOL_STATUS_UNKNOWN
+    lowered = raw.lower()
+    if lowered == "error":
+        return TOOL_STATUS_ERROR
+    if lowered in ("completed", "success"):
+        return TOOL_STATUS_COMPLETED
+    return TOOL_STATUS_UNKNOWN
+
+
+def _opencode_tool_duration_ms(raw: object) -> int | None:
+    if not isinstance(raw, dict):
+        return None
+    start = _as_int(raw.get("start"))
+    end = _as_int(raw.get("end"))
+    if not start or not end or end < start:
+        return None
+    return end - start
 
 
 def _opencode_model_name(raw: str | None) -> str | None:
@@ -284,6 +376,10 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
     model_counter: Counter[str] = Counter()
     cwd: str | None = None
     edits: list[FileEdit] = []
+    pending_calls: list[dict] = []
+    call_results: dict[str, bool] = {}
+    call_times: dict[str, datetime] = {}
+    result_times: dict[str, datetime] = {}
     with path.open("r", encoding="utf-8", errors="ignore") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -303,29 +399,44 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
             event_type = event.get("type")
             if event_type == "user":
                 user_count += 1
-            if event_type != "assistant":
-                continue
             message = event.get("message")
             if not isinstance(message, dict):
                 continue
-            if isinstance(message.get("model"), str):
-                model_counter[message["model"]] += 1
             usage = message.get("usage")
-            if isinstance(usage, dict):
+            if event_type == "assistant" and isinstance(usage, dict):
                 input_tokens += _as_int(usage.get("input_tokens"))
                 output_tokens += _as_int(usage.get("output_tokens"))
                 cache_read_tokens += _as_int(usage.get("cache_read_input_tokens"))
                 cache_write_tokens += _as_int(usage.get("cache_creation_input_tokens"))
+            if event_type == "assistant" and isinstance(message.get("model"), str):
+                model_counter[message["model"]] += 1
             content = message.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict) or block.get("type") != "tool_use":
-                        continue
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "tool_use":
                     tool_name = block.get("name")
                     tool_input = block.get("input")
-                    if not is_file_editing_tool(tool_name) or not isinstance(tool_input, dict):
-                        continue
-                    edits.extend(_claude_edits_from_tool_use(tool_name, tool_input))
+                    use_id = block.get("id")
+                    if isinstance(use_id, str):
+                        pending_calls.append(
+                            {"name": tool_name, "arguments": tool_input, "call_id": use_id}
+                        )
+                        started = _dt_from_iso(timestamp) if isinstance(timestamp, str) else None
+                        if started is not None:
+                            call_times[use_id] = started
+                    if is_file_editing_tool(tool_name) and isinstance(tool_input, dict):
+                        edits.extend(_claude_edits_from_tool_use(tool_name, tool_input))
+                elif block_type == "tool_result":
+                    use_id = block.get("tool_use_id")
+                    if isinstance(use_id, str):
+                        call_results[use_id] = bool(block.get("is_error"))
+                        finished = _dt_from_iso(timestamp) if isinstance(timestamp, str) else None
+                        if finished is not None:
+                            result_times[use_id] = finished
 
     if not timestamps:
         return None
@@ -359,7 +470,54 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
         started_at=created_at,
         file_edits=tuple(edits),
         token_accounting=CACHED_SEPARATE,
+        tool_calls=tuple(_claude_tool_calls(pending_calls, call_results, call_times, result_times)),
     )
+
+
+def _claude_tool_calls(
+    pending_calls: list[dict],
+    call_results: dict[str, bool],
+    call_times: dict[str, datetime],
+    result_times: dict[str, datetime],
+) -> list[ToolCall]:
+    calls: list[ToolCall] = []
+    for record in pending_calls:
+        call_id = record.get("call_id")
+        is_error = call_results.get(call_id) if isinstance(call_id, str) else None
+        if is_error and record.get("name") in _CLAUDE_CONTROL_TOOLS:
+            # A cancelled question or rejected plan is user-flow noise, not a tool failure.
+            is_error = None
+        status = (
+            TOOL_STATUS_UNKNOWN
+            if is_error is None
+            else TOOL_STATUS_ERROR if is_error else TOOL_STATUS_COMPLETED
+        )
+        calls.append(
+            make_tool_call(
+                record.get("name"),
+                record.get("arguments"),
+                status=status,
+                duration_ms=_claude_call_duration_ms(
+                    call_times.get(call_id), result_times.get(call_id)
+                )
+                if isinstance(call_id, str)
+                else None,
+            )
+        )
+    return calls
+
+
+def _claude_call_duration_ms(started: datetime | None, finished: datetime | None) -> int | None:
+    """Time between issuing a tool call and its result arriving.
+
+    Claude Code stamps every transcript event, and a call's result lands on a later
+    ``user`` event. A call whose result never appears in the transcript gets no duration
+    rather than being attributed the rest of the session, which would inflate totals.
+    """
+    if started is None or finished is None:
+        return None
+    elapsed = (finished - started).total_seconds() * 1000
+    return int(elapsed) if elapsed >= 0 else None
 
 
 def _claude_edits_from_tool_use(tool_name: object, tool_input: dict) -> list[FileEdit]:
@@ -431,6 +589,7 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
             ORDER BY started_at DESC
             """
         ).fetchall()
+        tool_calls = _hermes_tool_calls(connection, {row["id"] for row in rows})
     finally:
         connection.close()
 
@@ -476,6 +635,85 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
                 started_at=created_at,
                 recorded_cost_usd=_as_float(row["estimated_cost_usd"]),
                 token_accounting=CACHED_SEPARATE,
+                tool_calls=tuple(tool_calls.get(row["id"], ())),
             )
         )
     return details
+
+
+def _hermes_tool_calls(
+    connection: sqlite3.Connection,
+    session_ids: set[str],
+) -> dict[str, list[ToolCall]]:
+    """Read per-session tool calls out of the ``messages`` table.
+
+    Hermes stores calls in the OpenAI-style shape: an assistant row carries a
+    ``tool_calls`` JSON array, and the matching result row carries ``tool_call_id`` and
+    ``tool_name``. Results are collected first so a call can be resolved against its own
+    result regardless of the order rows are read in.
+
+    Hermes records no per-call error flag, so a call with a result is reported as
+    completed and a call whose result never arrived is reported as unknown.
+    """
+    if not session_ids:
+        return {}
+
+    completed: set[str] = set()
+    denied: set[str] = set()
+    pending: dict[str, list[dict]] = {}
+
+    rows = connection.execute(
+        "SELECT session_id, tool_calls, tool_call_id, effect_disposition FROM messages"
+    ).fetchall()
+    for row in rows:
+        session_id = row["session_id"]
+        if session_id not in session_ids:
+            continue
+        call_id = row["tool_call_id"]
+        if isinstance(call_id, str) and call_id:
+            key = f"{session_id}\x00{call_id}"
+            disposition = row["effect_disposition"]
+            if isinstance(disposition, str) and disposition.lower() in ("denied", "rejected", "blocked"):
+                denied.add(key)
+            else:
+                completed.add(key)
+        raw_calls = row["tool_calls"]
+        if not isinstance(raw_calls, str) or not raw_calls.strip():
+            continue
+        try:
+            parsed = json.loads(raw_calls)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, list):
+            continue
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            function = entry.get("function")
+            function = function if isinstance(function, dict) else {}
+            entry_id = entry.get("id")
+            pending.setdefault(session_id, []).append(
+                {
+                    "name": function.get("name") or entry.get("name"),
+                    "arguments": function.get("arguments"),
+                    "call_id": entry_id if isinstance(entry_id, str) else None,
+                }
+            )
+
+    calls: dict[str, list[ToolCall]] = {}
+    for session_id, records in pending.items():
+        resolved: list[ToolCall] = []
+        for record in records:
+            call_id = record.get("call_id")
+            status = TOOL_STATUS_UNKNOWN
+            if isinstance(call_id, str):
+                key = f"{session_id}\x00{call_id}"
+                if key in denied:
+                    status = TOOL_STATUS_ERROR
+                elif key in completed:
+                    status = TOOL_STATUS_COMPLETED
+            resolved.append(
+                make_tool_call(record["name"], record["arguments"], status=status)
+            )
+        calls[session_id] = resolved
+    return calls

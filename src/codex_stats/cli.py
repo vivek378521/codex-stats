@@ -13,6 +13,7 @@ from .metrics import (
     local_date,
     summarize_activity_heatmap_from_details,
     summarize_badges,
+    summarize_behavior_from_details,
     summarize_compare_from_details,
     summarize_costs_from_details,
     summarize_daily_from_details,
@@ -230,6 +231,7 @@ def _build_window(
     daily_points = summarize_daily_from_details(current_details, days=max(trend_days, 1), now=now, pricing=pricing)
     activity_heatmap = summarize_activity_heatmap_from_details(current_details, timezone=now.tzinfo)
     file_impact = summarize_files_from_details(current_details, limit=10)
+    behavior = summarize_behavior_from_details(current_details)
     return DashboardWindow(
         key=key,
         label=label,
@@ -244,7 +246,14 @@ def _build_window(
         costs=costs,
         insights=insights,
         activity_heatmap=activity_heatmap,
-        takeaways=summarize_takeaways(summary=summary, comparison=comparison, costs=costs, insights=insights, file_impact=file_impact),
+        takeaways=summarize_takeaways(
+            summary=summary,
+            comparison=comparison,
+            costs=costs,
+            insights=insights,
+            file_impact=file_impact,
+            behavior=behavior,
+        ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(current_details, pricing),
         work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap),
@@ -256,6 +265,7 @@ def _build_window(
             limit=5,
         ),
         file_impact=file_impact,
+        behavior=behavior,
         tool_breakdown=(
             summarize_source_breakdown_from_details(current_details, pricing)
             if build_tool_breakdown
@@ -298,6 +308,7 @@ def _build_all_time_window(
     daily_points = summarize_daily_from_details(trend_details, days=trend_days, now=now, pricing=pricing)
     activity_heatmap = summarize_activity_heatmap_from_details(all_details, timezone=now.tzinfo)
     file_impact = summarize_files_from_details(all_details, limit=10)
+    behavior = summarize_behavior_from_details(all_details)
     return DashboardWindow(
         key="all",
         label="All Time",
@@ -318,6 +329,7 @@ def _build_all_time_window(
             costs=costs,
             insights=insights,
             file_impact=file_impact,
+            behavior=behavior,
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(all_details, pricing),
@@ -330,6 +342,7 @@ def _build_all_time_window(
             limit=5,
         ),
         file_impact=file_impact,
+        behavior=behavior,
         tool_breakdown=(
             summarize_source_breakdown_from_details(all_details, pricing)
             if build_tool_breakdown
