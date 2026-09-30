@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-stats"
-version = "1.11.2"
+version = "1.11.3"
 description = "Local-first usage dashboard and leaderboard for AI coding agent sessions: tokens, cost and activity across Codex, OpenCode, Claude Code and Hermes, read straight from the databases those tools already keep on your machine."
 readme = "README.md"
 requires-python = ">=3.11"
