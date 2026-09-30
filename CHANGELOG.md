@@ -46,6 +46,22 @@ All notable changes to this project are documented here. The format follows
   now renders as a "Most Edited Files in This Project" table inside each project
   drilldown, where the path actually carries meaning. Aggregation, the
   window-level takeaway, and the copy summary are unchanged.
+- The dashboard now lands on the narrowest window that can actually show a
+  trend, instead of always opening on Today. A single day cannot draw the trend
+  line, so a Today landing spent the whole first screen on empty states ("No
+  trend yet", "Nothing to rank yet", "No activity map yet") and read as broken
+  rather than new. On a machine with 3 sessions today and 13 across 5 days, the
+  page now opens on Last 7 Days. Today is still one click away, and a workspace
+  with no recorded history at all still opens on the first tab.
+- Removed nine duplicated figures from a single screen, taking the KPI tiles per
+  window from 22 to 12 without dropping any information. The peak weekday and
+  peak hour appeared three times (summary badges, the Work Rhythm sentence, and
+  a meta line); the window cost and token totals appeared in the hero and again
+  in the Comparison and Costs panels, with the Costs panel repeating the hero's
+  own total under a different label; and the Comparison and Costs panels each
+  showed a delta that the hero had already led with. Average alongside median
+  session length, and mean alongside median requests per session, were the same
+  statistic twice.
 
 ## [1.10.0] - 2026-09-27
 

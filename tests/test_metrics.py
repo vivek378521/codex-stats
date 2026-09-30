@@ -14,7 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.cli import _build_dashboard, _build_window
 from codex_stats.config import Paths, PricingConfig, load_pricing_config
-from codex_stats.display import format_dashboard_html, format_dashboard_svg_assets
+from codex_stats.display import (
+    _default_dashboard_view,
+    format_dashboard_html,
+    format_dashboard_svg_assets,
+)
 from codex_stats.ingest import (
     _read_rollout,
     file_edits_from_patch,
@@ -45,7 +49,7 @@ from codex_stats.metrics import (
     summarize_top_sessions_from_details,
     summarize_work_rhythm,
 )
-from codex_stats.models import CACHED_SEPARATE, CACHED_WITHIN_INPUT, DashboardData
+from codex_stats.models import CACHED_SEPARATE, CACHED_WITHIN_INPUT, DailyPoint, DashboardData
 from codex_stats.sources import _ingest_claude, iter_sources, source_label
 
 
@@ -243,6 +247,76 @@ class MetricsTestCase(unittest.TestCase):
         update, created = details.file_edits
         self.assertEqual((update.path, update.action, update.insertions, update.deletions), ("src/main.py", "updated", 1, 1))
         self.assertEqual((created.path, created.action, created.insertions, created.deletions), ("src/new_module.py", "created", 2, 0))
+
+    def _window_with_activity(self, base, *, key: str, sessions: int, active_days: int):
+        """Copy a real window, overriding session count and how many days have tokens."""
+        points = [
+            DailyPoint(day=f"2026-04-{index + 1:02d}", total_tokens=1000, requests=2, estimated_cost_usd=0.1)
+            for index in range(active_days)
+        ]
+        return replace(
+            base,
+            key=key,
+            label=key,
+            summary=replace(base.summary, sessions=sessions),
+            daily_points=points,
+        )
+
+    def test_default_view_lands_on_narrowest_window_that_has_a_trend(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now)
+        base = dashboard.scopes[0].windows[0]
+        scope = replace(
+            dashboard.scopes[0],
+            windows=[
+                # Today has plenty of sessions but only one day, so it cannot
+                # show a trend and must not win the default.
+                self._window_with_activity(base, key="day", sessions=9, active_days=1),
+                self._window_with_activity(base, key="week", sessions=2, active_days=3),
+                self._window_with_activity(base, key="all", sessions=40, active_days=12),
+            ],
+        )
+        self.assertEqual(_default_dashboard_view([scope], ["day", "week", "all"]), ("overview", "week"))
+
+    def test_default_view_falls_back_to_narrowest_window_when_no_trend_exists(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now)
+        base = dashboard.scopes[0].windows[0]
+        scope = replace(
+            dashboard.scopes[0],
+            windows=[
+                self._window_with_activity(base, key="day", sessions=3, active_days=1),
+                self._window_with_activity(base, key="week", sessions=4, active_days=1),
+            ],
+        )
+        self.assertEqual(_default_dashboard_view([scope], ["day", "week"]), ("overview", "day"))
+
+    def test_default_view_uses_first_tabs_when_nothing_was_recorded(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now)
+        base = dashboard.scopes[0].windows[0]
+        scope = replace(
+            dashboard.scopes[0],
+            windows=[
+                self._window_with_activity(base, key="day", sessions=0, active_days=0),
+                self._window_with_activity(base, key="week", sessions=0, active_days=0),
+            ],
+        )
+        self.assertEqual(_default_dashboard_view([scope], ["day", "week"]), ("overview", "day"))
+
+    def test_dashboard_marks_the_chosen_view_active(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        dashboard = _build_dashboard(self.paths, now=now)
+        scope_key, window_key = _default_dashboard_view(
+            dashboard.scopes, [window.key for window in dashboard.windows]
+        )
+        html = format_dashboard_html(dashboard)
+        self.assertIn(f'data-default-scope="{scope_key}" data-default-window="{window_key}"', html)
+        self.assertEqual(html.count('<section class="window is-active"'), 1)
+        self.assertIn(
+            f'<section class="window is-active" data-window="{window_key}" data-scope="{scope_key}"',
+            html,
+        )
 
     def test_file_impact_aggregation_and_dashboard(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")

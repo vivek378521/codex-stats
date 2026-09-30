@@ -6,7 +6,7 @@ from collections import defaultdict
 from html import escape
 from typing import Any
 
-from .models import DashboardData, DashboardWindow, FileImpactEntry, HeatmapCell, ProjectDrilldown
+from .models import DashboardData, DashboardScope, DashboardWindow, FileImpactEntry, HeatmapCell, ProjectDrilldown
 from .sources import source_label
 
 SOURCE_CHART_COLORS: dict[str, str] = {
@@ -15,6 +15,59 @@ SOURCE_CHART_COLORS: dict[str, str] = {
     "claude": "#7c3aed",
     "hermes": "#be185d",
 }
+
+
+def _active_day_count(window: DashboardWindow) -> int:
+    return sum(1 for point in window.daily_points if point.total_tokens > 0)
+
+
+def _default_dashboard_view(
+    scopes: list[DashboardScope],
+    range_keys: list[str],
+) -> tuple[str, str]:
+    """Pick the landing view: the narrowest window that can actually show a trend.
+
+    Hardcoding "Today" is the wrong default for this dashboard. A single day
+    cannot draw the trend line, so a Today landing spends its whole first screen
+    on empty states ("No trend yet", "Nothing to rank yet", "No activity map yet")
+    for a view that looks broken rather than new. Three sessions on one afternoon
+    is not a usage pattern.
+
+    So the landing view is the narrowest window with activity on at least two
+    distinct days, which is the minimum for a trend to exist. ``range_keys`` is
+    already ordered narrowest first, so the first window that clears that bar is
+    the most specific one worth showing, and Today stays one click away for
+    anyone who does want it.
+
+    Within the chosen window the scope with the most sessions wins, which keeps
+    the combined Overview as the landing tab whenever it has anything to show
+    and falls back to the busiest single tool when it does not.
+    """
+    fallback: tuple[str, str] | None = None
+    for window_key in range_keys:
+        best_scope_key = ""
+        best_sessions = 0
+        best_active_days = 0
+        for scope in scopes:
+            for window in scope.windows:
+                if window.key != window_key or window.summary.sessions <= best_sessions:
+                    continue
+                best_sessions = window.summary.sessions
+                best_scope_key = scope.key
+                best_active_days = _active_day_count(window)
+        if not best_scope_key:
+            continue
+        if fallback is None:
+            fallback = (best_scope_key, window_key)
+        if best_active_days >= 2:
+            return best_scope_key, window_key
+    # Every window with data is a single day, so there is no trend to show
+    # anywhere. Fall back to the narrowest window that has anything in it.
+    if fallback is not None:
+        return fallback
+    # Nothing recorded anywhere: use the first tabs rather than rendering a page
+    # with no active section.
+    return (scopes[0].key if scopes else ""), (range_keys[0] if range_keys else "")
 
 
 def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, Any] | None = None) -> str:
@@ -27,29 +80,30 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         "month": "Last 30 Days",
         "all": "All Time",
     }
-    scope_buttons = "".join(
-        f'<button class="scope-button{" is-active" if index == 0 else ""}" type="button" data-scope-button="{escape(scope.key)}">{escape(scope.label)}</button>'
-        for index, scope in enumerate(scopes)
-    )
     range_keys: list[str] = []
     for window in windows:
         if window.key not in range_keys:
             range_keys.append(window.key)
+    default_scope_key, default_window_key = _default_dashboard_view(scopes, range_keys)
+    scope_buttons = "".join(
+        f'<button class="scope-button{" is-active" if scope.key == default_scope_key else ""}" type="button" data-scope-button="{escape(scope.key)}">{escape(scope.label)}</button>'
+        for scope in scopes
+    )
     range_buttons = "".join(
-        f'<button class="tab-button{" is-active" if index == 0 else ""}" type="button" data-window-button="{escape(window_key)}">{escape(tab_label_overrides.get(window_key, window_key))}</button>'
-        for index, window_key in enumerate(range_keys)
+        f'<button class="tab-button{" is-active" if window_key == default_window_key else ""}" type="button" data-window-button="{escape(window_key)}">{escape(tab_label_overrides.get(window_key, window_key))}</button>'
+        for window_key in range_keys
     )
     scope_sections = "".join(
         "".join(
             _format_dashboard_window_section(
                 window,
-                is_active=scope_index == 0 and window_index == 0,
+                is_active=scope.key == default_scope_key and window.key == default_window_key,
                 scope_key=scope.key,
                 scope_label=scope.label,
             )
-            for window_index, window in enumerate(scope.windows)
+            for window in scope.windows
         )
-        for scope_index, scope in enumerate(scopes)
+        for scope in scopes
     )
     assets_json = json.dumps(
         {
@@ -571,19 +625,6 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       color: var(--muted);
       line-height: 1.55;
     }}
-    .rhythm-meta {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 12px;
-    }}
-    .rhythm-meta span {{
-      padding: 9px 12px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.74);
-      border: 1px solid var(--line);
-      font-size: 0.9rem;
-    }}
     .table-wrap {{
       overflow-x: auto;
     }}
@@ -874,7 +915,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     }}
   </style>
 </head>
-<body>
+<body data-default-scope="{escape(default_scope_key)}" data-default-window="{escape(default_window_key)}">
   <main class="page">
     <section class="hero">
       <p class="eyebrow">Coding Agent Stats</p>
@@ -951,8 +992,8 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     const activeDescription = document.querySelector("[data-active-description]");
     const printNote = document.querySelector("[data-print-note]");
     const copyFeedback = document.querySelector("[data-copy-feedback]");
-    let activeScope = scopeButtons[0]?.dataset.scopeButton || "";
-    let activeWindow = rangeButtons[0]?.dataset.windowButton || "";
+    let activeScope = document.body.dataset.defaultScope || scopeButtons[0]?.dataset.scopeButton || "";
+    let activeWindow = document.body.dataset.defaultWindow || rangeButtons[0]?.dataset.windowButton || "";
     let expandedForPrint = [];
     let pendingPrintTitle = null;
 
@@ -1577,7 +1618,6 @@ def _format_dashboard_window_section(
             <div class="metric">
               <span class="label">Cache Ratio</span>
               <strong class="value">{escape(_fmt_percent(window.summary.cache_ratio))}</strong>
-              <span class="hint">Top model {escape(window.summary.top_model or 'unknown')}</span>
             </div>
           </div>
         </section>
@@ -1588,15 +1628,10 @@ def _format_dashboard_window_section(
               <p class="section-kicker">Biggest Change</p>
               <h2>Comparison</h2>
             </div>
-            <strong style="color: {delta_tone};">{escape(delta_pct)}</strong>
           </div>
           <div class="kpi-grid">
-            <div class="kpi"><strong>{window.comparison.current.total_tokens:,}</strong><span>{escape(window.comparison.current.label)}</span></div>
             <div class="kpi"><strong>{window.comparison.previous.total_tokens:,}</strong><span>{escape(window.comparison.previous.label)}</span></div>
-            <div class="kpi"><strong>{window.comparison.total_tokens_delta:+,}</strong><span>Token delta</span></div>
             <div class="kpi"><strong>{window.comparison.requests_delta:+d}</strong><span>Request delta</span></div>
-            <div class="kpi"><strong>${window.comparison.cost_delta_usd:+.2f}</strong><span>Cost delta</span></div>
-            <div class="kpi"><strong>{escape(window.insights.suggestion)}</strong><span>Primary recommendation</span></div>
           </div>
         </section>
         {tool_share_html}
@@ -1629,15 +1664,12 @@ def _format_dashboard_window_section(
             </div>
           </div>
           <div class="kpi-grid">
-            <div class="kpi"><strong>{_fmt_minutes(window.summary.average_session_duration_minutes)}</strong><span>Average session length</span></div>
             <div class="kpi"><strong>{_fmt_minutes(window.summary.median_session_duration_minutes)}</strong><span>Median session length</span></div>
             <div class="kpi"><strong>{window.summary.tokens_per_minute:,.0f}</strong><span>Tokens per minute</span></div>
-            <div class="kpi"><strong>{window.summary.requests_per_session:.1f}</strong><span>Requests per session</span></div>
             <div class="kpi"><strong>{window.summary.median_tokens_per_session:,.0f}</strong><span>Median tokens per session</span></div>
             <div class="kpi"><strong>{window.summary.median_requests_per_session:,.1f}</strong><span>Median requests per session</span></div>
             <div class="kpi"><strong>{escape(_fmt_percent(window.summary.project_concentration_top1_pct))}</strong><span>Top project concentration</span></div>
             <div class="kpi"><strong>{escape(_fmt_percent(window.summary.project_concentration_top3_pct))}</strong><span>Top 3 project concentration</span></div>
-            <div class="kpi"><strong>{window.summary.longest_active_streak_days}</strong><span>Longest active streak</span></div>
             <div class="kpi"><strong>{escape(_fmt_percent(window.summary.model_switching_rate))}</strong><span>Model switching rate</span></div>
           </div>
         </section>
@@ -1686,11 +1718,8 @@ def _format_dashboard_window_section(
           </div>
           <div class="split">
             <div class="kpi-grid">
-              <div class="kpi"><strong>${window.summary.estimated_cost_usd:.2f}</strong><span>{escape(window.summary.label)} total</span></div>
-              <div class="kpi"><strong>${window.comparison.current.estimated_cost_usd:.2f}</strong><span>{escape(window.comparison.current.label)} cost</span></div>
-              <div class="kpi"><strong>${window.comparison.previous.estimated_cost_usd:.2f}</strong><span>{escape(window.comparison.previous.label)} cost</span></div>
-              <div class="kpi"><strong>${window.costs.projected_monthly_cost_usd:.2f}</strong><span>Projected month</span></div>
-              <div class="kpi"><strong>${window.costs.highest_session_cost_usd:.2f}</strong><span>Highest session</span></div>
+              <div class="kpi"><strong>${window.comparison.current.estimated_cost_usd:.2f}</strong><span>{escape(window.comparison.current.label)}</span></div>
+              <div class="kpi"><strong>${window.comparison.previous.estimated_cost_usd:.2f}</strong><span>{escape(window.comparison.previous.label)}</span></div>
               <div class="kpi"><strong>${window.comparison.cost_delta_usd:+.2f}</strong><span>Window delta</span></div>
             </div>
             <div class="split" style="grid-template-columns: 1fr 1fr;">
@@ -1957,17 +1986,13 @@ def _format_project_file_impact(file_impact: list[FileImpactEntry]) -> str:
 
 
 def _format_work_rhythm_card(window: DashboardWindow) -> str:
-    meta = []
-    if window.work_rhythm.peak_day:
-        meta.append(f"<span>Peak day: {escape(window.work_rhythm.peak_day)}</span>")
-    if window.work_rhythm.peak_hour:
-        meta.append(f"<span>Peak hour: {escape(window.work_rhythm.peak_hour)}</span>")
-    meta_html = f'<div class="rhythm-meta">{"".join(meta)}</div>' if meta else ""
+    # Peak day and peak hour are deliberately not repeated as meta chips here.
+    # The detail sentence above already names both, and the summary badges in
+    # "Start Here" carry them too, so a third copy was pure noise.
     return f"""
     <div class="rhythm-card">
       <h3>{escape(window.work_rhythm.headline)}</h3>
       <p>{escape(window.work_rhythm.detail)}</p>
-      {meta_html}
     </div>
     """
 
