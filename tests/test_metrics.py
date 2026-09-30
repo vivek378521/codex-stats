@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -20,11 +20,15 @@ from codex_stats.display import (
     format_dashboard_svg_assets,
 )
 from codex_stats.ingest import (
+    DEFAULT_MAX_SESSIONS,
+    ENV_MAX_SESSIONS,
     _read_rollout,
+    codex_session_coverage,
     file_edits_from_patch,
     get_session,
     get_session_details,
     iter_session_details,
+    resolve_max_sessions,
 )
 from codex_stats.metrics import (
     estimate_detail_cost,
@@ -949,6 +953,224 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("Still learning your rhythm.", html)
         self.assertIn("No project drilldown yet.", html)
         self.assertIn("No activity map yet.", html)
+
+
+class HistoryBoundTestCase(unittest.TestCase):
+    """The bounded history read.
+
+    Three properties matter and are easy to regress independently: the read is
+    actually capped, it keeps the *newest* sessions (so the Today/7d/30d windows
+    stay exact), and the dashboard admits to the cut rather than presenting a
+    truncated history as if it were the whole story.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        codex_home = Path(tmp.name) / "codex"
+        (codex_home / "sessions").mkdir(parents=True)
+        self.codex_home = codex_home
+        self.state_db = codex_home / "state_5.sqlite"
+        self.paths = Paths(
+            codex_home=codex_home,
+            state_db=self.state_db,
+            sessions_dir=codex_home / "sessions",
+            config_dir=codex_home / "config",
+            config_file=codex_home / "config" / "config.toml",
+        )
+        self.addCleanup(os.environ.pop, ENV_MAX_SESSIONS, None)
+        os.environ.pop(ENV_MAX_SESSIONS, None)
+
+    def _seed(self, count: int, step: timedelta = timedelta(hours=1)) -> None:
+        """Seed `count` sessions where session 0 is the newest, one `step` apart."""
+        connection = sqlite3.connect(self.state_db)
+        connection.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT NOT NULL,
+                sandbox_policy TEXT NOT NULL,
+                approval_mode TEXT NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                cli_version TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                agent_nickname TEXT,
+                agent_role TEXT,
+                memory_mode TEXT NOT NULL DEFAULT 'enabled',
+                model TEXT,
+                reasoning_effort TEXT,
+                agent_path TEXT
+            )
+            """
+        )
+        now = datetime(2026, 4, 10, 12, tzinfo=UTC)
+        rows = []
+        for index in range(count):
+            when = now - step * index
+            rollout_path = self.codex_home / "sessions" / f"rollout-{index}.jsonl"
+            rollout_path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": when.isoformat(),
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "total_token_usage": {
+                                    "input_tokens": 100,
+                                    "output_tokens": 50,
+                                    "cached_input_tokens": 0,
+                                    "cache_creation_input_tokens": 0,
+                                    "reasoning_output_tokens": 0,
+                                    "total_tokens": 150,
+                                }
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stamp = int(when.timestamp())
+            rows.append(
+                (
+                    f"t{index}",
+                    str(rollout_path),
+                    stamp,
+                    stamp,
+                    "codex",
+                    "openai",
+                    "/proj",
+                    f"Session {index}",
+                    "workspace",
+                    "on-request",
+                    150,
+                    "gpt-5",
+                )
+            )
+        connection.executemany(
+            "INSERT INTO threads (id, rollout_path, created_at, updated_at, source,"
+            " model_provider, cwd, title, sandbox_policy, approval_mode, tokens_used, model)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        connection.commit()
+        connection.close()
+
+    def test_resolve_max_sessions_defaults_and_parses_env(self) -> None:
+        self.assertEqual(resolve_max_sessions(), DEFAULT_MAX_SESSIONS)
+        os.environ[ENV_MAX_SESSIONS] = "25"
+        self.assertEqual(resolve_max_sessions(), 25)
+        # 0 and negatives mean "read everything", not "read nothing".
+        os.environ[ENV_MAX_SESSIONS] = "0"
+        self.assertEqual(resolve_max_sessions(), 0)
+        os.environ[ENV_MAX_SESSIONS] = "-5"
+        self.assertEqual(resolve_max_sessions(), 0)
+        # Junk falls back to the default rather than reading nothing.
+        os.environ[ENV_MAX_SESSIONS] = "banana"
+        self.assertEqual(resolve_max_sessions(), DEFAULT_MAX_SESSIONS)
+        os.environ[ENV_MAX_SESSIONS] = ""
+        self.assertEqual(resolve_max_sessions(), DEFAULT_MAX_SESSIONS)
+
+    def test_iter_sessions_keeps_the_newest_sessions_only(self) -> None:
+        self._seed(count=10)
+        os.environ[ENV_MAX_SESSIONS] = "4"
+        sessions = list(iter_session_details(self.paths))
+        self.assertEqual(
+            [detail.session.session_id for detail in sessions],
+            ["t0", "t1", "t2", "t3"],
+            "the cap must drop the oldest sessions and keep the newest",
+        )
+
+    def test_iter_sessions_reads_everything_when_unbounded(self) -> None:
+        self._seed(count=6)
+        os.environ[ENV_MAX_SESSIONS] = "0"
+        sessions = list(iter_session_details(self.paths))
+        self.assertEqual(len(sessions), 6)
+
+    def test_coverage_reports_what_was_read_against_what_exists(self) -> None:
+        self._seed(count=10)
+        self.assertEqual(codex_session_coverage(self.paths), (10, 10))
+        os.environ[ENV_MAX_SESSIONS] = "3"
+        self.assertEqual(codex_session_coverage(self.paths), (3, 10))
+        os.environ[ENV_MAX_SESSIONS] = "0"
+        self.assertEqual(codex_session_coverage(self.paths), (10, 10))
+
+    def test_dashboard_stays_quiet_when_nothing_is_dropped(self) -> None:
+        self._seed(count=4)
+        dashboard = _build_dashboard(self.paths, now=datetime(2026, 4, 10, 12, tzinfo=UTC))
+        self.assertIsNone(dashboard.coverage_note)
+        self.assertNotIn("Partial history", format_dashboard_html(dashboard))
+
+    def test_dashboard_discloses_the_cut_when_history_is_truncated(self) -> None:
+        self._seed(count=9)
+        os.environ[ENV_MAX_SESSIONS] = "4"
+        dashboard = _build_dashboard(self.paths, now=datetime(2026, 4, 10, 12, tzinfo=UTC))
+        self.assertIsNotNone(dashboard.coverage_note)
+        assert dashboard.coverage_note is not None
+        self.assertIn("4 of 9", dashboard.coverage_note)
+        self.assertIn(ENV_MAX_SESSIONS, dashboard.coverage_note)
+        html = format_dashboard_html(dashboard)
+        # Rendered once, above the tabs, so it qualifies every number on the page
+        # instead of scrolling away with whichever hero is open.
+        self.assertIn("Partial history", html)
+        self.assertEqual(html.count("Partial history"), 1)
+        self.assertLess(
+            html.index("Partial history"),
+            html.index('class="toolbar"'),
+            "the note must sit above the tabs and the metrics they switch between",
+        )
+
+    def test_truncated_dashboard_keeps_recent_windows_exact(self) -> None:
+        """Newest-first capping is what protects the recent windows.
+
+        One session per day, capped at the newest 3, so the cap only reaches back
+        further than a week. Today must be identical either way; the wider
+        windows legitimately shrink, which is why the note has to disclose it.
+        """
+        self._seed(count=12, step=timedelta(days=1))
+        now = datetime(2026, 4, 10, 12, tzinfo=UTC)
+        os.environ[ENV_MAX_SESSIONS] = "3"
+        truncated = _build_dashboard(self.paths, now=now)
+        os.environ[ENV_MAX_SESSIONS] = "0"
+        full = _build_dashboard(self.paths, now=now)
+
+        def by_key(dashboard: DashboardData, key: str):
+            return next(
+                window
+                for scope in dashboard.scopes
+                for window in scope.windows
+                if window.key == key and scope.key == "overview"
+            )
+
+        self.assertEqual(
+            by_key(truncated, "day").summary,
+            by_key(full, "day").summary,
+            "today is covered by the newest sessions and must not change",
+        )
+        self.assertEqual(
+            by_key(truncated, "day").daily_points,
+            by_key(full, "day").daily_points,
+        )
+        for key in ("week", "month", "all"):
+            with self.subTest(window=key):
+                self.assertNotEqual(
+                    by_key(truncated, key).summary,
+                    by_key(full, key).summary,
+                    f"a session-count cap can cut into {key}; the note must disclose that",
+                )
+        self.assertIsNotNone(truncated.coverage_note)
 
 
 if __name__ == "__main__":

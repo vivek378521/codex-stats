@@ -32,6 +32,16 @@ Use these environment variables to point at non-default locations (also used for
 - `CODEX_HOME` (Codex), `CODEX_STATS_OPENCODE_HOME` (OpenCode),
   `CODEX_STATS_CLAUDE_PROJECTS_DIR` (Claude), `CODEX_STATS_HERMES_HOME` (Hermes)
 
+Reading a session means parsing its rollout or transcript line by line, and that
+cost is linear in total history on every launch, so each source reads only the
+2,000 most recent sessions. This keeps startup predictable on long histories and
+is invisible on normal ones. When it does drop history, every window says so
+above the metrics rather than reporting a partial history as a complete one.
+
+- `CODEX_STATS_MAX_SESSIONS=N` reads the `N` most recent sessions per source.
+  Set it to `0` to read everything and get exact figures, which takes
+  proportionally longer on a long history.
+
 ## Install
 
 ```bash

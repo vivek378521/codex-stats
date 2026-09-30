@@ -38,6 +38,25 @@ All notable changes to this project are documented here. The format follows
 - Claude Code no longer reads its session-control tools (`AskUserQuestion`,
   `ExitPlanMode`) as failures: a dismissed question or rejected plan is
   interaction noise, not a tool error.
+- Bounded history read so startup no longer scales without limit. Reading a
+  session means parsing its rollout or transcript line by line, and that cost is
+  linear in total history on every launch: measured on synthetic histories at 20
+  tool calls per session, 400 sessions took 2.6s to build and 3,200 took 9.2s,
+  with peak memory growing from 52MB to 71MB. Each source now reads only the
+  2,000 most recent sessions, which caps that work: the same 3,200-session
+  history drops to 5.8s. Set `CODEX_STATS_MAX_SESSIONS=0` to read everything for
+  exact figures. On a machine with 88 sessions the bound never applies and
+  startup is unchanged at 0.5s.
+- A visible disclosure whenever the bound drops history, because a truncated
+  history silently reported as the whole one is worse than a slow dashboard. A
+  "Partial history" note sits above the tabs, stating how many of how many
+  sessions were read and how to read them all, so it qualifies every number on
+  the page whichever tab is open.
+- The history cap is applied newest-first, so the windows closest to today
+  degrade last. It is a bound on cost, not a guarantee that every window is
+  exact: a user running 2,000 sessions in a single day will still have their
+  "Last 30 Days" cut short, since session count does not predict how much time a
+  history spans.
 
 ### Changed
 - File-level impact moved from the main page into the per-project drilldowns. A
@@ -66,17 +85,25 @@ All notable changes to this project are documented here. The format follows
 ## [1.10.0] - 2026-09-27
 
 ### Added
-- Optional leaderboard submission straight from the dashboard. Totals are
-  computed locally and signed before upload; the browser only ever sends a
-  username. The endpoint and signing key are baked in, so a fresh install can
-  submit with no configuration.
+- Optional private-leaderboard submission straight from the dashboard. Totals
+  are computed locally and signed before upload; the browser only ever sends a
+  username. It requires an operator-configured endpoint and key.
 - `CODEX_STATS_DISABLE_LEADERBOARD` to opt out. Submitting publishes a username
   and token totals to a third-party server, so refusing it has to stay possible.
-- `CODEX_STATS_LEADERBOARD_URL` and `CODEX_STATS_LEADERBOARD_KEY` to override the
-  baked-in defaults, which is what allows the key to be rotated without cutting a
-  release.
+- `CODEX_STATS_LEADERBOARD_URL` and `CODEX_STATS_LEADERBOARD_KEY` to configure a
+  private submission endpoint.
 - A public hash-chained audit log on the leaderboard, so edits to past
   submissions are detectable.
+
+### Security
+
+- Disabled public leaderboard submission. The former package-wide HMAC key was
+  public to every installation, allowing forged token totals. A total computed
+  from locally controlled files cannot be made trustworthy by signing it on the
+  same machine. Submission now requires both
+  `CODEX_STATS_LEADERBOARD_URL` and `CODEX_STATS_LEADERBOARD_KEY` for a private
+  deployment. The public leaderboard needs server-side provider-issued usage
+  attestations before verified submission can return.
 
 ### Changed
 - Packaging metadata expanded for discoverability: a fuller description, broader

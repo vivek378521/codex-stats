@@ -93,8 +93,18 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         f'<button class="tab-button{" is-active" if window_key == default_window_key else ""}" type="button" data-window-button="{escape(window_key)}">{escape(tab_label_overrides.get(window_key, window_key))}</button>'
         for window_key in range_keys
     )
-    scope_sections = "".join(
-        "".join(
+    coverage_note_html = ""
+    if dashboard.coverage_note:
+        # Rendered once, above the tabs, rather than inside every window: a
+        # bounded read qualifies every number on the page no matter which tab is
+        # open, so repeating it per window would say the same thing 20 times and
+        # still be missed whenever it scrolled out of the active hero.
+        coverage_note_html = (
+            '<div class="coverage-note" role="status">'
+            f"<strong>Partial history.</strong> {escape(dashboard.coverage_note)}"
+            "</div>"
+        )
+    scope_sections = "".join(        "".join(
             _format_dashboard_window_section(
                 window,
                 is_active=scope.key == default_scope_key and window.key == default_window_key,
@@ -437,6 +447,19 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       flex-wrap: wrap;
       gap: 10px;
       margin-top: 14px;
+    }}
+    .coverage-note {{
+      margin-top: 24px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(180, 83, 9, 0.32);
+      background: rgba(180, 83, 9, 0.08);
+      color: var(--ink);
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }}
+    .coverage-note strong {{
+      color: var(--warn);
     }}
     .summary-badge {{
       padding: 10px 14px;
@@ -929,6 +952,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
           <p data-active-description>The selected tab updates the full page.</p>
         </div>
       </div>
+      {coverage_note_html}
       <div class="toolbar">
         <div class="tabs">
           <div class="scope-tabs">{scope_buttons}</div>

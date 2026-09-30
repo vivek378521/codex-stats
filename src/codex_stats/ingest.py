@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -22,6 +23,36 @@ from .tools import make_tool_call, output_looks_failed
 
 _TOOL_CALL_TYPES = ("function_call", "custom_tool_call")
 _TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+
+# Reading a session means parsing its rollout or transcript line by line, and
+# that cost is linear in total history on every launch. Measured on synthetic
+# histories at 20 tool calls per session, a full read costs roughly 3ms per
+# session: 400 sessions builds in 2.6s, but 3,200 takes 9.2s and a 10,000-session
+# history would be the better part of half a minute of staring at a blank browser
+# before anything appears.
+#
+# So the read is bounded to the most recent sessions. Note what this does and
+# does not buy: it bounds the *cost* of a launch, and it is newest-first, so the
+# windows closest to today degrade last. It does NOT guarantee that every window
+# is exact. A user who runs 2,000 sessions in a single day still has their "Last
+# 30 Days" cut off by a 2,000-session cap, because session count is an
+# unpredictable proxy for how much time the history spans. That is why the
+# dashboard states the cut instead of implying the numbers are complete.
+# 0 disables the bound for anyone who wants exact figures and can wait for them.
+DEFAULT_MAX_SESSIONS = 2000
+ENV_MAX_SESSIONS = "CODEX_STATS_MAX_SESSIONS"
+
+
+def resolve_max_sessions() -> int:
+    """Sessions to read per source, newest first. 0 means read everything."""
+    raw = os.environ.get(ENV_MAX_SESSIONS, "").strip()
+    if not raw:
+        return DEFAULT_MAX_SESSIONS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_SESSIONS
+    return value if value > 0 else 0
 
 
 def _dt_from_unix(timestamp: int) -> datetime:
@@ -53,6 +84,11 @@ def iter_sessions(paths: Paths) -> Iterable[SessionRecord]:
         FROM threads
         ORDER BY updated_at DESC, created_at DESC
     """
+    max_sessions = resolve_max_sessions()
+    if max_sessions:
+        # Safe to push into SQL: the ordering above is already newest first, so
+        # the limit keeps the most recent sessions and drops the oldest.
+        query += f"\n        LIMIT {max_sessions}"
     connection = _connect_sqlite(paths.state_db)
     try:
         rows = connection.execute(query).fetchall()
@@ -77,6 +113,26 @@ def iter_sessions(paths: Paths) -> Iterable[SessionRecord]:
             )
         )
     return sessions
+
+
+def codex_session_coverage(paths: Paths) -> tuple[int, int]:
+    """(sessions read, sessions on disk) for Codex, or (0, 0) if unavailable.
+
+    A plain COUNT(*) is cheap enough to run on every launch, which is what lets
+    the dashboard admit to dropping history instead of quietly reporting a
+    smaller history as if it were the whole thing.
+    """
+    if not paths.state_db.exists():
+        return 0, 0
+    connection = _connect_sqlite(paths.state_db)
+    try:
+        total = connection.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+    except sqlite3.Error:
+        return 0, 0
+    finally:
+        connection.close()
+    limit = resolve_max_sessions()
+    return (total if not limit else min(total, limit), total)
 
 
 def get_session(paths: Paths, session_id: str | None = None) -> SessionRecord | None:

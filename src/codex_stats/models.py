@@ -648,6 +648,7 @@ class DashboardData:
     generated_at: datetime
     windows: list[DashboardWindow] = field(default_factory=list, repr=False)
     scopes: list[DashboardScope] = field(default_factory=list)
+    coverage_note: str | None = None
 
     def __post_init__(self) -> None:
         if not self.scopes and self.windows:
@@ -675,4 +676,5 @@ class DashboardData:
         return {
             "generated_at": self.generated_at.isoformat(),
             "scopes": [scope.to_dict() for scope in self.scopes],
+            "coverage_note": self.coverage_note,
         }

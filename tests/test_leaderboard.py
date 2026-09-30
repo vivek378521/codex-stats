@@ -17,7 +17,6 @@ from codex_stats.config import Paths
 from codex_stats.display import format_dashboard_html
 from codex_stats.leaderboard import (
     DEFAULT_BASE_URL,
-    DEFAULT_SUBMIT_KEY,
     ENV_BASE_URL,
     ENV_DISABLE,
     ENV_SUBMIT_KEY,
@@ -161,12 +160,15 @@ class LeaderboardConfigTests(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    def test_enabled_by_default_without_any_variables(self) -> None:
-        config = LeaderboardConfig.from_env()
-        self.assertIsNotNone(config)
-        assert config is not None
-        self.assertEqual(config.base_url, DEFAULT_BASE_URL)
-        self.assertEqual(config.submit_key, DEFAULT_SUBMIT_KEY.encode("utf-8"))
+    def test_is_disabled_without_an_operator_configured_endpoint_and_key(self) -> None:
+        self.assertIsNone(LeaderboardConfig.from_env())
+
+    def test_requires_both_an_endpoint_and_a_key(self) -> None:
+        os.environ[ENV_BASE_URL] = DEFAULT_BASE_URL
+        self.assertIsNone(LeaderboardConfig.from_env())
+        os.environ.pop(ENV_BASE_URL)
+        os.environ[ENV_SUBMIT_KEY] = "secret"
+        self.assertIsNone(LeaderboardConfig.from_env())
 
     def test_can_be_disabled(self) -> None:
         for value in ("1", "true", "TRUE", "yes", "on"):
@@ -176,9 +178,11 @@ class LeaderboardConfigTests(unittest.TestCase):
     def test_unrelated_disable_value_does_not_disable(self) -> None:
         for value in ("", "0", "false", "no", "maybe"):
             os.environ[ENV_DISABLE] = value
+            os.environ[ENV_BASE_URL] = "https://example.vercel.app"
+            os.environ[ENV_SUBMIT_KEY] = "secret"
             self.assertIsNotNone(LeaderboardConfig.from_env(), value)
 
-    def test_variables_override_the_baked_in_defaults(self) -> None:
+    def test_operator_variables_configure_submission(self) -> None:
         os.environ[ENV_BASE_URL] = "https://example.vercel.app"
         os.environ[ENV_SUBMIT_KEY] = "secret"
         config = LeaderboardConfig.from_env()
@@ -188,6 +192,7 @@ class LeaderboardConfigTests(unittest.TestCase):
 
     def test_trailing_slash_is_trimmed(self) -> None:
         os.environ[ENV_BASE_URL] = "https://example.vercel.app/"
+        os.environ[ENV_SUBMIT_KEY] = "secret"
         config = LeaderboardConfig.from_env()
         self.assertIsNotNone(config)
         assert config is not None
@@ -429,8 +434,8 @@ class DashboardHtmlTests(unittest.TestCase):
         self.assertIn('"label":"Codex"', html)
 
     def test_no_token_totals_are_embedded_for_upload(self) -> None:
-        # The page may show a preview, but the authoritative numbers are only ever
-        # read server-side in the Python process.
+        # The page may show a preview, but cannot alter the local process's
+        # reported totals through this endpoint.
         html = format_dashboard_html(
             _dashboard(BREAKDOWN),
             leaderboard={"submitUrl": "http://127.0.0.1:1/submit/x", "totalTokens": 1500, "clis": []},

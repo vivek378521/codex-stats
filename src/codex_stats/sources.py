@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Callable
 
 from .config import Paths
-from .ingest import file_edit_from_args, is_file_editing_tool, iter_session_details as _codex_iter_session_details
+from .ingest import (
+    file_edit_from_args,
+    is_file_editing_tool,
+    iter_session_details as _codex_iter_session_details,
+    resolve_max_sessions,
+)
 from .models import (
     CACHED_SEPARATE,
     TOOL_STATUS_COMPLETED,
@@ -351,17 +356,24 @@ def _opencode_model_name(raw: str | None) -> str | None:
 def _ingest_claude(projects_dir: Path) -> list[SessionDetails]:
     if not projects_dir.is_dir():
         return []
+    candidates = [path for project_dir in sorted(projects_dir.iterdir()) if project_dir.is_dir() for path in project_dir.glob("*.jsonl")]
+    # Same bound as Codex, applied before parsing rather than after: transcripts
+    # are the other unbounded read here, and picking the newest files by mtime is
+    # far cheaper than parsing everything and sorting the results.
+    max_sessions = resolve_max_sessions()
+    if max_sessions:
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        candidates = candidates[:max_sessions]
     grouped: dict[str, SessionDetails] = {}
-    for project_dir in sorted(path for path in projects_dir.iterdir() if path.is_dir()):
-        for path in sorted(project_dir.glob("*.jsonl")):
-            details = _parse_claude_session(path)
-            if details is None:
-                continue
-            existing = grouped.get(details.session.session_id)
-            if existing is None:
-                grouped[details.session.session_id] = details
-            elif details.session.updated_at >= existing.session.updated_at:
-                grouped[details.session.session_id] = details
+    for path in sorted(candidates):
+        details = _parse_claude_session(path)
+        if details is None:
+            continue
+        existing = grouped.get(details.session.session_id)
+        if existing is None:
+            grouped[details.session.session_id] = details
+        elif details.session.updated_at >= existing.session.updated_at:
+            grouped[details.session.session_id] = details
     ordered = sorted(grouped.values(), key=lambda detail: detail.session.updated_at, reverse=True)
     return ordered
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import Paths, PricingConfig, load_pricing_config
 from .display import format_dashboard_html
+from .ingest import ENV_MAX_SESSIONS, codex_session_coverage
 from .leaderboard import LeaderboardConfig, LeaderboardSubmitServer
 from .metrics import (
     local_date,
@@ -36,7 +37,7 @@ from .models import (
     DashboardWindow,
     SessionDetails,
 )
-from .sources import Source, iter_sources
+from .sources import iter_sources
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,7 +120,30 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
         )
         for source in selected_sources
     ]
-    return DashboardData(generated_at=current_time, scopes=[overview, *tool_scopes])
+    return DashboardData(
+        generated_at=current_time,
+        scopes=[overview, *tool_scopes],
+        coverage_note=_coverage_note(paths),
+    )
+
+
+def _coverage_note(paths: Paths) -> str | None:
+    """Admit to a bounded history read, or stay quiet when nothing was dropped.
+
+    Returns None unless sessions were actually skipped, so the common case (a
+    history small enough to read in full) costs one COUNT(*) and prints nothing.
+    """
+    analyzed, total = codex_session_coverage(paths)
+    if not total or analyzed >= total:
+        return None
+    dropped = total - analyzed
+    return (
+        f"Showing the most recent {analyzed:,} of {total:,} Codex sessions. "
+        f"{dropped:,} older session{'s' if dropped != 1 else ''} "
+        f"{'are' if dropped != 1 else 'is'} excluded from every total and chart, so All Time is a "
+        f"recent-history total rather than a lifetime one. "
+        f"Set {ENV_MAX_SESSIONS}=0 to read everything, which takes longer."
+    )
 
 
 def _build_scope(

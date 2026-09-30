@@ -1,9 +1,13 @@
-"""Leaderboard submission.
+"""Leaderboard submission for private, server-controlled deployments.
 
-The browser is never trusted with a number. The dashboard can only send a
-username; the token totals are read here, out of the already-computed
-``DashboardData``, and signed with a key that only ever exists in this process
-and in the server's environment.
+The browser is never trusted with a number: the dashboard can only send a
+username and totals are read from the already-computed ``DashboardData``.
+
+This is *not* evidence that the local totals are genuine. Local usage files and
+this process are controlled by the person submitting them. In particular, no
+shared key may be shipped in this package: doing so would let anyone forge a
+valid submission. The public leaderboard is deliberately disabled until it has
+a server-side attestation source.
 """
 
 from __future__ import annotations
@@ -34,24 +38,14 @@ REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_BODY_BYTES = 4096
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 
-# Baked in so a fresh install can submit with no setup. The env vars still win,
-# which is what lets the key be rotated without cutting a release, and lets
-# tests point at a local server.
-#
-# This is a deliberate integrity trade-off, not a secret worth protecting. Once
-# this ships, the key is public, so anyone can sign a submission for their own
-# device id. What stays protected: stats still come from the local database
-# rather than the browser, device ids are not disclosed by the read API, and no
-# one can overwrite another person's row without knowing their id. What is lost
-# is the ability to stop someone claiming a larger number for themselves, or
-# flooding the board with invented rows. Guarding against that has to happen
-# server-side (rate limits, row caps), not here.
+# ``DEFAULT_BASE_URL`` is retained as a public link, not a submission target.
+# A submit endpoint and key must be supplied together by an operator of a
+# private deployment. Never add a package-wide signing key: every installed
+# copy can read it and use it to forge arbitrary totals.
 DEFAULT_BASE_URL = "https://codex-stats-leaderboard.vercel.app"
-DEFAULT_SUBMIT_KEY = "554f68344e64f04e870de3640b7bf5a35d33903f2d084a0b679fca54a7959cf3"
 
 # Submitting publishes a username and token totals to a third-party server, so
-# there has to be a way to refuse that even though the feature is now on by
-# default. This is the only way to get the button back to hidden.
+# deployments may also explicitly disable it.
 ENV_DISABLE = "CODEX_STATS_DISABLE_LEADERBOARD"
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -72,8 +66,8 @@ class LeaderboardConfig:
     def from_env(cls) -> LeaderboardConfig | None:
         if os.environ.get(ENV_DISABLE, "").strip().lower() in _TRUTHY:
             return None
-        base_url = os.environ.get(ENV_BASE_URL, "").strip() or DEFAULT_BASE_URL
-        submit_key = os.environ.get(ENV_SUBMIT_KEY, "").strip() or DEFAULT_SUBMIT_KEY
+        base_url = os.environ.get(ENV_BASE_URL, "").strip()
+        submit_key = os.environ.get(ENV_SUBMIT_KEY, "").strip()
         if not base_url or not submit_key:
             return None
         return cls(base_url=base_url.rstrip("/"), submit_key=submit_key.encode("utf-8"))

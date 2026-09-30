@@ -37,8 +37,8 @@ class CliTestCase(unittest.TestCase):
 
     def test_main_builds_and_opens_dashboard(self) -> None:
         stdout = io.StringIO()
-        # The leaderboard is on by default now, and its server blocks until
-        # interrupted, so this dashboard test has to opt out explicitly.
+        # Public submission is disabled unless an operator configures both a
+        # private endpoint and a signing key.
         with mock.patch("codex_stats.cli.Paths.discover") as discover, mock.patch(
             "codex_stats.cli.format_dashboard_html", return_value="<html></html>"
         ), mock.patch("codex_stats.cli._open_report_in_browser") as open_mock, mock.patch(
