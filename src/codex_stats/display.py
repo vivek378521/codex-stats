@@ -6,7 +6,7 @@ from collections import defaultdict
 from html import escape
 from typing import Any
 
-from .models import DashboardData, DashboardWindow, HeatmapCell, ProjectDrilldown
+from .models import DashboardData, DashboardWindow, FileImpactEntry, HeatmapCell, ProjectDrilldown
 from .sources import source_label
 
 SOURCE_CHART_COLORS: dict[str, str] = {
@@ -1642,8 +1642,6 @@ def _format_dashboard_window_section(
           </div>
         </section>
 
-        {_format_file_impact_panel(window)}
-
         {_format_behavior_panel(window)}
 
         <section class="panel">
@@ -1846,6 +1844,7 @@ def _format_project_panel(project_id: str, drilldown: ProjectDrilldown) -> str:
         """
         for entry in drilldown.history
     ) or '<tr><td colspan="5">No data</td></tr>'
+    file_impact_html = _format_project_file_impact(drilldown.file_impact)
     return f"""
     <div class="project-panel" data-project-panel="{escape(project_id)}">
       <div class="project-meta">
@@ -1914,7 +1913,46 @@ def _format_project_panel(project_id: str, drilldown: ProjectDrilldown) -> str:
           </div>
         </div>
       </div>
+      {file_impact_html}
     </div>
+    """
+
+
+def _format_project_file_impact(file_impact: list[FileImpactEntry]) -> str:
+    if not file_impact:
+        return ""
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.path)}</td>
+          <td>{entry.edits}</td>
+          <td>{entry.sessions}</td>
+          <td>+{entry.insertions:,}</td>
+          <td>-{entry.deletions:,}</td>
+        </tr>
+        """
+        for entry in file_impact
+    )
+    return f"""
+      <div style="margin-top: 16px;">
+        <div class="section-header">
+          <h3>Most Edited Files in This Project</h3>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Edits</th>
+                <th>Sessions</th>
+                <th>Additions</th>
+                <th>Deletions</th>
+              </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+      </div>
     """
 
 
@@ -1932,72 +1970,6 @@ def _format_work_rhythm_card(window: DashboardWindow) -> str:
       {meta_html}
     </div>
     """
-
-
-def _format_file_impact_panel(window: DashboardWindow) -> str:
-    if not window.file_impact:
-        return f"""
-        <section class="panel">
-          <div class="section-header">
-            <div>
-              <p class="section-kicker">Where Lines Changed</p>
-              <h2>Most Edited Files</h2>
-            </div>
-          </div>
-          {_format_empty_showcase("No file edits recorded yet.", "File-level edits are captured from Codex and Claude Code rollouts. OpenCode and Hermes scopes track usage totals only, so file impact can stay empty for those scopes.")}
-        </section>
-        """
-    chart_svg = _svg_bar_chart(
-        [(entry.path, float(entry.insertions)) for entry in window.file_impact[:6]],
-        bar_color="#0f766e",
-        value_formatter=lambda value: f"+{int(value):,}",
-        empty_label="No file edit data available for this view.",
-    )
-    rows = "".join(
-        f"""
-        <tr>
-          <td>{escape(entry.path)}</td>
-          <td>{entry.edits}</td>
-          <td>{entry.sessions}</td>
-          <td>+{entry.insertions:,}</td>
-          <td>-{entry.deletions:,}</td>
-        </tr>
-        """
-        for entry in window.file_impact[:10]
-    )
-    return f"""
-        <section class="panel">
-          <div class="section-header">
-            <div>
-              <p class="section-kicker">Where Lines Changed</p>
-              <h2>Most Edited Files</h2>
-            </div>
-          </div>
-          <div class="chart-grid">
-            <div class="chart-card">
-              <h3>Additions by File</h3>
-              {chart_svg}
-            </div>
-            <div class="chart-card">
-              <h3>File Activity</h3>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>File</th>
-                      <th>Edits</th>
-                      <th>Sessions</th>
-                      <th>Additions</th>
-                      <th>Deletions</th>
-                    </tr>
-                  </thead>
-                  <tbody>{rows}</tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </section>
-        """
 
 
 def _format_behavior_panel(window: DashboardWindow) -> str:

@@ -219,6 +219,7 @@ def summarize_project_drilldowns_from_details(
                 activity_heatmap=summarize_activity_heatmap_from_details(project_details, timezone=current_time.tzinfo),
                 insights=insights,
                 takeaways=summarize_takeaways(summary=summary, insights=insights, max_items=3, scope_label=entry.name),
+                file_impact=summarize_files_from_details(project_details, limit=10),
             )
         )
     return drilldowns

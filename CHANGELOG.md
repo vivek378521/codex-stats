@@ -39,6 +39,14 @@ All notable changes to this project are documented here. The format follows
   `ExitPlanMode`) as failures: a dismissed question or rejected plan is
   interaction noise, not a tool error.
 
+### Changed
+- File-level impact moved from the main page into the per-project drilldowns. A
+  window-wide "Most Edited Files" panel repeated the same paths in every tab and
+  was empty for OpenCode and Hermes scopes, which never record file edits, so it
+  now renders as a "Most Edited Files in This Project" table inside each project
+  drilldown, where the path actually carries meaning. Aggregation, the
+  window-level takeaway, and the copy summary are unchanged.
+
 ## [1.10.0] - 2026-09-27
 
 ### Added

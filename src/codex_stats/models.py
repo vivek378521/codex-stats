@@ -609,6 +609,7 @@ class ProjectDrilldown:
     activity_heatmap: list[HeatmapCell]
     insights: InsightReport
     takeaways: list[str]
+    file_impact: list[FileImpactEntry] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -620,6 +621,7 @@ class ProjectDrilldown:
             "activity_heatmap": [cell.to_dict() for cell in self.activity_heatmap],
             "insights": self.insights.to_dict(),
             "takeaways": self.takeaways,
+            "file_impact": [entry.to_dict() for entry in self.file_impact],
         }
 
 

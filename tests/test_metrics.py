@@ -261,7 +261,7 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(sum(entry.edits for entry in impact), 2)
         dashboard = _build_dashboard(self.paths, now=now)
         html = format_dashboard_html(dashboard)
-        self.assertIn("Most Edited Files", html)
+        self.assertIn("Most Edited Files in This Project", html)
         self.assertIn("src/main.py", html)
         self.assertEqual(impact[0].to_dict()["path"], "src/main.py")
 
