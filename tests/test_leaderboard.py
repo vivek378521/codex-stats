@@ -18,6 +18,7 @@ from codex_stats.config import Paths
 from codex_stats.display import format_dashboard_html
 from codex_stats.leaderboard import (
     DEFAULT_BASE_URL,
+    DEFAULT_SUBMIT_KEY,
     ENV_BASE_URL,
     ENV_DISABLE,
     ENV_SUBMIT_KEY,
@@ -166,15 +167,20 @@ class LeaderboardConfigTests(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    def test_is_disabled_without_an_operator_configured_endpoint_and_key(self) -> None:
-        self.assertIsNone(LeaderboardConfig.from_env())
+    def test_is_enabled_with_no_operator_configuration(self) -> None:
+        config = LeaderboardConfig.from_env()
+        self.assertIsNotNone(config)
+        assert config is not None
+        self.assertEqual(config.base_url, DEFAULT_BASE_URL)
+        self.assertEqual(config.submit_key, DEFAULT_SUBMIT_KEY.encode("utf-8"))
 
-    def test_requires_both_an_endpoint_and_a_key(self) -> None:
-        os.environ[ENV_BASE_URL] = DEFAULT_BASE_URL
-        self.assertIsNone(LeaderboardConfig.from_env())
-        os.environ.pop(ENV_BASE_URL)
+    def test_env_vars_override_the_baked_in_defaults(self) -> None:
+        os.environ[ENV_BASE_URL] = "https://example.invalid"
         os.environ[ENV_SUBMIT_KEY] = "secret"
-        self.assertIsNone(LeaderboardConfig.from_env())
+        config = LeaderboardConfig.from_env()
+        assert config is not None
+        self.assertEqual(config.base_url, "https://example.invalid")
+        self.assertEqual(config.submit_key, b"secret")
 
     def test_can_be_disabled(self) -> None:
         for value in ("1", "true", "TRUE", "yes", "on"):
