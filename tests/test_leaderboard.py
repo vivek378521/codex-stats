@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -42,6 +43,11 @@ from codex_stats.models import (
 from codex_stats.models import BreakdownEntry
 
 UNIT_KEY = b"unit-test-key"
+# ``device_id_for`` folds in the host MAC through ``uuid.getnode``, so any pin
+# derived from it holds only on the machine that computed it. Stub the node with
+# a synthetic value so the vector below is reproducible everywhere; the real MAC
+# is never an input the suite should depend on.
+UNIT_NODE = 0x001122334455
 
 
 def _summary(**overrides) -> TimeSummary:
@@ -250,30 +256,34 @@ class SigningTests(unittest.TestCase):
 
     def test_signature_matches_the_pinned_vector(self) -> None:
         # Pinned so that a change on either side of the wire format is caught here
-        # rather than silently producing unverifiable submissions.
-        payload = build_submission_payload(
-            submit_key=UNIT_KEY,
-            stats=self.stats,
-            username="ada",
-            now=1700000000,
-        )
-        payload["nonce"] = "aabbccddeeff00112233445566778899"
-        payload["device_id"] = device_id_for(UNIT_KEY)
-        message = canonical_string(
-            device_id=payload["device_id"],
-            username="ada",
-            stats=self.stats,
-            ts=1700000000,
-            nonce=payload["nonce"],
-        )
+        # rather than silently producing unverifiable submissions. The MAC is
+        # stubbed because it is machine-specific and would otherwise invalidate
+        # the pin on every host but the one that wrote it.
+        with mock.patch.object(leaderboard_module.uuid, "getnode", return_value=UNIT_NODE):
+            payload = build_submission_payload(
+                submit_key=UNIT_KEY,
+                stats=self.stats,
+                username="ada",
+                now=1700000000,
+            )
+            payload["nonce"] = "aabbccddeeff00112233445566778899"
+            payload["device_id"] = device_id_for(UNIT_KEY)
+            message = canonical_string(
+                device_id=payload["device_id"],
+                username="ada",
+                stats=self.stats,
+                ts=1700000000,
+                nonce=payload["nonce"],
+            )
+
         import hashlib
         import hmac
 
         self.assertEqual(
             hmac.new(UNIT_KEY, message.encode("utf-8"), hashlib.sha256).hexdigest(),
-            "26615a3684b2d9669413eff035389223dc14a0ca06f48aead9cf957ede1eb070",
+            "5916f8ccc6a57cbdf065f6734f33fb5513911055953625f3bab0c432166df9f9",
         )
-        self.assertEqual(payload["device_id"], "fc8b3e63512d4ebdc3f8249611cbc66c")
+        self.assertEqual(payload["device_id"], "8e3d2344271da3cf0c76d991e1e83062")
 
     def test_username_is_validated(self) -> None:
         for bad in ["", "  ", "has space", "a" * 21, "emoji🙂", "semi;colon", "pipe|char"]:
