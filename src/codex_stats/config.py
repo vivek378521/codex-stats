@@ -184,22 +184,9 @@ def _rate_keys(source: str, model: str) -> list[str]:
     return keys
 
 
-@dataclass(frozen=True)
-class DisplayConfig:
-    color: str = "auto"
-    history_limit: int = 10
-    compare_days: int = 7
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    pricing: PricingConfig
-    display: DisplayConfig
-
-
-def load_config(paths: Paths) -> AppConfig:
+def load_pricing_config(paths: Paths) -> PricingConfig:
     if not paths.config_file.exists():
-        return AppConfig(pricing=PricingConfig(), display=DisplayConfig())
+        return PricingConfig()
 
     payload = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
     pricing = payload.get("pricing", {})
@@ -207,28 +194,11 @@ def load_config(paths: Paths) -> AppConfig:
     default_rate = float(default_rate_raw) if default_rate_raw is not None else None
     model_rates = _flatten_model_rates(pricing.get("model_usd_per_1k_tokens", {}))
     source_rates = {str(k): float(v) for k, v in pricing.get("source_usd_per_1k_tokens", {}).items()}
-    display = payload.get("display", {})
-    color = str(display.get("color", "auto"))
-    if color not in {"auto", "always", "never"}:
-        raise ValueError("display.color must be one of: auto, always, never")
-    history_limit = int(display.get("history_limit", 10))
-    compare_days = int(display.get("compare_days", 7))
-    if history_limit <= 0:
-        raise ValueError("display.history_limit must be greater than 0")
-    if compare_days <= 0:
-        raise ValueError("display.compare_days must be greater than 0")
-    return AppConfig(
-        pricing=PricingConfig(
-            default_usd_per_1k_tokens=default_rate,
-            model_rates=model_rates,
-            source_rates=source_rates,
-        ),
-        display=DisplayConfig(color=color, history_limit=history_limit, compare_days=compare_days),
+    return PricingConfig(
+        default_usd_per_1k_tokens=default_rate,
+        model_rates=model_rates,
+        source_rates=source_rates,
     )
-
-
-def load_pricing_config(paths: Paths) -> PricingConfig:
-    return load_config(paths).pricing
 
 
 def _flatten_model_rates(payload: dict, prefix: str = "") -> dict[str, ModelRates]:
