@@ -10,6 +10,9 @@ It reads local session data from every coding assistant installed on the machine
 - recent session history
 - estimated token-based cost (or each tool's own recorded cost when available)
 - per-tool cost overrides and a stacked per-tool token trend on the Overview
+- **branch-level spend**: a "Branches" panel that ranks work by cost per branch instead of per repository, and flags branches that went quiet — paid-for work that stopped and never finished
+- a **provider breakdown** showing which vendor each dollar went to, derived from the model name each session recorded
+- a reasoning-token share in Work Patterns, for models that bill thinking separately
 - anomaly-aware usage insights and recommendations
 - file-level impact tracking: a "Most Edited Files in This Project" table inside each project drilldown, showing per-file edit counts and add/delete line totals parsed from Codex and Claude Code rollouts
 - **tool behavior tracking**: a "Tool Behavior" panel showing the tools each agent actually called — normalized into shared categories (Read, Edit, Execute, Search, Web, Subagent, Plan), with per-tool failure rates, repeated-call detection, read/write ratio, and abandoned-turn counts, across every tool with recorded calls
@@ -22,9 +25,9 @@ sessions render an empty state instead of being hidden.
 
 | Tool | Location | Notes |
 | --- | --- | --- |
-| Codex | `~/.codex` | `state_5.sqlite` + rollout JSONL files |
+| Codex | `~/.codex` | `state_5.sqlite` + rollout JSONL files, including git branch |
 | OpenCode | `~/.local/share/opencode/opencode.db` | recorded cost + tokens per session |
-| Claude Code | `~/.claude/projects/**/*.jsonl` | per-project transcripts |
+| Claude Code | `~/.claude/projects/**/*.jsonl` | per-project transcripts, including git branch |
 | Hermes | `~/.hermes/state.db` | recorded cost + tokens per session |
 
 Use these environment variables to point at non-default locations (also used for test isolation):
@@ -62,8 +65,13 @@ There is exactly one command, and it takes no options:
 codex-stats
 ```
 
-It reads local session data, writes a standalone dashboard HTML file to a temporary
-path, and opens it in your default browser.
+It reads local session data, writes a standalone dashboard HTML file to
+`~/.cache/codex-stats/dashboard.html`, and opens it in your default browser. The path is
+fixed rather than a fresh temporary file, so the dashboard can be bookmarked and reloaded
+in place; each run overwrites it and the browser is given the file's timestamp so a reload
+always shows the run you just made, not a cached copy of the last one.
+
+Override the location with `XDG_CACHE_HOME`.
 
 Inside the dashboard, use the action bar to:
 
@@ -80,6 +88,31 @@ transcripts, and the Hermes database, then normalizes everything into one sessio
 
 ## Notes
 
+- **Branches are grouped per repository.** A branch name is only unique inside its own
+  checkout, so `feature/login` in two projects is tracked as two branches. Codex reads the
+  branch from its session database and Claude Code records one per event; OpenCode records
+  none at all, so its sessions never appear in the Branches panel. Hermes reads a branch
+  from its own database, but leaves it null for sessions started outside a checkout, so its
+  sessions appear only when one was recorded. A detached checkout is reported as having no
+  branch rather than as a branch called `HEAD`. If a session switched branches mid-run, it
+  is attributed to the branch most of its events landed on.
+- **A branch "goes quiet" after 14 days** without a session. Those are listed and totalled
+  separately, because a branch that consumed tokens and then stopped is work that was paid
+  for and never finished — invisible in a project-level view, where every branch of a
+  repository collapses into one number.
+- **Vendors are resolved from the model name, not the recorded provider.** Codex records the
+  real vendor (`openai`), but OpenCode and Hermes record their own CLI name there instead,
+  and those may route to any vendor, so grouping on that field would answer "which CLI"
+  while claiming to answer "which vendor". Model names are matched with any `vendor/` prefix
+  stripped, so `anthropic/claude-opus-4.6` and `claude-opus-4.6` land in the same bucket.
+- **Spend that cannot be attributed is shown, not dropped.** Some tools record an internal
+  codename instead of a model name, and no lookup can resolve that. Those sessions are
+  grouped under "Unidentified" with their share of spend stated, rather than being assigned
+  to a guessed vendor or silently omitted.
+- **Reasoning tokens are additive.** They are billed as output and counted on top of the
+  plain output figure, so the reasoning share in Work Patterns is a true fraction of the
+  total. Tools that do not report a separate reasoning figure show "Not reported" rather
+  than a misleading 0%.
 - When a tool records its own cost (OpenCode, Hermes), that recorded value wins for the
   session and no estimate is used.
 - Otherwise cost is priced **per token component**, because cached reads and output are

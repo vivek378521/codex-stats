@@ -8,6 +8,33 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Branch-level spend: a **Branches** panel in every window that ranks work by cost
+  per branch rather than per repository, so five branches of one project no longer
+  collapse into a single number. Sessions are grouped per repository *and* branch,
+  because a branch name is only unique inside its own checkout.
+- Branches that went quiet are totalled separately and marked in the table. A
+  branch that consumed tokens and then stopped is paid-for work that never
+  finished, which no project-level view can show. Idle spend is now also a
+  takeaway, where it outranks the heuristic cost advice.
+- Branch data now also comes from Claude Code transcripts, which record a
+  `gitBranch` per event alongside Codex's session database. OpenCode records
+  no branch, and Hermes leaves it null outside a checkout, so sessions without
+  one never appear in the panel, and the empty state says so rather than
+  implying no work happened.
+- Provider breakdown: a **Providers** panel attributing spend to the billing
+  vendor. Vendors are resolved from the model name with any `vendor/` prefix
+  stripped, not from the recorded provider, because Codex records the real vendor
+  while OpenCode and Hermes record their own CLI name there and may route to any
+  vendor underneath.
+- Reasoning-token share in Work Patterns. Reasoning tokens were already summed
+  and priced but never displayed, so on a reasoning model a meaningful share of the
+  bill was invisible. Tools that do not report the figure show "Not reported"
+  rather than a misleading 0%.
+- `tests/test_display.py`, covering the renderer for the first time. It pins the
+  panels the page emits and includes a markup balance check, which catches an
+  unclosed tag that a browser would otherwise render silently.
+- `XDG_CACHE_HOME` now controls where the dashboard is written.
+
 - Agent behavior tracking: a **Tool Behavior** panel in every window that shows
   what the agents actually did, not just what they cost. It reads tool calls
   from Codex rollouts, Claude Code transcripts, the OpenCode `part` table, and
@@ -59,6 +86,20 @@ All notable changes to this project are documented here. The format follows
   history spans.
 
 ### Changed
+
+- The dashboard is written to a fixed `~/.cache/codex-stats/dashboard.html`
+  instead of a new temporary file on every run. The page is something people come
+  back to, so it has to be reopenable and refreshable in place; a new random
+  filename each launch made yesterday's bookmark show stale numbers with no way to
+  tell, and left an orphan in the temp directory every time.
+- Opening the dashboard now appends the file's mtime to the URL. With a stable
+  path, a plain `file://` open could be served from the browser cache and show
+  the previous run's numbers; the timestamp makes a changed file a changed URL
+  while leaving an unchanged file on the tab that is already open.
+- A Claude Code session that switched branches mid-run is attributed to the branch
+  most of its events landed on, mirroring how a session's model is already chosen,
+  instead of whichever branch happened to be last.
+
 - File-level impact moved from the main page into the per-project drilldowns. A
   window-wide "Most Edited Files" panel repeated the same paths in every tab and
   was empty for OpenCode and Hermes scopes, which never record file edits, so it
@@ -81,6 +122,15 @@ All notable changes to this project are documented here. The format follows
   showed a delta that the hero had already led with. Average alongside median
   session length, and mean alongside median requests per session, were the same
   statistic twice.
+
+### Fixed
+
+- A detached checkout no longer appears as a branch named `HEAD`. It is reported as
+  having no branch, because ranking it would invent a workstream out of whatever
+  commit happened to be checked out.
+- Two test fixtures leaked open SQLite connections, which surfaced as
+  `ResourceWarning: unclosed database` during unrelated later tests. The suite now
+  runs clean under `-W error::ResourceWarning`.
 
 ## [1.10.0] - 2026-09-27
 

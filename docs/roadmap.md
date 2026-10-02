@@ -18,12 +18,27 @@ that people run occasionally.
 
 ## Next
 
-1. Coverage for `display.py`
-   The HTML renderer is the largest module in the project and the least tested. Add
-   assertions for the panels it emits before changing its markup.
-2. Source parsing resilience
+1. More source metadata
+   Branch data comes from Codex, Claude Code, and Hermes. OpenCode records neither a branch
+   nor a model family, and Hermes leaves both null for sessions started outside a checkout,
+   so that spend lands in the unattributed bucket. Both would benefit from parsing whatever
+   those databases do keep.
+2. Cache efficiency as a trend
+   Cache reuse is reported as a single ratio per window. The interesting question is how it
+   moves over time and whether long sessions are paying for cache they never hit.
+3. Source parsing resilience
    Local file formats drift. Isolate per-source parse failures so one broken transcript
    or schema change cannot take down the whole dashboard.
+
+## Done
+
+1. Coverage for `display.py`
+   `tests/test_display.py` now pins the panels the renderer emits, including a markup
+   balance check that catches an unbalanced tag, which a browser would otherwise render
+   silently.
+2. Branch-level spend
+   Spend broken down per repository *and* branch, with branches that went quiet totalled
+   separately as paid-for work that never finished.
 
 ## Explicitly Out of Scope
 
