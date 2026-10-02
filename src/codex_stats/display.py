@@ -6,6 +6,7 @@ from collections import defaultdict
 from html import escape
 from typing import Any
 
+from .metrics import DEFAULT_IDLE_BRANCH_DAYS, UNIDENTIFIED_VENDOR_LABEL
 from .models import DashboardData, DashboardScope, DashboardWindow, FileImpactEntry, HeatmapCell, ProjectDrilldown
 from .sources import source_label
 
@@ -587,6 +588,22 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     .kpi span {{
       color: var(--muted);
       font-size: 0.92rem;
+    }}
+    .kpi-hint {{
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.4;
+    }}
+    .cell-sub {{
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }}
+    tr.is-idle td {{
+      color: var(--warn);
     }}
     .chart-grid {{
       display: grid;
@@ -1695,10 +1712,15 @@ def _format_dashboard_window_section(
             <div class="kpi"><strong>{escape(_fmt_percent(window.summary.project_concentration_top1_pct))}</strong><span>Top project concentration</span></div>
             <div class="kpi"><strong>{escape(_fmt_percent(window.summary.project_concentration_top3_pct))}</strong><span>Top 3 project concentration</span></div>
             <div class="kpi"><strong>{escape(_fmt_percent(window.summary.model_switching_rate))}</strong><span>Model switching rate</span></div>
+            <div class="kpi"><strong>{escape(_fmt_percent(window.summary.reasoning_ratio))}</strong><span>Reasoning share</span>{_format_reasoning_hint(window.summary)}</div>
           </div>
         </section>
 
         {_format_behavior_panel(window)}
+
+        {_format_branch_panel(window)}
+
+        {_format_provider_panel(window)}
 
         <section class="panel">
           <div class="section-header">
@@ -2107,6 +2129,190 @@ def _format_behavior_panel(window: DashboardWindow) -> str:
           <p class="panel-hint">{escape(_format_behavior_note(behavior))}</p>
         </section>
         """
+
+
+def _format_branch_panel(window: DashboardWindow) -> str:
+    branches = window.branches
+    if branches is None or not branches.supported or not branches.branches:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Where The Work Went</p>
+              <h2>Branches</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No branch data for this view.", "Branches are read from the Codex session database and from Claude Code transcripts, and from the Hermes database when one was recorded. OpenCode never records one, and a session started outside a checkout has none, so those sessions never appear here; switch tools or windows to see branch-level spend.")}
+        </section>
+        """
+
+    idle_names = {branch.label for branch in branches.idle_branches}
+    rows = "".join(
+        f"""
+        <tr class="{'is-idle' if branch.label in idle_names else ''}">
+          <td>{escape(branch.name)}<span class="cell-sub">{escape(branch.project_name)}</span></td>
+          <td>{branch.sessions}</td>
+          <td>{branch.tokens_per_session:,.0f}</td>
+          <td>{branch.total_tokens:,}</td>
+          <td>${branch.estimated_cost_usd:.2f}</td>
+          <td>{escape(_fmt_idle(branch.idle_days))}</td>
+        </tr>
+        """
+        for branch in branches.branches
+    )
+    idle_kpi = (
+        f'<div class="spotlight-kpi"><strong>${branches.idle_cost_usd:.2f}</strong><span>Idle spend</span></div>'
+        if branches.idle_branches
+        else '<div class="spotlight-kpi"><strong>None</strong><span>Idle spend</span></div>'
+    )
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Where The Work Went</p>
+              <h2>Branches</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>{len(branches.branches)}</strong><span>Branches</span></div>
+              <div class="spotlight-kpi"><strong>{branches.tracked_sessions}</strong><span>Sessions on a branch</span></div>
+              <div class="spotlight-kpi"><strong>{len(branches.idle_branches)}</strong><span>Went quiet</span></div>
+              {idle_kpi}
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Branch</th>
+                  <th>Sessions</th>
+                  <th>Tokens/session</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                  <th>Last active</th>
+                </tr>
+              </thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+          <p class="panel-hint">{escape(_format_branch_note(branches))}</p>
+        </section>
+        """
+
+
+def _format_branch_note(branches) -> str:
+    tracked = f"{branches.tracked_sessions} of {branches.total_sessions} sessions"
+    if branches.untracked_sessions:
+        tracked += f", with {branches.untracked_sessions} not recorded on a branch"
+    note = f"Ranked by cost across {tracked}."
+    if branches.idle_branches:
+        worst = branches.idle_branches[0]
+        note += (
+            f" A branch counts as quiet after {DEFAULT_IDLE_BRANCH_DAYS} days without a session; "
+            f"{worst.label} has been quiet for {worst.idle_days} days."
+        )
+    else:
+        note += " No branch has gone quiet in this window."
+    return note
+
+
+def _format_provider_panel(window: DashboardWindow) -> str:
+    providers = [entry for entry in window.providers if entry.total_tokens > 0]
+    if not providers:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Who Billed You</p>
+              <h2>Providers</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No provider data for this view.", "Vendors are resolved from the model name each session recorded, so a scope with no sessions has nothing to attribute yet.")}
+        </section>
+        """
+
+    total_cost = sum(entry.estimated_cost_usd for entry in providers)
+    unidentified = [entry for entry in providers if entry.name == UNIDENTIFIED_VENDOR_LABEL]
+    cost_svg = _svg_bar_chart(
+        [(entry.name, float(entry.estimated_cost_usd)) for entry in providers],
+        bar_color="#b45309",
+        value_formatter=lambda value: f"${value:.2f}",
+        empty_label="No provider spend recorded for this view.",
+    )
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.name)}</td>
+          <td>{entry.sessions}</td>
+          <td>{entry.total_tokens:,}</td>
+          <td>${entry.estimated_cost_usd:.2f}</td>
+          <td>{escape(_fmt_percent(entry.estimated_cost_usd / total_cost if total_cost else None))}</td>
+        </tr>
+        """
+        for entry in providers
+    )
+    note = f"Resolved from the model name each session recorded, across {sum(e.sessions for e in providers)} sessions."
+    if unidentified:
+        note += (
+            f" {unidentified[0].sessions} session"
+            f"{'s' if unidentified[0].sessions != 1 else ''} ran a model this machine records only "
+            "an internal codename for, so no vendor can be attributed and "
+            f"{escape(_fmt_percent(unidentified[0].estimated_cost_usd / total_cost if total_cost else None))} "
+            "of spend sits unassigned."
+        )
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Who Billed You</p>
+              <h2>Providers</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>{len(providers)}</strong><span>Vendors</span></div>
+              <div class="spotlight-kpi"><strong>${total_cost:.2f}</strong><span>Total spend</span></div>
+            </div>
+          </div>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Cost Share by Vendor</h3>
+              {cost_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Provider Detail</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Vendor</th>
+                      <th>Sessions</th>
+                      <th>Tokens</th>
+                      <th>Cost</th>
+                      <th>Share</th>
+                    </tr>
+                  </thead>
+                  <tbody>{rows}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <p class="panel-hint">{escape(note)}</p>
+        </section>
+        """
+
+
+def _format_reasoning_hint(summary) -> str:
+    if not summary.reasoning_output_tokens:
+        return '<span class="kpi-hint">Not reported by these tools</span>'
+    return f'<span class="kpi-hint">{summary.reasoning_output_tokens:,} tokens, billed as output</span>'
+
+
+def _fmt_idle(days: int) -> str:
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "1 day ago"
+    if days < 30:
+        return f"{days} days ago"
+    return f"{days // 30} mo ago"
 
 
 def _format_behavior_note(behavior) -> str:
