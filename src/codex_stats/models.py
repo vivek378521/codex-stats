@@ -260,6 +260,19 @@ class TimeSummary:
             output=self.output_tokens,
         )
 
+    @property
+    def reasoning_ratio(self) -> float | None:
+        """Share of the window's tokens that were reasoning tokens.
+
+        Reasoning tokens are billed as output and are added on top of the plain
+        output figure at ingest, so they are a genuine fraction of the total rather
+        than a subset of it. None when nothing in scope recorded reasoning, which is
+        the normal case for the providers that do not expose a separate figure.
+        """
+        if not self.reasoning_output_tokens or not self.total_tokens:
+            return None
+        return self.reasoning_output_tokens / self.total_tokens
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -274,6 +287,76 @@ class BreakdownEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BranchActivity:
+    """Tokens and spend for one branch of one repository.
+
+    A branch name is only unique within its repository, so ``name`` alone is not
+    enough to identify a workstream: ``feature/login`` exists independently in
+    several checkouts. Every grouping carries ``project_name`` for that reason.
+    """
+
+    name: str
+    project_name: str
+    sessions: int
+    requests: int
+    total_tokens: int
+    estimated_cost_usd: float
+    first_at: datetime
+    last_at: datetime
+    idle_days: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.project_name} / {self.name}"
+
+    @property
+    def tokens_per_session(self) -> float:
+        return self.total_tokens / self.sessions if self.sessions else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["first_at"] = self.first_at.isoformat()
+        payload["last_at"] = self.last_at.isoformat()
+        payload["label"] = self.label
+        return payload
+
+
+@dataclass(frozen=True)
+class BranchSummary:
+    """Per-branch spend, split into active work and branches that went quiet.
+
+    ``supported`` is false when no session in scope carried a branch, which is what
+    lets an empty panel say "this tool does not record branches" instead of implying
+    the user worked on no branches at all.
+    """
+
+    branches: list[BranchActivity]
+    tracked_sessions: int
+    total_sessions: int
+    idle_branches: list[BranchActivity]
+    supported: bool = True
+
+    @property
+    def untracked_sessions(self) -> int:
+        return max(self.total_sessions - self.tracked_sessions, 0)
+
+    @property
+    def idle_cost_usd(self) -> float:
+        return round(sum(branch.estimated_cost_usd for branch in self.idle_branches), 4)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "branches": [branch.to_dict() for branch in self.branches],
+            "tracked_sessions": self.tracked_sessions,
+            "total_sessions": self.total_sessions,
+            "untracked_sessions": self.untracked_sessions,
+            "idle_branches": [branch.to_dict() for branch in self.idle_branches],
+            "idle_cost_usd": self.idle_cost_usd,
+            "supported": self.supported,
+        }
 
 
 @dataclass(frozen=True)
@@ -540,6 +623,8 @@ class DashboardWindow:
     tool_daily_points: list["ToolDailyPoint"] | None = None
     file_impact: list["FileImpactEntry"] = field(default_factory=list, repr=False)
     behavior: "BehaviorSummary | None" = None
+    branches: "BranchSummary | None" = None
+    providers: list[BreakdownEntry] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -565,6 +650,8 @@ class DashboardWindow:
             "tool_daily_points": [point.to_dict() for point in self.tool_daily_points] if self.tool_daily_points else None,
             "file_impact": [entry.to_dict() for entry in self.file_impact],
             "behavior": self.behavior.to_dict() if self.behavior else None,
+            "branches": self.branches.to_dict() if self.branches else None,
+            "providers": [entry.to_dict() for entry in self.providers],
         }
 
 

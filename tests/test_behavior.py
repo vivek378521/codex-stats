@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -30,7 +31,13 @@ from codex_stats.models import (
     SessionRecord,
     ToolCall,
 )
-from codex_stats.sources import _connect_sqlite, _hermes_tool_calls, _opencode_tool_calls, _parse_claude_session
+from codex_stats.sources import (
+    _connect_sqlite,
+    _hermes_tool_calls,
+    _ingest_hermes,
+    _opencode_tool_calls,
+    _parse_claude_session,
+)
 from codex_stats.tools import (
     coalesce_output_text,
     make_tool_call,
@@ -304,6 +311,55 @@ class ClaudeExtractionTest(unittest.TestCase):
         assert details is not None
         self.assertEqual(details.tool_calls[0].duration_ms, 5000)
 
+    def _branch_transcript(self, branches: list[str]) -> Path:
+        return self._transcript(
+            [
+                {
+                    "type": "assistant",
+                    "timestamp": f"2026-04-03T10:00:0{index}Z",
+                    "cwd": "/tmp/p",
+                    "gitBranch": branch,
+                    "message": {"model": "claude-opus-4.6", "content": [{"type": "text", "text": "x"}]},
+                }
+                for index, branch in enumerate(branches)
+            ]
+        )
+
+    def test_reads_git_branch(self) -> None:
+        details = _parse_claude_session(self._branch_transcript(["main"]))
+        assert details is not None
+        self.assertEqual(details.session.git_branch, "main")
+
+    def test_branch_switch_resolves_to_the_dominant_branch(self) -> None:
+        # Most of the session happened on the feature branch, so that is where its
+        # tokens belong. Taking the last line instead would credit the one the
+        # session wandered off to at the end.
+        details = _parse_claude_session(
+            self._branch_transcript(["main", "feat/x", "feat/x", "feat/x", "main"])
+        )
+        assert details is not None
+        self.assertEqual(details.session.git_branch, "feat/x")
+
+    def test_detached_head_is_not_reported_as_a_branch(self) -> None:
+        # "HEAD" is a detached checkout, not a workstream. Ranking it would invent a
+        # branch out of whatever commit happened to be checked out.
+        details = _parse_claude_session(self._branch_transcript(["HEAD", "HEAD"]))
+        assert details is not None
+        self.assertIsNone(details.session.git_branch)
+
+    def test_blank_branch_is_ignored(self) -> None:
+        details = _parse_claude_session(self._branch_transcript(["   ", ""]))
+        assert details is not None
+        self.assertIsNone(details.session.git_branch)
+
+    def test_missing_branch_key_is_ignored(self) -> None:
+        path = self._transcript(
+            [{"type": "assistant", "timestamp": "2026-04-03T10:00:00Z", "message": {"content": []}}]
+        )
+        details = _parse_claude_session(path)
+        assert details is not None
+        self.assertIsNone(details.session.git_branch)
+
     def test_call_without_result_is_unknown_and_untimed(self) -> None:
         path = self._transcript(
             [
@@ -357,6 +413,10 @@ class OpenCodeExtractionTest(unittest.TestCase):
         tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
         self.connection = _connect_sqlite(Path(tmpdir.name) / "opencode.db")
+        # Closing before the directory is removed keeps the handle from being
+        # finalized during an unrelated later test, which is where the
+        # ResourceWarnings were coming from.
+        self.addCleanup(self.connection.close)
         self.connection.execute("CREATE TABLE part (id text, message_id text, session_id text, data text)")
 
     def _add(self, session_id: str, part: dict) -> None:
@@ -397,6 +457,7 @@ class HermesExtractionTest(unittest.TestCase):
         tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
         self.connection = _connect_sqlite(Path(tmpdir.name) / "state.db")
+        self.addCleanup(self.connection.close)
         self.connection.execute(
             "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, tool_calls TEXT, tool_call_id TEXT, effect_disposition TEXT)"
         )
@@ -752,6 +813,104 @@ class BehaviorPanelTest(unittest.TestCase):
         html = _format_behavior_panel(self._window(summarize_behavior_from_details(details)))
         self.assertIn("<th>Recovered</th>", html)
         self.assertIn("<td>1</td>", html)
+
+
+class HermesBranchIngestionTest(unittest.TestCase):
+    """Hermes sessions do carry a branch, so the docs must not claim otherwise.
+
+    The Branches panel and the docs both describe which tools report a branch.
+    That description is only trustworthy if it is pinned to the ingest code, so
+    this builds a real Hermes database and checks what actually comes out.
+    """
+
+    COLUMNS = (
+        "id, cwd, git_branch, git_repo_root, model, message_count, input_tokens, "
+        "output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, "
+        "estimated_cost_usd, started_at, ended_at, last_activity_at, display_name, title"
+    )
+
+    def _db(self, tmp: Path, rows: list[tuple]) -> Path:
+        state_db = tmp / "state.db"
+        connection = sqlite3.connect(state_db)
+        try:
+            connection.execute(f"CREATE TABLE sessions ({self.COLUMNS})")
+            # Ingestion also reads tool calls, so a realistic database has both tables.
+            connection.execute(
+                "CREATE TABLE messages (session_id, tool_calls, tool_call_id, effect_disposition)"
+            )
+            placeholders = ", ".join("?" * len(rows[0]))
+            connection.executemany(f"INSERT INTO sessions VALUES ({placeholders})", rows)
+            connection.commit()
+        finally:
+            connection.close()
+        return state_db
+
+    def test_recorded_branch_is_ingested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_db = self._db(
+                Path(tmp),
+                [
+                    (
+                        "s1",
+                        "/repos/alpha",
+                        "feat/login",
+                        "/repos/alpha",
+                        "claude-sonnet-4-6",
+                        4,
+                        100,
+                        50,
+                        0,
+                        0,
+                        0,
+                        1.5,
+                        1_700_000_000,
+                        1_700_000_600,
+                        1_700_000_600,
+                        "alpha",
+                        None,
+                    )
+                ],
+            )
+            details = _ingest_hermes(state_db)
+
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0].session.git_branch, "feat/login")
+
+    def test_null_branch_stays_absent_rather_than_becoming_a_row(self) -> None:
+        # A session started outside a checkout has no branch, and must be skipped
+        # by the branch panel rather than filed under an empty branch name.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_db = self._db(
+                Path(tmp),
+                [
+                    (
+                        "s1",
+                        "/tmp/scratch",
+                        None,
+                        None,
+                        "gpt-5.1-codex",
+                        2,
+                        10,
+                        5,
+                        0,
+                        0,
+                        0,
+                        0.1,
+                        1_700_000_000,
+                        1_700_000_600,
+                        1_700_000_600,
+                        None,
+                        "scratch",
+                    )
+                ],
+            )
+            details = _ingest_hermes(state_db)
+
+        self.assertIsNone(details[0].session.git_branch)
+
+    def test_missing_database_is_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_ingest_hermes(Path(tmp) / "absent.db"), [])
 
 
 if __name__ == "__main__":

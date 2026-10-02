@@ -12,6 +12,8 @@ from .models import (
     TOOL_CATEGORY_OTHER,
     TOOL_CATEGORY_READ,
     BehaviorSummary,
+    BranchActivity,
+    BranchSummary,
     BreakdownEntry,
     CompareReport,
     CostSummary,
@@ -193,6 +195,193 @@ def summarize_projects_from_details(
     return _build_breakdown(grouped, pricing)
 
 
+# Matched against the bare model name, as a prefix or as a hyphen-delimited segment,
+# so "gpt-5.1-codex-mini" and "anthropic/claude-opus-4.6" both resolve. No entry is a
+# prefix of another, so the order does not decide anything.
+_VENDOR_MODEL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("gpt-", "OpenAI"),
+    ("chatgpt", "OpenAI"),
+    ("codex", "OpenAI"),
+    ("o1-", "OpenAI"),
+    ("o3-", "OpenAI"),
+    ("o4-", "OpenAI"),
+    ("claude", "Anthropic"),
+    ("gemini", "Google"),
+    ("gemma", "Google"),
+    ("llama", "Meta"),
+    ("mistral", "Mistral"),
+    ("mixtral", "Mistral"),
+    ("deepseek", "DeepSeek"),
+    ("qwen", "Alibaba"),
+    ("grok", "xAI"),
+)
+
+_UNIDENTIFIED_VENDOR = "Unidentified"
+
+# Public label, so the renderer can recognise the bucket without duplicating the string.
+UNIDENTIFIED_VENDOR_LABEL = _UNIDENTIFIED_VENDOR
+
+_KNOWN_VENDOR_NAMES: dict[str, str] = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "google": "Google",
+    "gemini": "Google",
+    "meta": "Meta",
+    "mistral": "Mistral",
+    "deepseek": "DeepSeek",
+    "alibaba": "Alibaba",
+    "xai": "xAI",
+    "azure": "Azure",
+    "bedrock": "Bedrock",
+    "vertex": "Vertex",
+}
+
+
+def model_vendor(model: str | None, provider: str | None = None) -> str:
+    """Resolve the billing vendor behind a model name.
+
+    ``SessionRecord.model_provider`` cannot be grouped on directly: Codex records
+    the real vendor (``openai``), but the OpenCode and Hermes sources record their
+    own CLI name there instead (``opencode``, ``hermes``), and those two may route to
+    any vendor underneath. Grouping on that field would answer "which CLI" while
+    claiming to answer "which vendor".
+
+    So the model name decides, with any ``vendor/`` prefix stripped first, because
+    Hermes and Claude Code write ``anthropic/claude-opus-4.6`` where Codex writes a
+    bare ``gpt-5.4``. The recorded provider is only a fallback for names no keyword
+    claims, which keeps unknown aliases attributed to something rather than dropped.
+
+    Some tools record an internal codename rather than a model name at all (this
+    machine's OpenCode sessions all read ``big-pickle``), and no keyword can resolve
+    that. Those land in "Unidentified" rather than being guessed at, which is the
+    same honest bucket the pricing fallback already uses for those sessions.
+    """
+    if model:
+        bare = model.rsplit("/", 1)[-1].lower()
+        for prefix, vendor in _VENDOR_MODEL_PREFIXES:
+            if bare.startswith(prefix) or f"-{prefix}" in bare:
+                return vendor
+    if provider:
+        # A router or CLI name is not a vendor, so it is only used when it already
+        # looks like one; otherwise the model name remains the honest answer.
+        normalized = provider.strip().lower()
+        if normalized in _KNOWN_VENDOR_NAMES:
+            return _KNOWN_VENDOR_NAMES[normalized]
+    return _UNIDENTIFIED_VENDOR
+
+
+def summarize_providers_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+) -> list[BreakdownEntry]:
+    """Group spend by billing vendor, which is the question a bill actually asks."""
+    pricing = pricing or PricingConfig()
+    grouped: dict[str, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        grouped[model_vendor(detail.session.model, detail.session.model_provider)].append(detail)
+    return _build_breakdown(grouped, pricing)
+
+
+DEFAULT_IDLE_BRANCH_DAYS = 14
+
+
+def summarize_branches_from_details(
+    details: list[SessionDetails],
+    *,
+    pricing: PricingConfig | None = None,
+    now: datetime | None = None,
+    limit: int = 8,
+    idle_days: int = DEFAULT_IDLE_BRANCH_DAYS,
+) -> BranchSummary:
+    """Break spend down by branch, and surface the branches that went quiet.
+
+    Projects are the natural unit for a dashboard but they are too coarse to answer
+    "where did the money go": every branch of a repository lands in one project
+    number, so work that was abandoned and work that shipped look identical. This
+    groups by repository *and* branch, because a branch name is only unique inside
+    its own checkout.
+
+    A branch is idle once nothing has touched it for ``idle_days``. That is the
+    point of the panel: a branch that consumed tokens and then stopped is work that
+    was paid for and never finished, which no other panel can see.
+    """
+    pricing = pricing or PricingConfig()
+    current_time = now or datetime.now().astimezone()
+    tracked = [detail for detail in details if detail.session.git_branch]
+    if not tracked:
+        return BranchSummary(
+            branches=[],
+            tracked_sessions=0,
+            total_sessions=len(details),
+            idle_branches=[],
+            supported=False,
+        )
+
+    grouped: dict[tuple[str, str], list[SessionDetails]] = defaultdict(list)
+    for detail in tracked:
+        grouped[(detail.session.project_name, detail.session.git_branch or "")].append(detail)
+
+    branches: list[BranchActivity] = []
+    for (project_name, branch_name), branch_details in grouped.items():
+        last_at = max(detail.session.updated_at for detail in branch_details)
+        first_at = min(detail.session.created_at for detail in branch_details)
+        idle = max((current_time - last_at).days, 0)
+        branches.append(
+            BranchActivity(
+                name=branch_name,
+                project_name=project_name,
+                sessions=len(branch_details),
+                requests=sum(detail.request_count for detail in branch_details),
+                total_tokens=sum(detail.effective_total_tokens() for detail in branch_details),
+                estimated_cost_usd=round(
+                    sum(estimate_detail_cost(detail, pricing) for detail in branch_details), 4
+                ),
+                first_at=first_at,
+                last_at=last_at,
+                idle_days=idle,
+            )
+        )
+
+    # Ranked by cost, because "where did the money go" is a cost question. Ties fall
+    # back to recency so the ordering is stable between runs.
+    branches.sort(key=lambda branch: (-branch.estimated_cost_usd, -branch.last_at.timestamp(), branch.name))
+    idle_branches = sorted(
+        (branch for branch in branches if branch.idle_days >= max(idle_days, 0)),
+        key=lambda branch: (-branch.estimated_cost_usd, branch.name),
+    )
+    return BranchSummary(
+        branches=branches[: max(limit, 0)],
+        tracked_sessions=len(tracked),
+        total_sessions=len(details),
+        idle_branches=idle_branches[: max(limit, 0)],
+        supported=True,
+    )
+
+
+def summarize_branch_takeaways(branches: BranchSummary | None) -> list[str]:
+    if branches is None or not branches.supported or not branches.branches:
+        return []
+    lines: list[str] = []
+    if branches.idle_branches:
+        # Labelled with the repository, because two projects can each have a "main"
+        # and listing bare branch names would name the same thing twice.
+        names = ", ".join(branch.label for branch in branches.idle_branches[:2])
+        extra = len(branches.idle_branches) - 2
+        suffix = f", and {extra} more" if extra > 0 else ""
+        lines.append(
+            f"{len(branches.idle_branches)} branch"
+            f"{'es' if len(branches.idle_branches) != 1 else ''} went quiet after costing "
+            f"${branches.idle_cost_usd:.2f} ({names}{suffix})."
+        )
+    longest = max(branches.branches, key=lambda branch: branch.sessions, default=None)
+    if longest and longest.sessions >= 3:
+        lines.append(
+            f"{longest.label} took {longest.sessions} sessions at "
+            f"{longest.tokens_per_session:,.0f} tokens each."
+        )
+    return lines
+
+
 def summarize_project_drilldowns_from_details(
     details: list[SessionDetails],
     *,
@@ -233,6 +422,7 @@ def summarize_takeaways(
     costs: CostSummary | None = None,
     file_impact: list[FileImpactEntry] | None = None,
     behavior: BehaviorSummary | None = None,
+    branches: BranchSummary | None = None,
     max_items: int = 4,
     scope_label: str | None = None,
 ) -> list[str]:
@@ -264,14 +454,36 @@ def summarize_takeaways(
     if insights.anomalies:
         takeaways.append(insights.anomalies[0] + ".")
     behavior_lines = summarize_behavior_takeaways(behavior)
-    if behavior_lines:
-        # Measured behavior outranks the heuristic cost advice, so it is preferred when
-        # the takeaway list is full.
-        takeaways = takeaways[: max(max_items, 1) - len(behavior_lines)] + behavior_lines
+    branch_lines = summarize_branch_takeaways(branches)
+    preferred = _interleave(behavior_lines, branch_lines)
+    if preferred:
+        # Measured facts about what was actually done outrank the heuristic cost
+        # advice, so they take the tail of the list and the advice is trimmed to
+        # whatever room is left. The room is clamped at zero because when the
+        # measured lines outnumber the slots on their own, a negative bound would
+        # slice from the end and hand the whole budget back to the advice, dropping
+        # exactly the lines this is meant to promote.
+        room = max(max_items, 1) - len(preferred)
+        takeaways = takeaways[: max(room, 0)] + preferred
     if not takeaways:
         label = scope_label or summary.label
         takeaways.append(f"{label.title()} usage looks balanced with no obvious warning patterns.")
     return takeaways[: max(max_items, 1)]
+
+
+def _interleave(*groups: list[str]) -> list[str]:
+    """Round-robin the groups so a long first group cannot crowd out the rest.
+
+    Tool behavior and branch facts are both measured, and either can be the more
+    interesting one on a given day. Appending them in order would let whichever
+    came first fill every slot, so they alternate instead and both stay visible.
+    """
+    result: list[str] = []
+    for index in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if index < len(group):
+                result.append(group[index])
+    return result
 
 
 def summarize_badges(

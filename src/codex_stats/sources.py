@@ -378,6 +378,20 @@ def _ingest_claude(projects_dir: Path) -> list[SessionDetails]:
     return ordered
 
 
+# Claude Code writes "HEAD" when the checkout is detached. That is a real state worth
+# knowing about, but it is not a workstream, and ranking it in a branch table would
+# invent a branch called HEAD out of whatever was committed to at a commit rather than
+# a line of work. Detached sessions are simply reported as having no branch.
+_DETACHED_BRANCH_NAMES = {"head", "(detached)", "detached"}
+
+
+def _normalize_git_branch(value: str) -> str | None:
+    branch = value.strip()
+    if not branch or branch.lower() in _DETACHED_BRANCH_NAMES:
+        return None
+    return branch
+
+
 def _parse_claude_session(path: Path) -> SessionDetails | None:
     timestamps: list[str] = []
     user_count = 0
@@ -386,6 +400,7 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
     cache_read_tokens = 0
     cache_write_tokens = 0
     model_counter: Counter[str] = Counter()
+    branch_counter: Counter[str] = Counter()
     cwd: str | None = None
     edits: list[FileEdit] = []
     pending_calls: list[dict] = []
@@ -408,6 +423,15 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
                 timestamps.append(timestamp)
             if not cwd and isinstance(event.get("cwd"), str) and event["cwd"]:
                 cwd = event["cwd"]
+            # A session can span a branch switch, so the branch is counted rather
+            # than taken from the first or last line, and the dominant one wins the
+            # same way the dominant model does. Sessions that never switched are
+            # unaffected, and a switched session is attributed to wherever most of
+            # its events landed instead of to whichever end happened to come last.
+            if isinstance(event.get("gitBranch"), str):
+                branch = _normalize_git_branch(event["gitBranch"])
+                if branch:
+                    branch_counter[branch] += 1
             event_type = event.get("type")
             if event_type == "user":
                 user_count += 1
@@ -466,7 +490,7 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
         model_provider=CLAUDE_PROVIDER,
         tokens_used=total_tokens,
         rollout_path=path,
-        git_branch=None,
+        git_branch=branch_counter.most_common(1)[0][0] if branch_counter else None,
         git_origin_url=None,
         source=SOURCE_CLAUDE,
     )

@@ -35,8 +35,11 @@ from codex_stats.metrics import (
     uses_recorded_cost,
     filter_details_by_project,
     local_date,
+    model_vendor,
     summarize_activity_heatmap_from_details,
     summarize_badges,
+    summarize_branch_takeaways,
+    summarize_branches_from_details,
     summarize_compare_from_details,
     summarize_costs_from_details,
     summarize_daily_from_details,
@@ -47,13 +50,23 @@ from codex_stats.metrics import (
     summarize_insights_from_details,
     summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
+    summarize_providers_from_details,
     summarize_source_breakdown_from_details,
     summarize_source_daily_from_details,
     summarize_takeaways,
     summarize_top_sessions_from_details,
     summarize_work_rhythm,
+    UNIDENTIFIED_VENDOR_LABEL,
 )
-from codex_stats.models import CACHED_SEPARATE, CACHED_WITHIN_INPUT, DailyPoint, DashboardData
+from codex_stats.models import (
+    CACHED_SEPARATE,
+    CACHED_WITHIN_INPUT,
+    BehaviorSummary,
+    DailyPoint,
+    DashboardData,
+    SessionDetails,
+    SessionRecord,
+)
 from codex_stats.sources import _ingest_claude, iter_sources, source_label
 
 
@@ -229,6 +242,8 @@ class MetricsTestCase(unittest.TestCase):
             sessions_dir=codex_home / "sessions",
             config_dir=codex_home / "config",
             config_file=codex_home / "config" / "config.toml",
+            output_dir=codex_home / "cache",
+            dashboard_file=codex_home / "cache" / "dashboard.html",
         )
 
     def tearDown(self) -> None:
@@ -977,6 +992,8 @@ class HistoryBoundTestCase(unittest.TestCase):
             sessions_dir=codex_home / "sessions",
             config_dir=codex_home / "config",
             config_file=codex_home / "config" / "config.toml",
+            output_dir=codex_home / "cache",
+            dashboard_file=codex_home / "cache" / "dashboard.html",
         )
         self.addCleanup(os.environ.pop, ENV_MAX_SESSIONS, None)
         os.environ.pop(ENV_MAX_SESSIONS, None)
@@ -1171,6 +1188,347 @@ class HistoryBoundTestCase(unittest.TestCase):
                     f"a session-count cap can cut into {key}; the note must disclose that",
                 )
         self.assertIsNotNone(truncated.coverage_note)
+
+
+BRANCH_NOW = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
+
+
+def branch_detail(
+    *,
+    session_id: str,
+    branch: str | None,
+    project: str = "alpha",
+    model: str = "gpt-5.4",
+    model_provider: str = "openai",
+    days_ago: int = 0,
+    total_tokens: int = 10_000,
+    reasoning_tokens: int = 0,
+) -> SessionDetails:
+    created = BRANCH_NOW - timedelta(days=days_ago)
+    return SessionDetails(
+        session=SessionRecord(
+            session_id=session_id,
+            created_at=created,
+            updated_at=created,
+            cwd=f"/tmp/{project}",
+            model=model,
+            model_provider=model_provider,
+            tokens_used=total_tokens,
+            rollout_path=Path("/tmp/rollout.jsonl"),
+            git_branch=branch,
+            git_origin_url=None,
+        ),
+        request_count=4,
+        input_tokens=total_tokens // 2,
+        output_tokens=total_tokens // 4,
+        cached_input_tokens=0,
+        reasoning_output_tokens=reasoning_tokens,
+        total_tokens_from_rollout=total_tokens,
+        started_at=created,
+        token_accounting=CACHED_SEPARATE,
+    )
+
+
+class ModelVendorTest(unittest.TestCase):
+    def test_resolves_vendor_from_model_name(self) -> None:
+        self.assertEqual(model_vendor("gpt-5.4", "openai"), "OpenAI")
+        self.assertEqual(model_vendor("gpt-5.1-codex-mini", "openai"), "OpenAI")
+        self.assertEqual(model_vendor("o3-mini", "openai"), "OpenAI")
+        self.assertEqual(model_vendor("claude-opus-5", "anthropic"), "Anthropic")
+        self.assertEqual(model_vendor("gemini-3-pro", "google"), "Google")
+
+    def test_strips_vendor_prefix_before_matching(self) -> None:
+        # Hermes and Claude Code write a prefixed name where Codex writes a bare one.
+        # Both must resolve to the same vendor or cross-tool spend splits in two.
+        self.assertEqual(model_vendor("anthropic/claude-opus-4.6", "hermes"), "Anthropic")
+        self.assertEqual(model_vendor("claude-opus-4.6", "anthropic"), "Anthropic")
+
+    def test_falls_back_to_provider_for_codenames(self) -> None:
+        # Claude Code records codenames, but the provider beside them is a real vendor.
+        self.assertEqual(model_vendor("blue-otter", "anthropic"), "Anthropic")
+        self.assertEqual(model_vendor("red-panda", "anthropic"), "Anthropic")
+
+    def test_router_provider_is_not_treated_as_a_vendor(self) -> None:
+        # "opencode" and "hermes" name the CLI, not whoever it routes to, so a codename
+        # beside one of them stays unattributed rather than claiming a wrong vendor.
+        self.assertEqual(model_vendor("big-pickle", "opencode"), UNIDENTIFIED_VENDOR_LABEL)
+        self.assertEqual(model_vendor(None, "hermes"), UNIDENTIFIED_VENDOR_LABEL)
+
+    def test_missing_model_and_provider(self) -> None:
+        self.assertEqual(model_vendor(None, None), UNIDENTIFIED_VENDOR_LABEL)
+        self.assertEqual(model_vendor("", ""), UNIDENTIFIED_VENDOR_LABEL)
+
+
+class ProviderBreakdownTest(unittest.TestCase):
+    def test_groups_spend_by_vendor(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="main", model="gpt-5.4", model_provider="openai"),
+            branch_detail(session_id="b", branch="main", model="gpt-5.5", model_provider="openai"),
+            branch_detail(session_id="c", branch="main", model="claude-opus-5", model_provider="anthropic"),
+        ]
+        entries = summarize_providers_from_details(details)
+        self.assertEqual([entry.name for entry in entries], ["OpenAI", "Anthropic"])
+        self.assertEqual(entries[0].sessions, 2)
+        self.assertEqual(entries[0].total_tokens, 20_000)
+
+    def test_cross_tool_vendor_spellings_collapse(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="main", model="gpt-5.4", model_provider="openai"),
+            branch_detail(
+                session_id="b",
+                branch="main",
+                model="anthropic/claude-opus-4.6",
+                model_provider="hermes",
+            ),
+        ]
+        entries = summarize_providers_from_details(details)
+        self.assertEqual(sorted(entry.name for entry in entries), ["Anthropic", "OpenAI"])
+
+    def test_unattributed_spend_is_kept_visible(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="main", model="gpt-5.4", model_provider="openai"),
+            branch_detail(session_id="b", branch="main", model="big-pickle", model_provider="opencode"),
+        ]
+        entries = summarize_providers_from_details(details)
+        by_name = {entry.name: entry for entry in entries}
+        self.assertIn(UNIDENTIFIED_VENDOR_LABEL, by_name)
+        # Both cost the same, so the unattributed half must still be reported rather
+        # than dropped for being unidentifiable.
+        self.assertEqual(by_name[UNIDENTIFIED_VENDOR_LABEL].total_tokens, 10_000)
+
+    def test_empty_input(self) -> None:
+        self.assertEqual(summarize_providers_from_details([]), [])
+
+
+class BranchSummaryTest(unittest.TestCase):
+    def test_unsupported_when_no_session_records_a_branch(self) -> None:
+        details = [branch_detail(session_id="a", branch=None)]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        self.assertFalse(summary.supported)
+        self.assertEqual(summary.branches, [])
+        self.assertEqual(summary.total_sessions, 1)
+
+    def test_groups_by_repository_and_branch(self) -> None:
+        # The same branch name exists independently in several checkouts, so keying on
+        # the name alone would merge unrelated work into one expensive looking branch.
+        details = [
+            branch_detail(session_id="a", branch="main", project="alpha"),
+            branch_detail(session_id="b", branch="main", project="beta"),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        self.assertTrue(summary.supported)
+        self.assertEqual(len(summary.branches), 2)
+        self.assertEqual(
+            sorted(branch.project_name for branch in summary.branches),
+            ["alpha", "beta"],
+        )
+        self.assertEqual(summary.branches[0].label, "alpha / main")
+
+    def test_aggregates_multiple_sessions_on_one_branch(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="feature", total_tokens=10_000),
+            branch_detail(session_id="b", branch="feature", total_tokens=30_000),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        self.assertEqual(len(summary.branches), 1)
+        branch = summary.branches[0]
+        self.assertEqual(branch.sessions, 2)
+        self.assertEqual(branch.total_tokens, 40_000)
+        self.assertEqual(branch.tokens_per_session, 20_000)
+
+    def test_ranks_branches_by_cost(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="cheap", total_tokens=1_000),
+            branch_detail(session_id="b", branch="pricey", total_tokens=90_000),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        self.assertEqual([branch.name for branch in summary.branches], ["pricey", "cheap"])
+
+    def test_limit_truncates_the_ranked_list(self) -> None:
+        details = [
+            branch_detail(session_id=f"s{i}", branch=f"b{i}", total_tokens=i * 1_000) for i in range(1, 6)
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW, limit=2)
+        self.assertEqual([branch.name for branch in summary.branches], ["b5", "b4"])
+
+    def test_flags_branches_that_went_quiet(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="active", days_ago=0, total_tokens=10_000),
+            branch_detail(session_id="b", branch="abandoned", days_ago=40, total_tokens=80_000),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW, idle_days=14)
+        self.assertEqual([branch.name for branch in summary.idle_branches], ["abandoned"])
+        self.assertEqual(summary.idle_cost_usd, summary.idle_branches[0].estimated_cost_usd)
+        self.assertGreaterEqual(summary.idle_branches[0].idle_days, 14)
+
+    def test_no_idle_branches_when_everything_is_recent(self) -> None:
+        details = [branch_detail(session_id="a", branch="fresh", days_ago=1)]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW, idle_days=14)
+        self.assertEqual(summary.idle_branches, [])
+        self.assertEqual(summary.idle_cost_usd, 0.0)
+
+    def test_counts_sessions_without_a_branch(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="main"),
+            branch_detail(session_id="b", branch=None),
+            branch_detail(session_id="c", branch=None),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        self.assertEqual(summary.tracked_sessions, 1)
+        self.assertEqual(summary.total_sessions, 3)
+        self.assertEqual(summary.untracked_sessions, 2)
+
+    def test_idle_days_never_go_negative(self) -> None:
+        # A session stamped slightly in the future must not report negative idleness.
+        details = [branch_detail(session_id="a", branch="main", days_ago=0)]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW - timedelta(days=1))
+        self.assertGreaterEqual(summary.branches[0].idle_days, 0)
+
+
+class BranchTakeawayTest(unittest.TestCase):
+    def test_reports_idle_spend(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="done", days_ago=0),
+            branch_detail(session_id="b", branch="dropped", days_ago=30, total_tokens=50_000),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        lines = summarize_branch_takeaways(summary)
+        self.assertTrue(lines)
+        self.assertIn("dropped", lines[0])
+        self.assertIn("quiet", lines[0])
+
+    def test_silent_when_unsupported(self) -> None:
+        summary = summarize_branches_from_details([branch_detail(session_id="a", branch=None)], now=BRANCH_NOW)
+        self.assertEqual(summarize_branch_takeaways(summary), [])
+
+    def test_silent_when_none(self) -> None:
+        self.assertEqual(summarize_branch_takeaways(None), [])
+
+
+class ReasoningShareTest(unittest.TestCase):
+    def test_ratio_of_total(self) -> None:
+        details = [branch_detail(session_id="a", branch="main", total_tokens=1_000, reasoning_tokens=250)]
+        summary = summarize_details("all time", details)
+        self.assertEqual(summary.reasoning_output_tokens, 250)
+        self.assertAlmostEqual(summary.reasoning_ratio, 0.25)
+
+    def test_none_when_nothing_recorded_reasoning(self) -> None:
+        details = [branch_detail(session_id="a", branch="main", reasoning_tokens=0)]
+        summary = summarize_details("all time", details)
+        self.assertEqual(summary.reasoning_output_tokens, 0)
+        self.assertIsNone(summary.reasoning_ratio)
+
+    def test_none_when_there_are_no_tokens_at_all(self) -> None:
+        details = [branch_detail(session_id="a", branch="main", total_tokens=0, reasoning_tokens=0)]
+        summary = summarize_details("all time", details)
+        self.assertIsNone(summary.reasoning_ratio)
+
+
+class TakeawayPriorityTest(unittest.TestCase):
+    """Measured facts have to survive a full list, which is the whole point of them."""
+
+    def _window(self, details: list[SessionDetails]):
+        return _build_window(
+            key="all",
+            label="All Time",
+            description="All recorded sessions.",
+            current_details=details,
+            previous_details=details,
+            current_label="all time",
+            previous_label="prior",
+            trend_days=30,
+            all_details=details,
+            pricing=None,
+            now=BRANCH_NOW,
+        )
+
+    def test_branch_facts_survive_a_full_heuristic_list(self) -> None:
+        # Heuristic advice easily outnumbers the slots. The measured facts still have
+        # to appear, or the list quietly reverts to advice only.
+        details = [
+            branch_detail(
+                session_id=f"s{i}",
+                branch="quiet-branch" if i == 0 else "active",
+                days_ago=90 if i == 0 else 0,
+            )
+            for i in range(6)
+        ]
+        window = self._window(details)
+        lines = summarize_takeaways(
+            summary=window.summary,
+            comparison=window.comparison,
+            costs=window.costs,
+            insights=window.insights,
+            file_impact=window.file_impact,
+            behavior=None,
+            branches=window.branches,
+        )
+        self.assertTrue(any("went quiet" in line for line in lines), lines)
+        self.assertLessEqual(len(lines), 4)
+
+    def test_behavior_and_branch_lines_alternate(self) -> None:
+        # Either measured category can be the longer one, so they are interleaved
+        # rather than appended, and a long behavior list cannot crowd branches out.
+        behavior = BehaviorSummary(
+            total_calls=100,
+            error_calls=20,
+            repeated_calls=0,
+            sessions_with_calls=10,
+            abandoned_turns=0,
+            read_calls=0,
+            edit_calls=0,
+            categories=[],
+            tools=[],
+        )
+        details = [
+            branch_detail(
+                session_id=f"s{i}",
+                branch="quiet" if i == 0 else "live",
+                days_ago=90 if i == 0 else 0,
+            )
+            for i in range(6)
+        ]
+        window = self._window(details)
+        lines = summarize_takeaways(
+            summary=window.summary,
+            comparison=window.comparison,
+            costs=window.costs,
+            insights=window.insights,
+            file_impact=window.file_impact,
+            behavior=behavior,
+            branches=window.branches,
+        )
+        quiet_index = next(i for i, line in enumerate(lines) if "went quiet" in line)
+        failure_index = next(i for i, line in enumerate(lines) if "failed" in line)
+        # Whichever category is longer, the other still lands inside the budget.
+        self.assertLess(quiet_index, 4, lines)
+        self.assertLess(failure_index, 4, lines)
+
+    def test_heuristics_still_lead_when_there_is_room(self) -> None:
+        details = [branch_detail(session_id="a", branch="main")]
+        window = self._window(details)
+        lines = summarize_takeaways(
+            summary=window.summary,
+            comparison=window.comparison,
+            costs=window.costs,
+            insights=window.insights,
+            file_impact=window.file_impact,
+            behavior=None,
+            branches=window.branches,
+        )
+        # Nothing to promote, so the ordinary advice is returned unchanged.
+        self.assertTrue(lines)
+        self.assertFalse(any("went quiet" in line for line in lines))
+
+    def test_branch_takeaway_names_the_repository(self) -> None:
+        details = [
+            branch_detail(session_id="a", branch="main", project="alpha", days_ago=90),
+            branch_detail(session_id="b", branch="main", project="beta", days_ago=90),
+        ]
+        summary = summarize_branches_from_details(details, now=BRANCH_NOW)
+        line = summarize_branch_takeaways(summary)[0]
+        self.assertIn("alpha / main", line)
+        self.assertIn("beta / main", line)
 
 
 if __name__ == "__main__":
