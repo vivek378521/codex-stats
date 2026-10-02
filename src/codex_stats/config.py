@@ -13,17 +13,26 @@ class Paths:
     sessions_dir: Path
     config_dir: Path
     config_file: Path
+    output_dir: Path
+    dashboard_file: Path
 
     @classmethod
     def discover(cls) -> "Paths":
         codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
         config_dir = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "codex-stats"
+        # A fixed path, not a fresh temp file per run. The dashboard is a page people
+        # come back to, so it has to be reopenable and refreshable in place; a new
+        # random filename each launch made yesterday's bookmark show stale numbers
+        # with no way to tell, and left an orphan in the temp directory every time.
+        output_dir = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "codex-stats"
         return cls(
             codex_home=codex_home,
             state_db=codex_home / "state_5.sqlite",
             sessions_dir=codex_home / "sessions",
             config_dir=config_dir,
             config_file=config_dir / "config.toml",
+            output_dir=output_dir,
+            dashboard_file=output_dir / "dashboard.html",
         )
 
 

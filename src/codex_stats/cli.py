@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import tempfile
 import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,10 +10,12 @@ from .display import format_dashboard_html
 from .ingest import ENV_MAX_SESSIONS, codex_session_coverage
 from .leaderboard import LeaderboardConfig, LeaderboardSubmitServer
 from .metrics import (
+    DEFAULT_IDLE_BRANCH_DAYS,
     local_date,
     summarize_activity_heatmap_from_details,
     summarize_badges,
     summarize_behavior_from_details,
+    summarize_branches_from_details,
     summarize_compare_from_details,
     summarize_costs_from_details,
     summarize_daily_from_details,
@@ -25,6 +26,7 @@ from .metrics import (
     summarize_insights_from_details,
     summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
+    summarize_providers_from_details,
     summarize_source_breakdown_from_details,
     summarize_source_daily_from_details,
     summarize_takeaways,
@@ -54,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     dashboard = _build_dashboard(paths)
     submit_server = _start_leaderboard(dashboard)
     output_path = _write_dashboard_output(
-        format_dashboard_html(dashboard, leaderboard=_leaderboard_preview(submit_server))
+        format_dashboard_html(dashboard, leaderboard=_leaderboard_preview(submit_server)),
+        paths.dashboard_file,
     )
     print(f"Wrote dashboard to {output_path}")
     _open_report_in_browser(output_path)
@@ -256,6 +259,12 @@ def _build_window(
     activity_heatmap = summarize_activity_heatmap_from_details(current_details, timezone=now.tzinfo)
     file_impact = summarize_files_from_details(current_details, limit=10)
     behavior = summarize_behavior_from_details(current_details)
+    branches = summarize_branches_from_details(
+        current_details,
+        pricing=pricing,
+        now=now,
+        idle_days=DEFAULT_IDLE_BRANCH_DAYS,
+    )
     return DashboardWindow(
         key=key,
         label=label,
@@ -277,6 +286,7 @@ def _build_window(
             insights=insights,
             file_impact=file_impact,
             behavior=behavior,
+            branches=branches,
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(current_details, pricing),
@@ -289,12 +299,14 @@ def _build_window(
             limit=5,
         ),
         file_impact=file_impact,
-        behavior=behavior,
-        tool_breakdown=(
-            summarize_source_breakdown_from_details(current_details, pricing)
-            if build_tool_breakdown
-            else None
-        ),
+            behavior=behavior,
+            branches=branches,
+            providers=summarize_providers_from_details(current_details, pricing),
+            tool_breakdown=(
+                summarize_source_breakdown_from_details(current_details, pricing)
+                if build_tool_breakdown
+                else None
+            ),
         tool_daily_points=(
             summarize_source_daily_from_details(
                 current_details,
@@ -333,6 +345,12 @@ def _build_all_time_window(
     activity_heatmap = summarize_activity_heatmap_from_details(all_details, timezone=now.tzinfo)
     file_impact = summarize_files_from_details(all_details, limit=10)
     behavior = summarize_behavior_from_details(all_details)
+    branches = summarize_branches_from_details(
+        all_details,
+        pricing=pricing,
+        now=now,
+        idle_days=DEFAULT_IDLE_BRANCH_DAYS,
+    )
     return DashboardWindow(
         key="all",
         label="All Time",
@@ -354,6 +372,7 @@ def _build_all_time_window(
             insights=insights,
             file_impact=file_impact,
             behavior=behavior,
+            branches=branches,
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(all_details, pricing),
@@ -367,6 +386,8 @@ def _build_all_time_window(
         ),
         file_impact=file_impact,
         behavior=behavior,
+        branches=branches,
+        providers=summarize_providers_from_details(all_details, pricing),
         tool_breakdown=(
             summarize_source_breakdown_from_details(all_details, pricing)
             if build_tool_breakdown
@@ -421,16 +442,33 @@ def _all_time_trend_days(details: list[SessionDetails], now: datetime) -> int:
     return min(max(span_days, 1), 90)
 
 
-def _write_dashboard_output(content: str) -> Path:
-    handle = tempfile.NamedTemporaryFile(prefix="codex-stats-dashboard-", suffix=".html", delete=False)
-    handle.close()
-    output_path = Path(handle.name)
-    output_path.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
-    return output_path
+def _write_dashboard_output(content: str, output_path: Path | None = None) -> Path:
+    """Write the dashboard to a stable path so it can be reopened and refreshed.
+
+    Overwriting in place is what makes a refresh work: the browser tab keeps the
+    same URL, and browsers re-read the file on reload rather than serving the
+    cached copy that a new random filename would have avoided.
+    """
+    target = output_path or Paths.discover().dashboard_file
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
+    return target
 
 
 def _open_report_in_browser(path: Path) -> None:
-    webbrowser.open(path.resolve().as_uri())
+    """Open the dashboard, defeating the browser's copy of a previous run.
+
+    Now that the path is stable, a plain ``file://`` open can be served straight
+    from the browser cache, which would show last run's numbers. The file's mtime
+    rides along as a query string so a changed file always means a changed URL,
+    while an unchanged file still opens the tab that is already there.
+    """
+    uri = path.resolve().as_uri()
+    try:
+        version = path.stat().st_mtime_ns
+    except OSError:
+        version = 0
+    webbrowser.open(f"{uri}?v={version}")
 
 
 if __name__ == "__main__":
