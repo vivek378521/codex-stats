@@ -11,6 +11,8 @@ It reads local session data from every coding assistant installed on the machine
 - estimated token-based cost (or each tool's own recorded cost when available)
 - per-tool cost overrides and a stacked per-tool token trend on the Overview
 - **branch-level spend**: a "Branches" panel that ranks work by cost per branch instead of per repository, and flags branches that went quiet — paid-for work that stopped and never finished
+- **spend joined to the work it bought**: an "Efficiency" panel reporting cost per 1k lines changed, cost per file, cost per editing session, the share of spend that went to sessions which changed nothing, a rework ratio, and the files that were rewritten most across every project at once
+- **per-tool efficiency** on the Overview, ranking each tool's spend against the lines it actually changed, so "which of my agents is worth it" has an answer
 - a **provider breakdown** showing which vendor each dollar went to, derived from the model name each session recorded
 - a reasoning-token share in Work Patterns, for models that bill thinking separately
 - anomaly-aware usage insights and recommendations
@@ -38,8 +40,9 @@ Use these environment variables to point at non-default locations (also used for
 Reading a session means parsing its rollout or transcript line by line, and that
 cost is linear in total history on every launch, so each source reads only the
 2,000 most recent sessions. This keeps startup predictable on long histories and
-is invisible on normal ones. When it does drop history, every window says so
-above the metrics rather than reporting a partial history as a complete one.
+is invisible on normal ones. When it does drop history, the dashboard says so
+above the metrics, naming each source it truncated, rather than reporting a
+partial history as a complete one.
 
 - `CODEX_STATS_MAX_SESSIONS=N` reads the `N` most recent sessions per source.
   Set it to `0` to read everything and get exact figures, which takes
@@ -105,6 +108,18 @@ transcripts, and the Hermes database, then normalizes everything into one sessio
   and those may route to any vendor, so grouping on that field would answer "which CLI"
   while claiming to answer "which vendor". Model names are matched with any `vendor/` prefix
   stripped, so `anthropic/claude-opus-4.6` and `claude-opus-4.6` land in the same bucket.
+- **Cost per line is only computed where file edits are recorded.** Codex and Claude Code
+  name the files a session edited; OpenCode and Hermes record tokens and cost but nothing
+  about files. Their spend is excluded from every ratio rather than counted as cost with
+  no work to divide by, their sessions are not counted as read-only, and the per-tool
+  table marks them "Not recorded" instead of dropping them or ranking them as expensive.
+- **A view with no recorded edits reports counts, not zeroes.** When tracked tools ran but
+  changed nothing, there is no denominator, so the panel shows session counts and spend
+  rather than a cost of $0.00 that would read as free work.
+- **Rework is measured as deletions over insertions** across the window. A "churn" file is
+  one the window left smaller than it found it. The rewritten-files table ranks by how many
+  separate sessions touched a file, and spans every project at once, since file impact
+  inside a single project's drilldown cannot show a file that is hard in three repos.
 - **Spend that cannot be attributed is shown, not dropped.** Some tools record an internal
   codename instead of a model name, and no lookup can resolve that. Those sessions are
   grouped under "Unidentified" with their share of spend stated, rather than being assigned

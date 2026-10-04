@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-10-04
+
+### Added
+
+- **Efficiency** panel: spend joined to the file edits recorded in the same
+  sessions. Reports cost per 1k lines changed, cost per file, cost per editing
+  session, the share of spend that went to sessions which changed no files, a
+  rework ratio (deletions over insertions), and how many files the window left
+  smaller than it found them. Every other panel answers "how much" or "where";
+  this one answers "for what".
+- Per-tool efficiency on the Overview, ranking each tool's spend against the
+  lines it actually changed. This is the comparison a multi-agent user cannot
+  make anywhere else: which of the installed agents is worth its cost.
+- **Most Rewritten Files** table, ranked by how many separate sessions touched a
+  file and spanning every project at once. File impact was previously only
+  visible from inside one project's drilldown, so a file that was hard in three
+  different repositories could never appear as one problem.
+- Efficiency findings are now takeaways, interleaved with the tool-behavior and
+  branch facts. They are measured rather than heuristic, so they rank ahead of
+  the cost advice in the same way those facts already did.
+
+### Fixed
+
+- OpenCode and Hermes read their **entire** history on every launch while the
+  README stated all four sources read only the 2,000 most recent sessions. Both
+  now honor `CODEX_STATS_MAX_SESSIONS`, which is what made startup predictable
+  on long histories in the first place.
+- The coverage note reported only Codex, so a truncated OpenCode or Hermes
+  history was presented as a complete one. It now names each source it truncated
+  and how much of that source it kept.
+- The OpenCode source description named `opencode.sqlite`; the file it opens is
+  `opencode.db`.
+- A schema change in any one tool's database raised out of ingest and took the
+  other three tabs down with it. Each source now degrades to its empty state, so
+  a drifted schema costs one tab instead of the dashboard.
+- An unrecognized file-edit action raised `KeyError` from the unconditional
+  file-impact build and took down the whole dashboard. Unknown actions are now
+  counted and appear in none of the created/updated/deleted columns, which is
+  visibly a lower total rather than a crash.
+- Tests that built a dashboard isolated only Codex, so they silently merged
+  whatever the developer had installed locally for the other three tools. Every
+  such test now pins all four sources, which is what made the coverage-note bug
+  visible in the first place.
+
 ## [1.12.0] - 2026-10-02
 
 ### Added

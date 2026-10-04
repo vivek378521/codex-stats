@@ -15,10 +15,12 @@ from .models import (
     BranchActivity,
     BranchSummary,
     BreakdownEntry,
+    ChurnEntry,
     CompareReport,
     CostSummary,
     DashboardBadge,
     DailyPoint,
+    EfficiencySummary,
     FileImpactEntry,
     HeatmapCell,
     HistoryEntry,
@@ -30,11 +32,12 @@ from .models import (
     TokenSplit,
     ToolCategoryEntry,
     ToolDailyPoint,
+    ToolEfficiency,
     ToolUsageEntry,
     TopEntry,
     WorkRhythm,
 )
-from .sources import source_label
+from .sources import FILE_EDIT_TRACKING_SOURCES, source_label
 
 def uses_recorded_cost(detail: SessionDetails) -> bool:
     """Whether a session's cost comes from the tool's own figure rather than an estimate.
@@ -414,6 +417,39 @@ def summarize_project_drilldowns_from_details(
     return drilldowns
 
 
+def summarize_efficiency_takeaways(efficiency: "EfficiencySummary | None") -> list[str]:
+    """The efficiency findings worth stating in a sentence.
+
+    Only measured facts, and only when the window has tracked edits to measure.
+    Every figure here is joined from the same sessions that produced the spend, so
+    these rank alongside the tool-behavior and branch facts rather than behind the
+    heuristic cost advice.
+    """
+    if efficiency is None or not efficiency.tracked:
+        return []
+    lines: list[str] = []
+    if efficiency.cost_per_1k_lines is not None:
+        lines.append(
+            f"Spend worked out to ${efficiency.cost_per_1k_lines:,.2f} per 1k lines changed "
+            f"across {efficiency.files_touched:,} file{'s' if efficiency.files_touched != 1 else ''}."
+        )
+    share = efficiency.read_only_cost_share
+    if share is not None and share >= 0.25 and efficiency.read_only_cost_usd > 0:
+        lines.append(
+            f"{_fmt_ratio_pct(share)} of tracked spend "
+            f"(${efficiency.read_only_cost_usd:,.2f}) went to "
+            f"{efficiency.read_only_sessions} session{'s' if efficiency.read_only_sessions != 1 else ''} "
+            "that changed no files."
+        )
+    if efficiency.rework_ratio is not None and efficiency.rework_ratio >= 0.5:
+        lines.append(
+            f"Rework is high: {efficiency.deletions:,} lines removed against "
+            f"{efficiency.insertions:,} added, and {efficiency.churn_files} file"
+            f"{'s' if efficiency.churn_files != 1 else ''} ended up smaller than they started."
+        )
+    return lines
+
+
 def summarize_takeaways(
     *,
     summary: TimeSummary,
@@ -423,6 +459,7 @@ def summarize_takeaways(
     file_impact: list[FileImpactEntry] | None = None,
     behavior: BehaviorSummary | None = None,
     branches: BranchSummary | None = None,
+    efficiency: "EfficiencySummary | None" = None,
     max_items: int = 4,
     scope_label: str | None = None,
 ) -> list[str]:
@@ -455,7 +492,8 @@ def summarize_takeaways(
         takeaways.append(insights.anomalies[0] + ".")
     behavior_lines = summarize_behavior_takeaways(behavior)
     branch_lines = summarize_branch_takeaways(branches)
-    preferred = _interleave(behavior_lines, branch_lines)
+    efficiency_lines = summarize_efficiency_takeaways(efficiency)
+    preferred = _interleave(efficiency_lines, behavior_lines, branch_lines)
     if preferred:
         # Measured facts about what was actually done outrank the heuristic cost
         # advice, so they take the tail of the list and the advice is trimmed to
@@ -818,7 +856,12 @@ def summarize_files_from_details(
             bucket["sessions"].add(detail.session.session_id)
             bucket["insertions"] += edit.insertions
             bucket["deletions"] += edit.deletions
-            bucket[edit.action] += 1
+            # Counted rather than indexed, so a new action name from a source that
+            # adds one later cannot raise out of the main window-building path and
+            # take the whole dashboard down. The created/updated/deleted columns
+            # stay exactly as they are; an unrecognized action simply appears in
+            # none of them, which is visible as a lower total rather than a crash.
+            bucket[edit.action] = bucket.get(edit.action, 0) + 1
     entries = [
         FileImpactEntry(
             path=path,
@@ -834,6 +877,142 @@ def summarize_files_from_details(
     ]
     entries.sort(key=lambda entry: (-entry.edits, -(entry.insertions + entry.deletions), entry.path))
     return entries[: max(limit, 0)]
+
+
+def summarize_efficiency_from_details(
+    details: list[SessionDetails],
+    *,
+    pricing: PricingConfig | None = None,
+) -> EfficiencySummary:
+    """Join a window's spend to the file edits recorded in the same sessions.
+
+    The window is split by whether a source records file edits at all, and the
+    per-line figures are computed from the tracked half only. Including an
+    untracked source's spend in the numerator would inflate every ratio while
+    contributing no lines to the denominator, and counting its sessions as
+    read-only would report a discovery rather than a gap in the data.
+    """
+    pricing = pricing or PricingConfig()
+    tracked = [detail for detail in details if detail.session.source in FILE_EDIT_TRACKING_SOURCES]
+    untracked = [detail for detail in details if detail.session.source not in FILE_EDIT_TRACKING_SOURCES]
+    untracked_sources = tuple(sorted({source_label(detail.session.source) for detail in untracked}))
+
+    per_file: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, set()])
+    for detail in tracked:
+        for edit in detail.file_edits:
+            bucket = per_file[edit.path]
+            bucket[0] += edit.insertions
+            bucket[1] += edit.deletions
+            bucket[2] += 1
+            bucket[3].add(detail.session.session_id)
+
+    insertions = sum(bucket[0] for bucket in per_file.values())
+    deletions = sum(bucket[1] for bucket in per_file.values())
+    lines_changed = insertions + deletions
+    files_touched = sum(1 for bucket in per_file.values() if bucket[0] or bucket[1])
+
+    editing: list[SessionDetails] = []
+    read_only: list[SessionDetails] = []
+    for detail in tracked:
+        if any(edit.insertions or edit.deletions for edit in detail.file_edits):
+            editing.append(detail)
+        else:
+            read_only.append(detail)
+
+    tracked_cost = sum(estimate_detail_cost(detail, pricing) for detail in tracked)
+    untracked_cost = sum(estimate_detail_cost(detail, pricing) for detail in untracked)
+    read_only_cost = sum(estimate_detail_cost(detail, pricing) for detail in read_only)
+
+    return EfficiencySummary(
+        tracked=bool(tracked),
+        untracked_sources=untracked_sources,
+        tracked_cost_usd=tracked_cost,
+        untracked_cost_usd=untracked_cost,
+        read_only_cost_usd=read_only_cost,
+        editing_sessions=len(editing),
+        read_only_sessions=len(read_only),
+        lines_changed=lines_changed,
+        insertions=insertions,
+        deletions=deletions,
+        files_touched=files_touched,
+        cost_per_1k_lines=tracked_cost / (lines_changed / 1000) if lines_changed else None,
+        cost_per_file=tracked_cost / files_touched if files_touched else None,
+        cost_per_editing_session=tracked_cost / len(editing) if editing else None,
+        rework_ratio=deletions / insertions if insertions else None,
+        # A file that lost more lines than it gained across the window is one the
+        # agent kept taking apart, which is the shape of work that never converges.
+        churn_files=sum(1 for bucket in per_file.values() if bucket[1] > bucket[0]),
+        hotspots=_churn_hotspots(per_file),
+    )
+
+
+def _churn_hotspots(per_file: dict[str, list], limit: int = 8) -> list[ChurnEntry]:
+    """Files that resisted settling, across every project in the window.
+
+    Ranked by how many separate sessions rewrote the file, because a file touched
+    by many sessions is one the agent keeps returning to. Files the window left
+    smaller than it found them are promoted ahead of equally-busy files that grew,
+    since net shrinkage is the stronger sign the work did not converge.
+    """
+    entries = [
+        ChurnEntry(
+            path=path,
+            sessions=len(bucket[3]),
+            edits=bucket[2],
+            insertions=bucket[0],
+            deletions=bucket[1],
+        )
+        for path, bucket in per_file.items()
+    ]
+    # A single-session file is just a file that was edited, not one that resisted
+    # anything, so it is only eligible when it ended up smaller than it started.
+    entries = [entry for entry in entries if entry.sessions > 1 or entry.net_lines < 0]
+    entries.sort(key=lambda entry: (-entry.sessions, entry.net_lines, -entry.edits, entry.path))
+    return entries[: max(limit, 0)]
+
+
+def summarize_tool_efficiency_from_details(
+    details: list[SessionDetails],
+    *,
+    pricing: PricingConfig | None = None,
+) -> list[ToolEfficiency]:
+    """Per-tool spend against per-tool work, for answering "which one is worth it".
+
+    Every tool appears, including the ones that record no file edits, so the reader
+    sees the whole spend. The ones that cannot be measured carry a None per-line
+    figure rather than being dropped, which would quietly turn "unmeasurable" into
+    "not in the comparison" and invite the reader to rank them by cost alone.
+    """
+    pricing = pricing or PricingConfig()
+    grouped: dict[str, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        grouped[detail.session.source].append(detail)
+
+    entries: list[ToolEfficiency] = []
+    for source, source_details in grouped.items():
+        tracked = source in FILE_EDIT_TRACKING_SOURCES
+        lines_changed = 0
+        files: set[str] = set()
+        if tracked:
+            for detail in source_details:
+                for edit in detail.file_edits:
+                    lines_changed += edit.insertions + edit.deletions
+                    files.add(edit.path)
+        cost = sum(estimate_detail_cost(detail, pricing) for detail in source_details)
+        entries.append(
+            ToolEfficiency(
+                source=source,
+                label=source_label(source),
+                tracks_file_edits=tracked,
+                sessions=len(source_details),
+                estimated_cost_usd=cost,
+                lines_changed=lines_changed,
+                files_touched=len(files),
+                cost_per_1k_lines=cost / (lines_changed / 1000) if lines_changed else None,
+            )
+        )
+    entries.sort(key=lambda entry: (-entry.estimated_cost_usd, entry.label))
+    return entries
 
 
 def summarize_behavior_from_details(

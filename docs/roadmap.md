@@ -18,25 +18,45 @@ that people run occasionally.
 
 ## Next
 
-1. More source metadata
-   Branch data comes from Codex, Claude Code, and Hermes. OpenCode records neither a branch
-   nor a model family, and Hermes leaves both null for sessions started outside a checkout,
-   so that spend lands in the unattributed bucket. Both would benefit from parsing whatever
-   those databases do keep.
-2. Cache efficiency as a trend
+1. Session-level drilldown
+   A project opens into its files; a session currently opens into nothing. The rollouts are
+   already parsed line by line, so the tools, files, and branch behind one session are
+   available and only the view is missing.
+2. Spend thresholds
+   The dashboard can say usage moved up 74% and that a month projects to $145, but nothing
+   is compared against a number the user chose. A monthly budget belongs in the existing
+   `config.toml`, which keeps it out of the CLI surface ruled out below.
+3. Cache efficiency as a trend
    Cache reuse is reported as a single ratio per window. The interesting question is how it
    moves over time and whether long sessions are paying for cache they never hit.
-3. Source parsing resilience
-   Local file formats drift. Isolate per-source parse failures so one broken transcript
-   or schema change cannot take down the whole dashboard.
+4. Source metadata
+   OpenCode records neither a branch nor a model family, and Hermes leaves both null for
+   sessions started outside a checkout, so that spend lands in the unattributed bucket. Both
+   would benefit from parsing whatever those databases do keep.
 
 ## Done
 
-1. Coverage for `display.py`
+1. Spend joined to the work it bought
+   An Efficiency panel that divides a window's spend by the file edits recorded in the same
+   sessions: cost per 1k lines, per file, and per editing session, the share of spend on
+   sessions that changed nothing, a rework ratio, and the most-rewritten files across every
+   project. On the Overview, a per-tool version answers which agent is worth its cost.
+   Scoped to the sources that actually record edits, so an unmeasurable tool is labelled
+   rather than ranked.
+2. Bounded history across all four sources
+   OpenCode and Hermes read their entire history on every launch while the README claimed
+   all four were capped. Every source now honors `CODEX_STATS_MAX_SESSIONS`, and the
+   coverage note names each source it truncated instead of reporting one blended Codex
+   total that could not describe the other three.
+3. One unreadable source no longer takes down the dashboard
+   A schema change in any tool's database raised out of ingest and killed the other three
+   tabs. Each source now degrades to its empty state, and an unrecognized file-edit action
+   is counted instead of raising.
+4. Coverage for `display.py`
    `tests/test_display.py` now pins the panels the renderer emits, including a markup
    balance check that catches an unbalanced tag, which a browser would otherwise render
    silently.
-2. Branch-level spend
+5. Branch-level spend
    Spend broken down per repository *and* branch, with branches that went quiet totalled
    separately as paid-for work that never finished.
 
@@ -47,3 +67,10 @@ without a concrete use case:
 
 - JSON export, import, and multi-machine merge
 - CLI flags for output path, headless mode, or source filtering
+
+## Known Limits
+
+- Tool-call and message tables are read whole and filtered in Python, because neither
+  OpenCode nor Hermes records tool calls in a shape that can be filtered in SQL by session
+  id. The session cap therefore bounds session rows but not the tool-call read behind them,
+  so startup on a very long history is still slower than the session count alone suggests.

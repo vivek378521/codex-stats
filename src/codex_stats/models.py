@@ -625,6 +625,8 @@ class DashboardWindow:
     behavior: "BehaviorSummary | None" = None
     branches: "BranchSummary | None" = None
     providers: list[BreakdownEntry] = field(default_factory=list, repr=False)
+    efficiency: "EfficiencySummary | None" = None
+    tool_efficiency: list["ToolEfficiency"] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -652,6 +654,8 @@ class DashboardWindow:
             "behavior": self.behavior.to_dict() if self.behavior else None,
             "branches": self.branches.to_dict() if self.branches else None,
             "providers": [entry.to_dict() for entry in self.providers],
+            "efficiency": self.efficiency.to_dict() if self.efficiency else None,
+            "tool_efficiency": [entry.to_dict() for entry in self.tool_efficiency],
         }
 
 
@@ -669,6 +673,106 @@ class ToolDailyPoint:
             "total_tokens": self.total_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
         }
+
+
+@dataclass(frozen=True)
+class ChurnEntry:
+    """One file's edit history across every project in the window.
+
+    File impact is otherwise only visible from inside a single project's
+    drilldown, which makes it impossible to answer "which files do I keep
+    rewriting no matter which repo I am in". Ranking by how many sessions
+    touched a file surfaces the ones that resist convergence; a negative
+    ``net_lines`` is the stronger signal, since it means the window finished
+    smaller than it started.
+    """
+
+    path: str
+    sessions: int
+    edits: int
+    insertions: int
+    deletions: int
+
+    @property
+    def net_lines(self) -> int:
+        return self.insertions - self.deletions
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["net_lines"] = self.net_lines
+        return payload
+
+
+@dataclass(frozen=True)
+class EfficiencySummary:
+    """What the window's spend actually bought.
+
+    Every other panel answers "how much" or "where". This one answers "for what",
+    by joining cost to the file edits recorded in the same sessions. That join is
+    only meaningful for sources that record edits at all, so ``tracked`` carries
+    whether the window has that data and every derived figure is None without it,
+    rather than reporting a division by zero as though it were a bad result.
+    """
+
+    tracked: bool
+    untracked_sources: tuple[str, ...]
+    tracked_cost_usd: float
+    untracked_cost_usd: float
+    read_only_cost_usd: float
+    editing_sessions: int
+    read_only_sessions: int
+    lines_changed: int
+    insertions: int
+    deletions: int
+    files_touched: int
+    cost_per_1k_lines: float | None
+    cost_per_file: float | None
+    cost_per_editing_session: float | None
+    rework_ratio: float | None
+    churn_files: int
+    hotspots: list[ChurnEntry] = field(default_factory=list, repr=False)
+
+    @property
+    def read_only_cost_share(self) -> float | None:
+        """Share of tracked spend that went to sessions which changed nothing.
+
+        Only meaningful when a source is actually recording edits, so it stays None
+        otherwise instead of reporting that every session was read-only.
+        """
+        if not self.tracked or self.tracked_cost_usd <= 0:
+            return None
+        return self.read_only_cost_usd / self.tracked_cost_usd
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["read_only_cost_share"] = self.read_only_cost_share
+        # Nested asdict would drop ChurnEntry.net_lines, which is a derived
+        # property rather than a field, so the list is serialized explicitly.
+        payload["hotspots"] = [entry.to_dict() for entry in self.hotspots]
+        return payload
+
+
+@dataclass(frozen=True)
+class ToolEfficiency:
+    """One tool's spend measured against the work it recorded.
+
+    ``tracks_file_edits`` is False for the tools whose databases record tokens and
+    cost but nothing about files. Those rows still show their spend, so the
+    comparison stays honest, but they carry no per-line figure and must not be
+    ranked as if they were expensive.
+    """
+
+    source: str
+    label: str
+    tracks_file_edits: bool
+    sessions: int
+    estimated_cost_usd: float
+    lines_changed: int
+    files_touched: int
+    cost_per_1k_lines: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import Paths, PricingConfig, load_pricing_config
 from .display import format_dashboard_html
-from .ingest import ENV_MAX_SESSIONS, codex_session_coverage
+from .ingest import ENV_MAX_SESSIONS
 from .leaderboard import LeaderboardConfig, LeaderboardSubmitServer
 from .metrics import (
     DEFAULT_IDLE_BRANCH_DAYS,
@@ -20,6 +20,7 @@ from .metrics import (
     summarize_costs_from_details,
     summarize_daily_from_details,
     summarize_details,
+    summarize_efficiency_from_details,
     summarize_expensive_session,
     summarize_files_from_details,
     summarize_history_from_details,
@@ -31,6 +32,7 @@ from .metrics import (
     summarize_source_daily_from_details,
     summarize_takeaways,
     summarize_top_sessions_from_details,
+    summarize_tool_efficiency_from_details,
     summarize_work_rhythm,
 )
 from .models import (
@@ -133,15 +135,36 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
 def _coverage_note(paths: Paths) -> str | None:
     """Admit to a bounded history read, or stay quiet when nothing was dropped.
 
-    Returns None unless sessions were actually skipped, so the common case (a
-    history small enough to read in full) costs one COUNT(*) and prints nothing.
+    Every source that can drop history reports it here, because a window that
+    silently shows a partial history is worse than one that says it is partial.
+    Sources are named individually so a reader can tell which of their tools was
+    truncated instead of inferring it from a single blended total.
     """
-    analyzed, total = codex_session_coverage(paths)
-    if not total or analyzed >= total:
+    dropped_by_source: list[str] = []
+    total_analyzed = 0
+    total_on_disk = 0
+    for source in iter_sources(paths):
+        if not source.available:
+            continue
+        try:
+            analyzed, total = source.coverage()
+        except Exception:
+            # Coverage is disclosure. A source that cannot be counted must not stop
+            # the dashboard, and claiming a complete history would be a lie, so the
+            # source stays silent rather than asserting either way.
+            continue
+        if not total or analyzed >= total:
+            continue
+        dropped_by_source.append(f"{source.label} kept {analyzed:,} of {total:,}")
+        total_analyzed += analyzed
+        total_on_disk += total
+    if not dropped_by_source:
         return None
-    dropped = total - analyzed
+    dropped = total_on_disk - total_analyzed
+    listed = "; ".join(dropped_by_source)
     return (
-        f"Showing the most recent {analyzed:,} of {total:,} Codex sessions. "
+        f"Showing the most recent {total_analyzed:,} of {total_on_disk:,} sessions "
+        f"across your tools ({listed}). "
         f"{dropped:,} older session{'s' if dropped != 1 else ''} "
         f"{'are' if dropped != 1 else 'is'} excluded from every total and chart, so All Time is a "
         f"recent-history total rather than a lifetime one. "
@@ -259,6 +282,7 @@ def _build_window(
     activity_heatmap = summarize_activity_heatmap_from_details(current_details, timezone=now.tzinfo)
     file_impact = summarize_files_from_details(current_details, limit=10)
     behavior = summarize_behavior_from_details(current_details)
+    efficiency = summarize_efficiency_from_details(current_details, pricing=pricing)
     branches = summarize_branches_from_details(
         current_details,
         pricing=pricing,
@@ -287,6 +311,7 @@ def _build_window(
             file_impact=file_impact,
             behavior=behavior,
             branches=branches,
+            efficiency=efficiency,
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(current_details, pricing),
@@ -299,14 +324,20 @@ def _build_window(
             limit=5,
         ),
         file_impact=file_impact,
-            behavior=behavior,
-            branches=branches,
-            providers=summarize_providers_from_details(current_details, pricing),
-            tool_breakdown=(
-                summarize_source_breakdown_from_details(current_details, pricing)
-                if build_tool_breakdown
-                else None
-            ),
+        behavior=behavior,
+        branches=branches,
+        providers=summarize_providers_from_details(current_details, pricing),
+        efficiency=efficiency,
+        tool_efficiency=(
+            summarize_tool_efficiency_from_details(current_details, pricing=pricing)
+            if build_tool_breakdown
+            else []
+        ),
+        tool_breakdown=(
+            summarize_source_breakdown_from_details(current_details, pricing)
+            if build_tool_breakdown
+            else None
+        ),
         tool_daily_points=(
             summarize_source_daily_from_details(
                 current_details,
@@ -345,6 +376,7 @@ def _build_all_time_window(
     activity_heatmap = summarize_activity_heatmap_from_details(all_details, timezone=now.tzinfo)
     file_impact = summarize_files_from_details(all_details, limit=10)
     behavior = summarize_behavior_from_details(all_details)
+    efficiency = summarize_efficiency_from_details(all_details, pricing=pricing)
     branches = summarize_branches_from_details(
         all_details,
         pricing=pricing,
@@ -373,6 +405,7 @@ def _build_all_time_window(
             file_impact=file_impact,
             behavior=behavior,
             branches=branches,
+            efficiency=efficiency,
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(all_details, pricing),
@@ -388,6 +421,12 @@ def _build_all_time_window(
         behavior=behavior,
         branches=branches,
         providers=summarize_providers_from_details(all_details, pricing),
+        efficiency=efficiency,
+        tool_efficiency=(
+            summarize_tool_efficiency_from_details(all_details, pricing=pricing)
+            if build_tool_breakdown
+            else []
+        ),
         tool_breakdown=(
             summarize_source_breakdown_from_details(all_details, pricing)
             if build_tool_breakdown

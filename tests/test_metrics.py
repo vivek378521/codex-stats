@@ -44,6 +44,8 @@ from codex_stats.metrics import (
     summarize_costs_from_details,
     summarize_daily_from_details,
     summarize_details,
+    summarize_efficiency_from_details,
+    summarize_efficiency_takeaways,
     summarize_expensive_session,
     summarize_files_from_details,
     summarize_history_from_details,
@@ -55,6 +57,7 @@ from codex_stats.metrics import (
     summarize_source_daily_from_details,
     summarize_takeaways,
     summarize_top_sessions_from_details,
+    summarize_tool_efficiency_from_details,
     summarize_work_rhythm,
     UNIDENTIFIED_VENDOR_LABEL,
 )
@@ -64,10 +67,37 @@ from codex_stats.models import (
     BehaviorSummary,
     DailyPoint,
     DashboardData,
+    FileEdit,
     SessionDetails,
     SessionRecord,
 )
-from codex_stats.sources import _ingest_claude, iter_sources, source_label
+from codex_stats.sources import (
+    _ingest_claude,
+    _ingest_hermes,
+    _ingest_opencode,
+    iter_sources,
+    source_label,
+)
+
+
+def _isolate_sources(test: unittest.TestCase, root: Path) -> None:
+    """Point the three non-Codex sources at empty dirs for the duration of a test.
+
+    Only Codex is reached through ``Paths``; the other three resolve their own
+    locations from the environment. Without this, a test that builds a dashboard
+    silently merges whatever the developer happens to have installed locally, so
+    the run passes or fails depending on whose machine it is on.
+    """
+    for var, name in (
+        ("CODEX_STATS_OPENCODE_HOME", "empty-opencode"),
+        ("CODEX_STATS_CLAUDE_PROJECTS_DIR", "empty-claude"),
+        ("CODEX_STATS_HERMES_HOME", "empty-hermes"),
+    ):
+        previous = os.environ.get(var)
+        test.addCleanup(os.environ.pop, var, None)
+        if previous is not None:
+            test.addCleanup(os.environ.__setitem__, var, previous)
+        os.environ[var] = str(root / name)
 
 
 def _details(paths: Paths, days: int, now: datetime | None = None) -> list:
@@ -85,14 +115,7 @@ class MetricsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         root = Path(self.tmpdir.name)
-        self._source_env_overrides = {
-            "CODEX_STATS_OPENCODE_HOME": os.environ.get("CODEX_STATS_OPENCODE_HOME"),
-            "CODEX_STATS_CLAUDE_PROJECTS_DIR": os.environ.get("CODEX_STATS_CLAUDE_PROJECTS_DIR"),
-            "CODEX_STATS_HERMES_HOME": os.environ.get("CODEX_STATS_HERMES_HOME"),
-        }
-        os.environ["CODEX_STATS_OPENCODE_HOME"] = str(root / "empty-opencode")
-        os.environ["CODEX_STATS_CLAUDE_PROJECTS_DIR"] = str(root / "empty-claude")
-        os.environ["CODEX_STATS_HERMES_HOME"] = str(root / "empty-hermes")
+        _isolate_sources(self, root)
         codex_home = root / ".codex"
         sessions_dir = codex_home / "sessions" / "2026" / "04" / "03"
         sessions_dir.mkdir(parents=True)
@@ -247,11 +270,6 @@ class MetricsTestCase(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        for key, value in self._source_env_overrides.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
         self.tmpdir.cleanup()
 
     def test_session_details_are_read_from_local_state(self) -> None:
@@ -357,6 +375,27 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIn("Most Edited Files in This Project", html)
         self.assertIn("src/main.py", html)
         self.assertEqual(impact[0].to_dict()["path"], "src/main.py")
+
+    def test_an_unrecognized_edit_action_does_not_break_the_dashboard(self) -> None:
+        # File impact is built unconditionally for every window, so indexing the
+        # action name directly made any new vocabulary a crash that took down the
+        # entire dashboard. An unknown action is counted and shown in none of the
+        # three columns, which is visibly a lower total rather than an error.
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        base = _details(self.paths, 7, now=now)[0]
+        renamed = replace(
+            base,
+            file_edits=(
+                FileEdit(path="src/main.py", action="refactored", insertions=4, deletions=2),
+            ),
+        )
+        impact = summarize_files_from_details([renamed])
+        self.assertEqual(len(impact), 1)
+        self.assertEqual(impact[0].edits, 1)
+        self.assertEqual(impact[0].updated, 0)
+        self.assertEqual((impact[0].insertions, impact[0].deletions), (4, 2))
+        dashboard = _build_dashboard(self.paths, now=now)
+        self.assertIn("Most Edited Files in This Project", format_dashboard_html(dashboard))
 
     def test_takeaway_mentions_file_work(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -982,7 +1021,9 @@ class HistoryBoundTestCase(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        codex_home = Path(tmp.name) / "codex"
+        root = Path(tmp.name)
+        _isolate_sources(self, root)
+        codex_home = root / "codex"
         (codex_home / "sessions").mkdir(parents=True)
         self.codex_home = codex_home
         self.state_db = codex_home / "state_5.sqlite"
@@ -1136,7 +1177,9 @@ class HistoryBoundTestCase(unittest.TestCase):
         dashboard = _build_dashboard(self.paths, now=datetime(2026, 4, 10, 12, tzinfo=UTC))
         self.assertIsNotNone(dashboard.coverage_note)
         assert dashboard.coverage_note is not None
-        self.assertIn("4 of 9", dashboard.coverage_note)
+        # Named per source, because a blended total cannot tell the reader which of
+        # their own tools was truncated.
+        self.assertIn("Codex kept 4 of 9", dashboard.coverage_note)
         self.assertIn(ENV_MAX_SESSIONS, dashboard.coverage_note)
         html = format_dashboard_html(dashboard)
         # Rendered once, above the tabs, so it qualifies every number on the page
@@ -1188,6 +1231,443 @@ class HistoryBoundTestCase(unittest.TestCase):
                     f"a session-count cap can cut into {key}; the note must disclose that",
                 )
         self.assertIsNotNone(truncated.coverage_note)
+
+
+class NonCodexHistoryBoundTestCase(unittest.TestCase):
+    """OpenCode and Hermes must obey the same session cap Codex does.
+
+    Both used to read their whole history on every launch while the README
+    claimed all four sources were capped. That is the worst combination: the
+    docs promise a bound that does not exist, and a user with a long history
+    pays for it in startup time. Each source is checked for the two properties
+    that matter separately, that the read is capped and that it keeps the newest.
+    """
+
+    OPENCODE_COLUMNS = (
+        "id, directory, model, cost, tokens_input, tokens_output, tokens_reasoning, "
+        "tokens_cache_read, tokens_cache_write, time_created, time_updated"
+    )
+    HERMES_COLUMNS = (
+        "id, cwd, git_branch, git_repo_root, model, message_count, input_tokens, "
+        "output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, "
+        "estimated_cost_usd, started_at, ended_at, last_activity_at, display_name, title"
+    )
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        _isolate_sources(self, root)
+        previous = os.environ.get(ENV_MAX_SESSIONS)
+        self.addCleanup(os.environ.pop, ENV_MAX_SESSIONS, None)
+        if previous is not None:
+            self.addCleanup(os.environ.__setitem__, ENV_MAX_SESSIONS, previous)
+        os.environ.pop(ENV_MAX_SESSIONS, None)
+        self.root = root
+
+    def _opencode_db(self, count: int) -> Path:
+        db_path = self.root / "opencode.db"
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute(f"CREATE TABLE session ({self.OPENCODE_COLUMNS})")
+            connection.execute(
+                "CREATE TABLE message (id INTEGER PRIMARY KEY, session_id TEXT, data TEXT)"
+            )
+            connection.execute("CREATE TABLE part (id INTEGER PRIMARY KEY, session_id TEXT, data TEXT)")
+            # Oldest first on the way in, so ordering has to come from the query
+            # rather than from insertion order.
+            rows = [
+                (
+                    f"s{index}",
+                    "/repos/alpha",
+                    None,
+                    0.1,
+                    10,
+                    5,
+                    0,
+                    0,
+                    0,
+                    1_700_000_000 + index * 60,
+                    1_700_000_000 + index * 60,
+                )
+                for index in range(count)
+            ]
+            connection.executemany(f"INSERT INTO session VALUES ({', '.join('?' * len(rows[0]))})", rows)
+            connection.commit()
+        finally:
+            connection.close()
+        return db_path
+
+    def _hermes_db(self, count: int) -> Path:
+        state_db = self.root / "state.db"
+        connection = sqlite3.connect(state_db)
+        try:
+            connection.execute(f"CREATE TABLE sessions ({self.HERMES_COLUMNS})")
+            connection.execute(
+                "CREATE TABLE messages (session_id TEXT, tool_calls TEXT, tool_call_id TEXT, effect_disposition TEXT)"
+            )
+            rows = [
+                (
+                    f"s{index}",
+                    "/repos/alpha",
+                    None,
+                    None,
+                    "gpt-5.4",
+                    2,
+                    10,
+                    5,
+                    0,
+                    0,
+                    0,
+                    0.1,
+                    1_700_000_000 + index * 60,
+                    1_700_000_600 + index * 60,
+                    1_700_000_600 + index * 60,
+                    "alpha",
+                    None,
+                )
+                for index in range(count)
+            ]
+            connection.executemany(f"INSERT INTO sessions VALUES ({', '.join('?' * len(rows[0]))})", rows)
+            connection.commit()
+        finally:
+            connection.close()
+        return state_db
+
+    def test_opencode_read_is_capped_and_keeps_the_newest(self) -> None:
+        db_path = self._opencode_db(count=9)
+        self.assertEqual(len(_ingest_opencode(db_path)), 9)
+        os.environ[ENV_MAX_SESSIONS] = "4"
+        capped = _ingest_opencode(db_path)
+        self.assertEqual(len(capped), 4)
+        newest = max(range(9), key=lambda index: 1_700_000_000 + index * 60)
+        self.assertEqual(capped[0].session.session_id, f"s{newest}")
+
+    def test_hermes_read_is_capped_and_keeps_the_newest(self) -> None:
+        state_db = self._hermes_db(count=9)
+        self.assertEqual(len(_ingest_hermes(state_db)), 9)
+        os.environ[ENV_MAX_SESSIONS] = "4"
+        capped = _ingest_hermes(state_db)
+        self.assertEqual(len(capped), 4)
+        newest = max(range(9), key=lambda index: 1_700_000_000 + index * 60)
+        self.assertEqual(capped[0].session.session_id, f"s{newest}")
+
+    def test_every_source_reports_its_own_coverage(self) -> None:
+        self._opencode_db(count=9)
+        self._hermes_db(count=7)
+        os.environ["CODEX_STATS_OPENCODE_HOME"] = str(self.root)
+        os.environ["CODEX_STATS_HERMES_HOME"] = str(self.root)
+        os.environ["CODEX_HOME"] = str(self.root / "no-codex")
+        os.environ[ENV_MAX_SESSIONS] = "4"
+        reported = {source.key: source.coverage() for source in iter_sources()}
+        self.assertEqual(reported["opencode"], (4, 9))
+        self.assertEqual(reported["hermes"], (4, 7))
+        self.assertEqual(reported["codex"], (0, 0))
+        self.assertEqual(reported["claude"], (0, 0))
+
+    def test_coverage_counts_everything_when_unbounded(self) -> None:
+        self._opencode_db(count=6)
+        os.environ["CODEX_STATS_OPENCODE_HOME"] = str(self.root)
+        os.environ[ENV_MAX_SESSIONS] = "0"
+        reported = {source.key: source.coverage() for source in iter_sources()}
+        self.assertEqual(reported["opencode"], (6, 6))
+
+    def test_coverage_stays_silent_rather_than_claiming_a_whole_history(self) -> None:
+        # A database whose schema drifted cannot be counted. The note is disclosure,
+        # so an uncountable source must say nothing instead of asserting that the
+        # history it read is the whole history.
+        broken = self.root / "opencode.db"
+        connection = sqlite3.connect(broken)
+        try:
+            connection.execute("CREATE TABLE something_else (id INTEGER)")
+            connection.commit()
+        finally:
+            connection.close()
+        os.environ["CODEX_STATS_OPENCODE_HOME"] = str(self.root)
+        os.environ["CODEX_HOME"] = str(self.root / "no-codex")
+        os.environ[ENV_MAX_SESSIONS] = "2"
+        source = next(s for s in iter_sources() if s.key == "opencode")
+        self.assertEqual(source.coverage(), (0, 0))
+        dashboard = _build_dashboard(Paths.discover())
+        self.assertIsNone(dashboard.coverage_note)
+
+    def test_a_drifted_schema_costs_one_source_rather_than_the_dashboard(self) -> None:
+        # The four tabs exist whatever the data says, so an unreadable source has to
+        # degrade to its empty state. Before this was handled, one drifted schema
+        # raised out of ingest and took the other three down with it.
+        broken = self.root / "opencode.db"
+        connection = sqlite3.connect(broken)
+        try:
+            connection.execute("CREATE TABLE something_else (id INTEGER)")
+            connection.commit()
+        finally:
+            connection.close()
+        os.environ["CODEX_STATS_OPENCODE_HOME"] = str(self.root)
+        os.environ["CODEX_HOME"] = str(self.root / "no-codex")
+        dashboard = _build_dashboard(Paths.discover())
+        keys = {scope.key for scope in dashboard.scopes}
+        self.assertEqual(keys, {"overview", "codex", "opencode", "claude", "hermes"})
+        html = format_dashboard_html(dashboard)
+        self.assertIn("OpenCode", html)
+
+
+EFFICIENCY_NOW = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
+
+
+def efficiency_detail(
+    *,
+    session_id: str,
+    source: str = "codex",
+    cost_usd: float | None = 10.0,
+    edits: tuple[tuple[str, int, int], ...] = (),
+) -> SessionDetails:
+    """A session with a known cost and a known set of (path, insertions, deletions)."""
+    created = EFFICIENCY_NOW - timedelta(days=1)
+    session = SessionRecord(
+        session_id=session_id,
+        created_at=created,
+        updated_at=created,
+        cwd="/tmp/project",
+        model="gpt-5.4",
+        model_provider="openai",
+        tokens_used=1000,
+        rollout_path=Path("/tmp/rollout.jsonl"),
+        git_branch=None,
+        git_origin_url=None,
+        source=source,
+    )
+    return SessionDetails(
+        session=session,
+        request_count=3,
+        input_tokens=100,
+        output_tokens=50,
+        cached_input_tokens=0,
+        reasoning_output_tokens=0,
+        total_tokens_from_rollout=150,
+        started_at=created,
+        recorded_cost_usd=cost_usd,
+        token_accounting=CACHED_SEPARATE,
+        file_edits=tuple(
+            FileEdit(path=path, action="updated", insertions=insertions, deletions=deletions)
+            for path, insertions, deletions in edits
+        ),
+    )
+
+
+class EfficiencyTest(unittest.TestCase):
+    """Spend joined to the edits recorded in the same sessions.
+
+    The load-bearing property is the split between sources that record file edits
+    and sources that do not. Getting it wrong does not produce a wrong-looking
+    number, it produces a confidently wrong ranking that names an unmeasurable
+    tool as the expensive one, so most of these tests are about what stays None.
+    """
+
+    def test_cost_per_line_joins_spend_to_recorded_edits(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [efficiency_detail(session_id="a", cost_usd=20.0, edits=(("/a.py", 500, 100),))]
+        )
+        self.assertTrue(summary.tracked)
+        self.assertEqual(summary.lines_changed, 600)
+        self.assertEqual(summary.files_touched, 1)
+        # $20 over 600 changed lines is $33.33 per 1k.
+        self.assertAlmostEqual(summary.cost_per_1k_lines or 0, 20.0 / 0.6, places=4)
+        self.assertEqual(summary.cost_per_file, 20.0)
+        self.assertEqual(summary.cost_per_editing_session, 20.0)
+
+    def test_editing_and_read_only_sessions_are_separated(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [
+                efficiency_detail(session_id="edit", cost_usd=10.0, edits=(("/a.py", 100, 0),)),
+                efficiency_detail(session_id="ro1", cost_usd=5.0, edits=()),
+                efficiency_detail(session_id="ro2", cost_usd=5.0, edits=()),
+            ]
+        )
+        self.assertEqual(summary.editing_sessions, 1)
+        self.assertEqual(summary.read_only_sessions, 2)
+        self.assertEqual(summary.read_only_cost_usd, 10.0)
+        self.assertAlmostEqual(summary.read_only_cost_share or 0, 0.5, places=6)
+
+    def test_a_source_that_records_no_edits_is_not_reported_as_read_only(self) -> None:
+        # OpenCode and Hermes store cost and tokens but not files. Counting their
+        # sessions as read-only would invent a finding; the only honest statement
+        # is that the window has nothing to divide.
+        summary = summarize_efficiency_from_details(
+            [efficiency_detail(session_id="o", source="opencode", cost_usd=5.0)]
+        )
+        self.assertFalse(summary.tracked)
+        self.assertEqual(summary.untracked_sources, ("OpenCode",))
+        self.assertEqual(summary.untracked_cost_usd, 5.0)
+        self.assertIsNone(summary.cost_per_1k_lines)
+        self.assertIsNone(summary.read_only_cost_share)
+
+    def test_untracked_spend_stays_out_of_the_ratios(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [
+                efficiency_detail(session_id="a", cost_usd=10.0, edits=(("/a.py", 1000, 0),)),
+                efficiency_detail(session_id="o", source="opencode", cost_usd=500.0),
+            ]
+        )
+        self.assertTrue(summary.tracked)
+        # Only the tracked $10 is divided, not the blended $510.
+        self.assertEqual(summary.tracked_cost_usd, 10.0)
+        self.assertEqual(summary.untracked_cost_usd, 500.0)
+        self.assertAlmostEqual(summary.cost_per_1k_lines or 0, 10.0, places=6)
+
+    def test_no_recorded_edits_leaves_ratios_unset_rather_than_zero(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [efficiency_detail(session_id="a", cost_usd=10.0, edits=())]
+        )
+        self.assertTrue(summary.tracked)
+        self.assertEqual(summary.lines_changed, 0)
+        self.assertIsNone(summary.cost_per_1k_lines)
+        self.assertIsNone(summary.cost_per_file)
+        self.assertIsNone(summary.cost_per_editing_session)
+        self.assertIsNone(summary.rework_ratio)
+
+    def test_rework_ratio_and_net_shrinkage(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [
+                efficiency_detail(
+                    session_id="a",
+                    edits=(("/grow.py", 300, 100), ("/shrink.py", 40, 90)),
+                )
+            ]
+        )
+        # 190 removed against 340 added.
+        self.assertAlmostEqual(summary.rework_ratio or 0, 190 / 340, places=6)
+        self.assertEqual(summary.churn_files, 1)
+        self.assertEqual(summary.insertions, 340)
+        self.assertEqual(summary.deletions, 190)
+
+    def test_hotspots_rank_by_sessions_and_span_projects(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [
+                efficiency_detail(session_id="a", edits=(("/hot.py", 10, 0), ("/once.py", 5, 0))),
+                efficiency_detail(session_id="b", edits=(("/hot.py", 10, 40), ("/once.py", 5, 0))),
+                efficiency_detail(session_id="c", edits=(("/hot.py", 10, 0),)),
+                efficiency_detail(session_id="d", edits=(("/hot.py", 1, 0),)),
+            ]
+        )
+        paths = [entry.path for entry in summary.hotspots]
+        self.assertEqual(paths, ["/hot.py", "/once.py"])
+        # Ranked by how many separate sessions rewrote the file.
+        self.assertEqual(summary.hotspots[1].sessions, 2)
+        hot = summary.hotspots[0]
+        self.assertEqual(hot.sessions, 4)
+        self.assertEqual(hot.edits, 4)
+        self.assertEqual(hot.net_lines, -9)
+
+    def test_a_file_touched_once_and_growing_is_not_a_hotspot(self) -> None:
+        # One session that added lines is a file that was edited, not one that
+        # resisted anything, so it must not appear as a problem to fix.
+        summary = summarize_efficiency_from_details(
+            [efficiency_detail(session_id="a", edits=(("/fine.py", 20, 0),))]
+        )
+        self.assertEqual(summary.hotspots, [])
+
+    def test_a_singly_touched_shrinking_file_still_counts_as_churn(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [efficiency_detail(session_id="a", edits=(("/pruned.py", 2, 50),))]
+        )
+        self.assertEqual([entry.path for entry in summary.hotspots], ["/pruned.py"])
+        self.assertEqual(summary.churn_files, 1)
+
+    def test_serializes_read_only_share_and_hotspot_net(self) -> None:
+        summary = summarize_efficiency_from_details(
+            [
+                efficiency_detail(session_id="a", cost_usd=10.0, edits=(("/a.py", 100, 20),)),
+                efficiency_detail(session_id="b", cost_usd=10.0, edits=(("/a.py", 0, 0),)),
+            ]
+        )
+        payload = summary.to_dict()
+        self.assertIn("read_only_cost_share", payload)
+        self.assertEqual(payload["hotspots"][0]["net_lines"], 80)
+
+
+class ToolEfficiencyTest(unittest.TestCase):
+    """The per-tool comparison behind "which of my agents is worth it".
+
+    Every tool stays in the result. A tool that records no file edits carries its
+    spend and a None ratio, because dropping it would turn "cannot be measured"
+    into "not in the comparison" and quietly reduce the table to a cost ranking.
+    """
+
+    def test_every_tool_appears_with_its_own_measurement(self) -> None:
+        entries = summarize_tool_efficiency_from_details(
+            [
+                efficiency_detail(session_id="c1", source="codex", cost_usd=10.0, edits=(("/a.py", 1000, 0),)),
+                efficiency_detail(session_id="o1", source="opencode", cost_usd=99.0),
+            ]
+        )
+        by_source = {entry.source: entry for entry in entries}
+        self.assertEqual(set(by_source), {"codex", "opencode"})
+        self.assertTrue(by_source["codex"].tracks_file_edits)
+        self.assertAlmostEqual(by_source["codex"].cost_per_1k_lines or 0, 10.0, places=6)
+        self.assertFalse(by_source["opencode"].tracks_file_edits)
+        self.assertIsNone(by_source["opencode"].cost_per_1k_lines)
+        # The unmeasurable tool still carries its spend.
+        self.assertEqual(by_source["opencode"].estimated_cost_usd, 99.0)
+
+    def test_ranked_by_spend_so_the_biggest_stake_reads_first(self) -> None:
+        entries = summarize_tool_efficiency_from_details(
+            [
+                efficiency_detail(session_id="c", source="codex", cost_usd=10.0),
+                efficiency_detail(session_id="h", source="hermes", cost_usd=50.0),
+            ]
+        )
+        self.assertEqual([entry.source for entry in entries], ["hermes", "codex"])
+
+    def test_empty_input_is_an_empty_list_not_an_error(self) -> None:
+        self.assertEqual(summarize_tool_efficiency_from_details([]), [])
+
+
+class EfficiencyTakeawayTest(unittest.TestCase):
+    def test_states_the_cost_of_the_work_when_there_was_work(self) -> None:
+        lines = summarize_efficiency_takeaways(
+            summarize_efficiency_from_details(
+                [efficiency_detail(session_id="a", cost_usd=20.0, edits=(("/a.py", 1000, 0),))]
+            )
+        )
+        self.assertTrue(any("per 1k lines changed" in line for line in lines))
+
+    def test_says_nothing_when_the_window_tracks_no_edits(self) -> None:
+        self.assertEqual(
+            summarize_efficiency_takeaways(
+                summarize_efficiency_from_details(
+                    [efficiency_detail(session_id="o", source="opencode", cost_usd=5.0)]
+                )
+            ),
+            [],
+        )
+
+    def test_flags_spend_that_bought_no_edits(self) -> None:
+        lines = summarize_efficiency_takeaways(
+            summarize_efficiency_from_details(
+                [
+                    efficiency_detail(session_id="e", cost_usd=10.0, edits=(("/a.py", 500, 0),)),
+                    efficiency_detail(session_id="r", cost_usd=90.0, edits=()),
+                ]
+            )
+        )
+        self.assertTrue(any("changed no files" in line for line in lines))
+
+    def test_flags_heavy_rework(self) -> None:
+        lines = summarize_efficiency_takeaways(
+            summarize_efficiency_from_details(
+                [efficiency_detail(session_id="a", edits=(("/a.py", 100, 400),))]
+            )
+        )
+        self.assertTrue(any("Rework is high" in line for line in lines))
+
+    def test_stays_quiet_on_a_healthy_window(self) -> None:
+        lines = summarize_efficiency_takeaways(
+            summarize_efficiency_from_details(
+                [efficiency_detail(session_id="a", cost_usd=10.0, edits=(("/a.py", 1000, 10),))]
+            )
+        )
+        self.assertEqual([line for line in lines if "Rework is high" in line], [])
+        self.assertEqual([line for line in lines if "changed no files" in line], [])
 
 
 BRANCH_NOW = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)

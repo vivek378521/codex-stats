@@ -11,6 +11,7 @@ from typing import Callable
 
 from .config import Paths
 from .ingest import (
+    codex_session_coverage,
     file_edit_from_args,
     is_file_editing_tool,
     iter_session_details as _codex_iter_session_details,
@@ -51,6 +52,11 @@ class Source:
     available: bool
     path_hint: str
     ingest: Callable[[], list[SessionDetails]] = field(repr=False, compare=False)
+    coverage: Callable[[], tuple[int, int]] = field(
+        repr=False,
+        compare=False,
+        default=lambda: (0, 0),
+    )
 
 
 def _codex_source(paths: Paths | None = None) -> Source:
@@ -62,6 +68,7 @@ def _codex_source(paths: Paths | None = None) -> Source:
         available=paths.state_db.exists(),
         path_hint=str(paths.codex_home),
         ingest=lambda: _codex_iter_session_details(paths),
+        coverage=lambda: codex_session_coverage(paths),
     )
 
 
@@ -79,10 +86,11 @@ def _opencode_source(paths: Paths | None = None) -> Source:
     return Source(
         key=SOURCE_OPENCODE,
         label="OpenCode",
-        description="Local opencode sessions from the opencode.sqlite database, which records cost and token usage directly.",
+        description="Local opencode sessions from the opencode.db database, which records cost and token usage directly.",
         available=db_path.exists(),
         path_hint=str(root),
         ingest=lambda: _ingest_opencode(db_path),
+        coverage=lambda: _opencode_coverage(db_path),
     )
 
 
@@ -102,6 +110,7 @@ def _claude_source(paths: Paths | None = None) -> Source:
         available=bool(projects_dir.exists() and any(projects_dir.glob("*"))),
         path_hint=str(projects_dir),
         ingest=lambda: _ingest_claude(projects_dir),
+        coverage=lambda: _claude_coverage(projects_dir),
     )
 
 
@@ -122,6 +131,7 @@ def _hermes_source(paths: Paths | None = None) -> Source:
         available=state_db.exists(),
         path_hint=str(home),
         ingest=lambda: _ingest_hermes(state_db),
+        coverage=lambda: _hermes_coverage(state_db),
     )
 
 
@@ -138,6 +148,15 @@ SOURCE_LABELS: dict[str, str] = {
     SOURCE_CLAUDE: "Claude Code",
     SOURCE_HERMES: "Hermes",
 }
+
+# The sources whose transcripts name the files a session edited. OpenCode and
+# Hermes record tokens and cost but nothing about files, so they are deliberately
+# absent: dividing their spend by lines changed would divide by zero, and treating
+# their sessions as read-only would invent a finding the data cannot support. Any
+# metric that joins spend to work has to gate on this rather than deriving the
+# answer from an absence of edits, which is indistinguishable from a session that
+# genuinely changed nothing.
+FILE_EDIT_TRACKING_SOURCES = frozenset({SOURCE_CODEX, SOURCE_CLAUDE})
 
 
 def iter_sources(paths: Paths | None = None) -> list[Source]:
@@ -182,14 +201,77 @@ def _as_float(value) -> float | None:
         return None
 
 
+def _fetchall(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
+    """Run a read, degrading to no rows when the schema has drifted.
+
+    One unreadable source must not take down the dashboard for the other three.
+    The user still gets every tool that *can* be read, and the missing one renders
+    as an empty state, which is the honest outcome: a tool that has drifted and a
+    tool that was never installed are both "no data here", and neither should cost
+    the reader the other three.
+    """
+    try:
+        return connection.execute(query).fetchall()
+    except sqlite3.Error:
+        return []
+
+
+def _bounded_coverage(total: int) -> tuple[int, int]:
+    """Apply the session cap to a session total already known to disk.
+
+    The cap is pure arithmetic once the total is known, so this reports what the
+    ingest will read without re-running it.
+    """
+    if total <= 0:
+        return 0, 0
+    limit = resolve_max_sessions()
+    return (total if not limit else min(total, limit), total)
+
+
+def _count_sqlite(db_path: Path, query: str) -> int:
+    """Count rows for the coverage note, tolerating a missing or changed schema.
+
+    Coverage is disclosure, not data: a database that cannot be counted must not
+    stop the dashboard from rendering, so every failure degrades to "unknown"
+    and the source stays silent rather than claiming a complete history.
+    """
+    if not db_path.exists():
+        return 0
+    try:
+        connection = _connect_sqlite(db_path)
+    except sqlite3.Error:
+        return 0
+    try:
+        return int(connection.execute(query).fetchone()[0])
+    except (sqlite3.Error, TypeError, IndexError):
+        return 0
+    finally:
+        connection.close()
+
+
+def _claude_coverage(projects_dir: Path) -> tuple[int, int]:
+    if not projects_dir.is_dir():
+        return 0, 0
+    return _bounded_coverage(
+        sum(1 for project_dir in projects_dir.iterdir() if project_dir.is_dir() for _ in project_dir.glob("*.jsonl"))
+    )
+
+
+def _opencode_coverage(db_path: Path) -> tuple[int, int]:
+    return _bounded_coverage(_count_sqlite(db_path, "SELECT COUNT(*) FROM session WHERE time_updated > 0"))
+
+
+def _hermes_coverage(state_db: Path) -> tuple[int, int]:
+    return _bounded_coverage(_count_sqlite(state_db, "SELECT COUNT(*) FROM sessions WHERE started_at > 0"))
+
+
 def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
     if not db_path.exists():
         return []
     connection = _connect_sqlite(db_path)
     details: list[SessionDetails] = []
     try:
-        rows = connection.execute(
-            """
+        query = """
             SELECT
                 id,
                 directory,
@@ -206,17 +288,24 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
             WHERE time_updated > 0
             ORDER BY time_updated DESC
             """
-        ).fetchall()
+        max_sessions = resolve_max_sessions()
+        if max_sessions:
+            # Safe to push into SQL: the ordering above is already newest first, so
+            # the limit keeps the most recent sessions and drops the oldest. This is
+            # the same bound Codex applies, and the coverage note reports what it drops.
+            query += f"\n            LIMIT {max_sessions}"
+        rows = _fetchall(connection, query)
         request_counts = {
             row["session_id"]: row["count"]
-            for row in connection.execute(
+            for row in _fetchall(
+                connection,
                 """
                 SELECT session_id, COUNT(*) AS count
                 FROM message
                 WHERE json_extract(data, '$.role') = 'user'
                 GROUP BY session_id
-                """
-            ).fetchall()
+                """,
+            )
         } if rows else {}
         tool_calls = _opencode_tool_calls(connection, {row["id"] for row in rows})
     finally:
@@ -286,7 +375,7 @@ def _opencode_tool_calls(
         # A single malformed JSON row makes json_extract raise; fall back to scanning the
         # table and parsing each blob in Python so one corrupt part cannot take down the
         # whole dashboard. See roadmap: source parsing resilience.
-        rows = connection.execute("SELECT session_id, data FROM part").fetchall()
+        rows = _fetchall(connection, "SELECT session_id, data FROM part")
         parsed_rows: list = []
         for row in rows:
             try:
@@ -600,8 +689,7 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
     connection = _connect_sqlite(state_db)
     details: list[SessionDetails] = []
     try:
-        rows = connection.execute(
-            """
+        query = """
             SELECT
                 id,
                 cwd,
@@ -624,7 +712,12 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
             WHERE started_at > 0
             ORDER BY started_at DESC
             """
-        ).fetchall()
+        max_sessions = resolve_max_sessions()
+        if max_sessions:
+            # Same bound and rationale as Codex: the ordering is already newest first,
+            # so the limit drops the oldest sessions and the coverage note says so.
+            query += f"\n            LIMIT {max_sessions}"
+        rows = _fetchall(connection, query)
         tool_calls = _hermes_tool_calls(connection, {row["id"] for row in rows})
     finally:
         connection.close()
@@ -698,9 +791,10 @@ def _hermes_tool_calls(
     denied: set[str] = set()
     pending: dict[str, list[dict]] = {}
 
-    rows = connection.execute(
-        "SELECT session_id, tool_calls, tool_call_id, effect_disposition FROM messages"
-    ).fetchall()
+    rows = _fetchall(
+        connection,
+        "SELECT session_id, tool_calls, tool_call_id, effect_disposition FROM messages",
+    )
     for row in rows:
         session_id = row["session_id"]
         if session_id not in session_ids:

@@ -91,7 +91,12 @@ def iter_sessions(paths: Paths) -> Iterable[SessionRecord]:
         query += f"\n        LIMIT {max_sessions}"
     connection = _connect_sqlite(paths.state_db)
     try:
-        rows = connection.execute(query).fetchall()
+        try:
+            rows = connection.execute(query).fetchall()
+        except sqlite3.Error:
+            # A schema change in the Codex database must cost the reader the Codex
+            # tab, not the whole dashboard. The other three sources still render.
+            return []
     finally:
         connection.close()
 

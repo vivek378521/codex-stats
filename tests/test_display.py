@@ -22,6 +22,7 @@ from codex_stats.display import (
     _fmt_idle,
     _format_branch_panel,
     _format_branch_note,
+    _format_efficiency_panel,
     _format_provider_panel,
     _format_reasoning_hint,
     format_dashboard_html,
@@ -32,9 +33,11 @@ from codex_stats.models import (
     CACHED_SEPARATE,
     BehaviorSummary,
     DashboardData,
+    FileEdit,
     SessionDetails,
     SessionRecord,
 )
+from codex_stats.sources import SOURCE_CODEX, SOURCE_OPENCODE
 
 NOW = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
 
@@ -49,6 +52,9 @@ def detail(
     days_ago: int = 0,
     total_tokens: int = 10_000,
     reasoning_tokens: int = 0,
+    source: str = SOURCE_CODEX,
+    file_edits: tuple = (),
+    recorded_cost_usd: float | None = None,
 ) -> SessionDetails:
     created = NOW - timedelta(days=days_ago)
     return SessionDetails(
@@ -63,6 +69,7 @@ def detail(
             rollout_path=Path("/tmp/rollout.jsonl"),
             git_branch=branch,
             git_origin_url=None,
+            source=source,
         ),
         request_count=4,
         input_tokens=total_tokens // 2,
@@ -72,7 +79,13 @@ def detail(
         total_tokens_from_rollout=total_tokens,
         started_at=created,
         token_accounting=CACHED_SEPARATE,
+        file_edits=file_edits,
+        recorded_cost_usd=recorded_cost_usd,
     )
+
+
+def edit(path: str, insertions: int, deletions: int) -> FileEdit:
+    return FileEdit(path=path, action="updated", insertions=insertions, deletions=deletions)
 
 
 def window_for(details: list[SessionDetails]) -> object:
@@ -260,6 +273,101 @@ class ProviderPanelTest(unittest.TestCase):
     def test_empty_state_without_sessions(self) -> None:
         html = _format_provider_panel(window_for([]))
         self.assertIn("No provider data for this view.", html)
+
+
+class EfficiencyPanelTest(unittest.TestCase):
+    """The panel that answers "what did the money buy".
+
+    Its hardest requirement is restraint: a tool that records no file edits must
+    produce an explanation, never a number. Any ratio invented from a missing
+    denominator would rank the least measurable tool as the most expensive one.
+    """
+
+    def test_reports_cost_per_line_when_edits_are_recorded(self) -> None:
+        window = window_for(
+            [detail(session_id="a", file_edits=(edit("/a.py", 1000, 0),))]
+        )
+        html = _format_efficiency_panel(window)
+        self.assertIn("<h2>Efficiency</h2>", html)
+        self.assertIn("Cost per 1k lines changed", html)
+        self.assertIn("1,000", html)
+
+    def test_explains_itself_when_the_only_source_records_no_edits(self) -> None:
+        window = window_for([detail(source=SOURCE_OPENCODE)])
+        html = _format_efficiency_panel(window)
+        self.assertIn("records no file changes", html)
+        self.assertIn("OpenCode", html)
+        self.assertNotIn("Cost per 1k lines changed", html)
+        self.assertNotIn("Cost per file touched", html)
+
+    def test_tracked_sessions_with_no_edits_report_counts_not_ratios(self) -> None:
+        window = window_for([detail(session_id="a"), detail(session_id="b")])
+        html = _format_efficiency_panel(window)
+        self.assertIn("changed nothing", html)
+        self.assertNotIn("Cost per 1k lines changed", html)
+
+    def test_names_the_untracked_spend_it_excluded(self) -> None:
+        window = window_for(
+            [
+                detail(session_id="a", file_edits=(edit("/a.py", 500, 0),)),
+                detail(session_id="o", source=SOURCE_OPENCODE),
+            ]
+        )
+        html = _format_efficiency_panel(window)
+        self.assertIn("excluded from every ratio", html)
+        self.assertIn("OpenCode", html)
+
+    def test_lists_rewritten_files_with_their_net_change(self) -> None:
+        window = window_for(
+            [
+                detail(session_id="a", file_edits=(edit("/hot.py", 10, 0),)),
+                detail(session_id="b", file_edits=(edit("/hot.py", 10, 40),)),
+            ]
+        )
+        html = _format_efficiency_panel(window)
+        self.assertIn("Most Rewritten Files", html)
+        self.assertIn("/hot.py", html)
+        for column in ("File", "Sessions", "Added", "Removed", "Net"):
+            self.assertIn(f"<th>{column}</th>", html)
+
+    def test_escapes_paths_in_the_hotspot_table(self) -> None:
+        window = window_for(
+            [
+                detail(session_id="a", file_edits=(edit("/<script>.py", 10, 0),)),
+                detail(session_id="b", file_edits=(edit("/<script>.py", 10, 0),)),
+            ]
+        )
+        html = _format_efficiency_panel(window)
+        self.assertNotIn("<script>", html)
+
+    def test_tool_table_keeps_unmeasurable_tools_with_their_spend(self) -> None:
+        window = _build_window(
+            key="all",
+            label="All Time",
+            description="All recorded sessions.",
+            current_details=[
+                detail(session_id="c", file_edits=(edit("/a.py", 1000, 0),)),
+                detail(session_id="o", source=SOURCE_OPENCODE),
+            ],
+            previous_details=[],
+            current_label="all time",
+            previous_label="prior",
+            trend_days=30,
+            all_details=[],
+            pricing=None,
+            now=NOW,
+            build_tool_breakdown=True,
+        )
+        html = _format_efficiency_panel(window)
+        self.assertIn("Cost per 1k Lines by Tool", html)
+        self.assertIn("OpenCode", html)
+        # Present, labelled, and not given a fabricated ratio.
+        self.assertIn("Not recorded", html)
+
+    def test_no_panel_without_a_summary(self) -> None:
+        window = window_for([detail()])
+        object.__setattr__(window, "efficiency", None)
+        self.assertEqual(_format_efficiency_panel(window), "")
 
 
 class ReasoningHintTest(unittest.TestCase):

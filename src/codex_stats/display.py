@@ -1716,6 +1716,8 @@ def _format_dashboard_window_section(
           </div>
         </section>
 
+        {_format_efficiency_panel(window)}
+
         {_format_behavior_panel(window)}
 
         {_format_branch_panel(window)}
@@ -2296,6 +2298,173 @@ def _format_provider_panel(window: DashboardWindow) -> str:
           </div>
           <p class="panel-hint">{escape(note)}</p>
         </section>
+        """
+
+
+def _format_efficiency_panel(window: DashboardWindow) -> str:
+    """What the window's spend bought, measured against the edits it produced.
+
+    The per-line figures are only rendered when a source in scope actually records
+    file edits. A tool whose database stores tokens and cost but nothing about
+    files gets an explanation instead of a number, because dividing its spend by
+    zero lines would rank the least measurable tool as the most expensive one.
+    """
+    efficiency = window.efficiency
+    if efficiency is None:
+        return ""
+    if not efficiency.tracked:
+        named = ", ".join(efficiency.untracked_sources) or "These tools"
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What You Bought</p>
+              <h2>Efficiency</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("This view records no file changes.", f"{escape(named)} store tokens and cost but not which files a session edited, so cost per line changed cannot be computed here. Adding Codex or Claude Code sessions gives this panel something to measure.")}
+        </section>
+        """
+
+    if efficiency.lines_changed:
+        kpis = f"""
+            <div class="kpi"><strong>${efficiency.cost_per_1k_lines:,.2f}</strong><span>Cost per 1k lines changed</span></div>
+            <div class="kpi"><strong>${efficiency.cost_per_file:,.2f}</strong><span>Cost per file touched</span></div>
+            <div class="kpi"><strong>${efficiency.cost_per_editing_session:,.2f}</strong><span>Cost per editing session</span></div>
+            <div class="kpi"><strong>{escape(_fmt_percent(efficiency.read_only_cost_share))}</strong><span>Spend on read-only sessions</span></div>
+            <div class="kpi"><strong>{escape(_fmt_percent(efficiency.rework_ratio))}</strong><span>Rework ratio</span></div>
+            <div class="kpi"><strong>{efficiency.churn_files:,}</strong><span>Files net shrank</span></div>
+        """
+    else:
+        # Tracked sources ran, but nothing in this window changed a file. The cost
+        # figures have no denominator, so showing zeroes would imply free work.
+        kpis = f"""
+            <div class="kpi"><strong>{efficiency.editing_sessions + efficiency.read_only_sessions:,}</strong><span>Sessions with tracked edits</span></div>
+            <div class="kpi"><strong>{efficiency.read_only_sessions:,}</strong><span>Sessions that changed nothing</span></div>
+            <div class="kpi"><strong>${efficiency.tracked_cost_usd:,.2f}</strong><span>Spend on tracked tools</span></div>
+        """
+
+    note = (
+        f"Measured across {efficiency.editing_sessions:,} editing and "
+        f"{efficiency.read_only_sessions:,} read-only sessions: "
+        f"{efficiency.insertions:,} lines added and {efficiency.deletions:,} removed "
+        f"across {efficiency.files_touched:,} files."
+    )
+    if efficiency.untracked_sources:
+        named = " and ".join(efficiency.untracked_sources)
+        note += (
+            f" {escape(named)} recorded ${efficiency.untracked_cost_usd:,.2f} in this window but "
+            "report no file edits, so that spend is excluded from every ratio above "
+            "rather than counted as cost with no work to divide by."
+        )
+
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What You Bought</p>
+              <h2>Efficiency</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>{efficiency.lines_changed:,}</strong><span>Lines changed</span></div>
+              <div class="spotlight-kpi"><strong>{efficiency.files_touched:,}</strong><span>Files touched</span></div>
+            </div>
+          </div>
+          <div class="kpi-grid">{kpis}</div>
+          {_format_tool_efficiency_table(window.tool_efficiency)}
+          {_format_hotspot_table(efficiency.hotspots)}
+          <p class="panel-hint">{escape(note)}</p>
+        </section>
+        """
+
+
+def _format_hotspot_table(hotspots: list) -> str:
+    """Files the agents kept rewriting, ranked across every project at once.
+
+    Project drilldowns already show file impact one repo at a time. This is the
+    cross-project view, which is the only place a file that is hard in three
+    different repositories can show up as one problem.
+    """
+    if not hotspots:
+        return ""
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.path)}</td>
+          <td>{entry.sessions:,}</td>
+          <td>{entry.edits:,}</td>
+          <td>{entry.insertions:,}</td>
+          <td>{entry.deletions:,}</td>
+          <td>{entry.net_lines:+,}</td>
+        </tr>
+        """
+        for entry in hotspots
+    )
+    return f"""
+        <div class="chart-card">
+          <h3>Most Rewritten Files</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Sessions</th>
+                  <th>Edits</th>
+                  <th>Added</th>
+                  <th>Removed</th>
+                  <th>Net</th>
+                </tr>
+              </thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+        </div>
+        """
+
+
+def _format_tool_efficiency_table(entries: list) -> str:
+    """Per-tool cost against per-tool work, on the Overview only.
+
+    This is the comparison a multi-agent user cannot make anywhere else: which
+    tool actually produced the work per dollar. Tools that record no file edits
+    stay in the table with their spend visible and their ratio marked
+    unmeasurable, because hiding them would quietly reduce this to a cost ranking
+    of only the tools that happen to be measurable.
+    """
+    if not entries:
+        return ""
+    rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(entry.label)}</td>
+          <td>{entry.sessions:,}</td>
+          <td>${entry.estimated_cost_usd:,.2f}</td>
+          <td>{entry.lines_changed:,}</td>
+          <td>{entry.files_touched:,}</td>
+          <td>{'$' + format(entry.cost_per_1k_lines, ',.2f') if entry.cost_per_1k_lines is not None else 'Not recorded'}</td>
+        </tr>
+        """
+        for entry in entries
+    )
+    return f"""
+        <div class="chart-card">
+          <h3>Cost per 1k Lines by Tool</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th>Sessions</th>
+                  <th>Spend</th>
+                  <th>Lines</th>
+                  <th>Files</th>
+                  <th>Cost / 1k lines</th>
+                </tr>
+              </thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+        </div>
         """
 
 
