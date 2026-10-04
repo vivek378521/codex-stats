@@ -162,12 +162,22 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       --good: #166534;
       --warn: #b45309;
       --shadow: 0 18px 56px rgba(75, 56, 40, 0.12);
+      --focus: #0f766e;
+      /* Serif carries the voice; sans carries the numbers. Dense cost and token
+         tables set in a proportional serif are hard to scan down a column, so
+         figures get a lining sans with tabular spacing and only headings keep
+         the serif. */
+      --font-display: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      --font-data: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+      color-scheme: light;
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       color: var(--ink);
-      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      font-family: var(--font-data);
+      font-variant-numeric: tabular-nums;
       background:
         radial-gradient(circle at top left, rgba(15, 118, 110, 0.18), transparent 28%),
         radial-gradient(circle at top right, rgba(180, 83, 9, 0.16), transparent 26%),
@@ -211,6 +221,13 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       font-size: clamp(2rem, 3.5vw, 3.4rem);
       line-height: 0.95;
       max-width: 12ch;
+    }}
+    /* Give the serif back to the elements that are prose or a title rather than
+       a measurement. Everything else inherits the data face from body. */
+    h1, h2, h3, .lede, .hero-summary strong, .window-title strong,
+    .spotlight-card h3, .empty-showcase strong {{
+      font-family: var(--font-display);
+      font-variant-numeric: normal;
     }}
     .lede {{
       margin: 12px 0 0;
@@ -819,6 +836,52 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       margin-top: 10px;
       color: var(--muted);
       font-size: 0.9rem;
+    }}
+    /* Every button on the page -- scope tabs, range tabs, export menu, project
+       tabs, the detail disclosures -- is reachable by keyboard, so each one needs
+       a visible ring. hover already lifts the mouse cursor's target; this is the
+       keyboard's equivalent, and it is drawn with outline so it survives forced
+       colors mode where a box-shadow would be dropped. */
+    button:focus-visible,
+    a:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible,
+    summary:focus-visible,
+    [tabindex]:focus-visible {{
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+    }}
+    /* An active tab was signalled by fill colour alone, which leaves the selected
+       tab indistinguishable in forced-colors mode and ambiguous for a reader who
+       cannot separate teal from cream. The inset ring is a shape cue, so the state
+       survives without the colour. box-shadow does not accumulate, so each rule
+       re-states its own depth shadow alongside the ring rather than adding to it. */
+    .scope-tabs .scope-button.is-active {{
+      box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.62),
+        0 12px 30px rgba(180, 83, 9, 0.24);
+    }}
+    .tab-button.is-active {{
+      box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.62),
+        0 12px 30px rgba(15, 118, 110, 0.22);
+    }}
+    .project-tab-button.is-active {{
+      box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.62),
+        0 12px 30px rgba(15, 118, 110, 0.18);
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      *, *::before, *::after {{
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }}
+      /* The hover lift is the only motion on the page. Left in place with a
+         near-zero duration it reads as a jump rather than a transition, so it is
+         removed rather than shortened. */
+      button:hover {{
+        transform: none;
+      }}
     }}
     @media (max-width: 960px) {{
       .hero-grid, .metric-grid, .split, .chart-grid, .kpi-grid, .project-stats, .spotlight-card, .spotlight-kpis {{ grid-template-columns: 1fr; }}

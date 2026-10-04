@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-10-04
+
+### Added
+
+- Every control on the dashboard now shows a **visible focus ring** under
+  keyboard navigation. The scope tabs, range tabs, export menu, and project tabs
+  were previously reachable by keyboard with nothing marking where focus was, so
+  the page's primary navigation could only be operated by pointing at it.
+- Honoured `prefers-reduced-motion`. The hover lift on buttons was the only
+  motion in the interface, and it is now removed outright for readers who ask
+  for reduced motion rather than merely shortened, because a hover that jumps
+  instead of transitioning reads as a glitch.
+- The selected tab is now marked by a shape as well as a colour: an inset ring
+  sits inside the active scope, range, and project tabs. Fill colour alone left
+  the selected tab indistinguishable in forced-colors mode, and ambiguous for a
+  reader who cannot separate the teal fill from the cream page.
+
+### Changed
+
+- **Figures are set in a lining sans with tabular spacing; headings keep the
+  serif.** Cost, token, and percentage tables were previously set in Georgia,
+  whose proportional figures do not align down a column, so reading a ranking
+  meant reading each figure rather than scanning the column. Tabular spacing
+  makes every digit the same width, so a cost ranking can be scanned at a glance.
+  Headings and prose keep the serif that gives the page its voice.
+- Declared `color-scheme: light`, so scrollbars and form controls match the page
+  instead of following the operating system's appearance.
+
 ## [1.13.0] - 2026-10-04
 
 ### Added
