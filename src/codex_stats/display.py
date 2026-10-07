@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 import textwrap
 from collections import defaultdict
@@ -7,7 +9,15 @@ from html import escape
 from typing import Any
 
 from .metrics import DEFAULT_IDLE_BRANCH_DAYS, UNIDENTIFIED_VENDOR_LABEL
-from .models import DashboardData, DashboardScope, DashboardWindow, FileImpactEntry, HeatmapCell, ProjectDrilldown
+from .models import (
+    DashboardData,
+    DashboardScope,
+    DashboardWindow,
+    FileImpactEntry,
+    HeatmapCell,
+    ProjectDrilldown,
+    SessionDrilldown,
+)
 from .sources import source_label
 
 SOURCE_CHART_COLORS: dict[str, str] = {
@@ -16,6 +26,20 @@ SOURCE_CHART_COLORS: dict[str, str] = {
     "claude": "#7c3aed",
     "hermes": "#be185d",
 }
+
+
+def _compress_svg_assets(assets: dict[str, str]) -> dict[str, str]:
+    """Shrink export SVGs before embedding them in the page.
+
+    The page carries one SVG per window for offline downloads; the charts are
+    attribute-heavy and compress to roughly a tenth of their size, so the payload
+    is shipped gzip-then-base64 and inflated in the browser only when an export is
+    actually requested. One window's charts stay cold on disk in the page source.
+    """
+    return {
+        name: base64.b64encode(gzip.compress(svg.encode("utf-8"), mtime=0)).decode("ascii")
+        for name, svg in assets.items()
+    }
 
 
 def _active_day_count(window: DashboardWindow) -> int:
@@ -105,6 +129,25 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
             f"<strong>Partial history.</strong> {escape(dashboard.coverage_note)}"
             "</div>"
         )
+    config_error_html = ""
+    if dashboard.config_error:
+        # Stated above the metrics for the same reason the coverage note is: it
+        # qualifies every price on the page. Without it a reader would take the
+        # stock rates for the ones they set by hand.
+        config_error_html = (
+            '<div class="coverage-note config-error" role="status">'
+            f"<strong>Your config.toml was ignored.</strong> {escape(dashboard.config_error)} "
+            "Every cost on this page uses the built-in rate table instead."
+            "</div>"
+        )
+    budget_html = ""
+    if dashboard.budget_note:
+        over = dashboard.budget_note.startswith("Over")
+        budget_html = (
+            f'<div class="coverage-note budget-note{" budget-over" if over else ""}" role="status">'
+            f"<strong>{'Over budget.' if over else 'Watch the budget.'}</strong> {escape(dashboard.budget_note)}"
+            "</div>"
+        )
     scope_sections = "".join(        "".join(
             _format_dashboard_window_section(
                 window,
@@ -118,7 +161,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     )
     assets_json = json.dumps(
         {
-            f"{scope.key}-{window.key}": format_dashboard_svg_assets(window, scope_label=scope.label)
+            f"{scope.key}-{window.key}": _compress_svg_assets(format_dashboard_svg_assets(window, scope_label=scope.label))
             for scope in scopes
             for window in scope.windows
         },
@@ -479,6 +522,27 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     .coverage-note strong {{
       color: var(--warn);
     }}
+    .config-error {{
+      border-color: rgba(185, 28, 28, 0.32);
+      background: rgba(185, 28, 28, 0.07);
+    }}
+    .config-error strong {{
+      color: #b91c1c;
+    }}
+    .budget-note {{
+      border-color: rgba(202, 138, 4, 0.36);
+      background: rgba(202, 138, 4, 0.08);
+    }}
+    .budget-note strong {{
+      color: #a16207;
+    }}
+    .budget-over {{
+      border-color: rgba(185, 28, 28, 0.36);
+      background: rgba(185, 28, 28, 0.08);
+    }}
+    .budget-over strong {{
+      color: #b91c1c;
+    }}
     .summary-badge {{
       padding: 10px 14px;
       border-radius: 999px;
@@ -729,6 +793,65 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       color: var(--muted);
       line-height: 1.5;
       max-width: 54ch;
+    }}
+    .session-row {{
+      cursor: pointer;
+    }}
+    .session-row:hover {{
+      background: rgba(15, 118, 110, 0.06);
+    }}
+    .session-row td:first-child::after {{
+      content: " +";
+      opacity: 0.5;
+      font-weight: 400;
+    }}
+    .session-row[aria-expanded="true"] td:first-child::after {{
+      content: " -";
+    }}
+    .session-expansion td {{
+      padding: 0;
+      background: rgba(15, 118, 110, 0.04);
+      border-top: none;
+    }}
+    .session-detail {{
+      padding: 16px;
+      display: grid;
+      gap: 16px;
+    }}
+    .session-stats {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+    }}
+    .session-stat {{
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }}
+    .session-stat strong {{
+      display: block;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      opacity: 0.65;
+    }}
+    .session-stat span {{
+      display: block;
+      margin-top: 4px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      word-break: break-word;
+    }}
+    .session-subsection table {{
+      margin-top: 6px;
+    }}
+    .session-subsection h4 {{
+      margin: 0 0 6px;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      opacity: 0.7;
     }}
     .project-stats {{
       display: grid;
@@ -1033,6 +1156,8 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         </div>
       </div>
       {coverage_note_html}
+      {config_error_html}
+      {budget_html}
       <div class="toolbar">
         <div class="tabs">
           <div class="scope-tabs">{scope_buttons}</div>
@@ -1301,6 +1426,25 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       expandedForPrint = [];
     }}
 
+    async function inflateAsset(raw) {{
+      // Export cards are embedded gzip-then-base64 to keep the page lean; only the
+      // card being downloaded is inflated, so the other ninety-odd stay cold.
+      if (!raw.includes("/")) {{
+        return raw;
+      }}
+      const bytes = Uint8Array.from(atob(raw), (ch) => ch.charCodeAt(0));
+      try {{
+        // DecompressionStream(gzip) handles the whole gzip framing, so no
+        // manual inflate is needed here.
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        return await new Response(stream).text();
+      }} catch (error) {{
+        // DecompressionStream is missing (legacy engines); fall back to trying the
+        // raw payload so the export path still hands the browser *something*.
+        return `<!-- gzip payload not readable in this browser -->${{raw}}`;
+      }}
+    }}
+
     async function downloadJpg(assetKey, options = {{}}) {{
       const forceSvgAsset = options.forceSvgAsset === true;
       if (assetKey === "page-card" && !forceSvgAsset) {{
@@ -1313,11 +1457,12 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         }}
         return;
       }}
-      const content = dashboardAssets[activeSectionId()]?.[assetKey];
-      if (!content) {{
+      const raw = dashboardAssets[activeSectionId()]?.[assetKey];
+      if (!raw) {{
         setFeedback("No JPG export available for this view.");
         return;
       }}
+      const content = await inflateAsset(raw);
       const blob = new Blob([content], {{ type: "image/svg+xml;charset=utf-8" }});
       const url = URL.createObjectURL(blob);
       try {{
@@ -1437,6 +1582,20 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       if (buttons.length) {{
         setActiveProject(buttons[0].dataset.projectTarget);
       }}
+    }});
+    document.querySelectorAll(".session-row").forEach((row) => {{
+      row.addEventListener("click", () => {{
+        const session = row.dataset.sessionId;
+        const expansion = Array.from(
+          row.parentElement?.querySelectorAll("[data-session-expansion]") ?? []
+        ).find((item) => item.dataset.sessionExpansion === session);
+        if (!expansion) {{
+          return;
+        }}
+        const open = !expansion.hidden;
+        expansion.hidden = open;
+        row.setAttribute("aria-expanded", String(!open));
+      }});
     }});
     document.addEventListener("click", (event) => {{
       if (exportWrap && !exportWrap.contains(event.target)) {{
@@ -1953,6 +2112,84 @@ def _format_project_drilldown(window: DashboardWindow, scope_key: str) -> str:
     )
 
 
+def _format_session_expansion(
+    session_id: str,
+    sessions: list[SessionDrilldown],
+) -> str:
+    """The hidden detail row under one top session, opened on click.
+
+    The session's own row carries what the table column already says; this row is
+    the rest of the answer — when it ran, which branch, the token split, the tools
+    it called, and the files it edited. Sources that record none of those render
+    an honest empty set rather than a guessed row, exactly like the panels that
+    already follow that rule. The key is the session id alone: a session appears
+    once per project table, so it is unique within the table that holds the row.
+    """
+    match = next((session for session in sessions if session.session_id == session_id), None)
+    if match is None:
+        return ""
+    split = match.token_split
+    cells = [
+        ("Branch", escape(match.branch or "Not recorded")),
+        ("Provider", escape(match.model_provider or "Not recorded")),
+        ("Created", escape(_fmt_short_dt(match.created_at))),
+        ("Updated", escape(_fmt_short_dt(match.updated_at))),
+        ("Requests", str(match.requests)),
+        ("Fresh input", f"{split.fresh_input:,}"),
+        ("Cached reads", f"{split.cached_read:,}"),
+        ("Cache writes", f"{split.cache_write:,}"),
+        ("Output", f"{split.output:,}"),
+    ]
+    if match.compression_ineffective_count:
+        cells.append(("Compression misses", str(match.compression_ineffective_count)))
+    stat_html = "".join(
+        f'<div class="session-stat"><strong>{label}</strong><span>{value}</span></div>'
+        for label, value in cells
+    )
+    tool_rows = "".join(
+        f"<tr><td>{escape(tool.name)}</td><td>{tool.calls}</td><td>{tool.errors}</td></tr>"
+        for tool in match.tools
+    )
+    tools_html = ""
+    if tool_rows:
+        tools_html = (
+            '<div class="session-subsection">'
+            '<h4>Tools called</h4>'
+            '<table><thead><tr><th>Tool</th><th>Calls</th><th>Errors</th></tr></thead>'
+            f"<tbody>{tool_rows}</tbody></table></div>"
+        )
+    edit_rows = "".join(
+        f"<tr><td>{escape(edit.path)}</td><td>{escape(edit.action)}</td>"
+        f"<td>+{edit.insertions}</td><td>-{edit.deletions}</td></tr>"
+        for edit in match.file_edits
+    )
+    if match.opencode_summary:
+        files, additions, deletions, _ = match.opencode_summary
+        edit_rows += (
+            f"<tr><td>(opencode: {files} file{'s' if files != 1 else ''})</td><td>total</td>"
+            f"<td>+{additions}</td><td>-{deletions}</td></tr>"
+        )
+    edits_html = ""
+    if edit_rows:
+        edits_html = (
+            '<div class="session-subsection">'
+            "<h4>Files edited</h4>"
+            "<table><thead><tr><th>File</th><th>Action</th><th>Added</th><th>Removed</th></tr></thead>"
+            f"<tbody>{edit_rows}</tbody></table></div>"
+        )
+    return f"""
+    <tr class="session-expansion" data-session-expansion="{escape(session_id)}" hidden>
+      <td colspan="4">
+        <div class="session-detail">
+          <div class="session-stats">{stat_html}</div>
+          {tools_html}
+          {edits_html}
+        </div>
+      </td>
+    </tr>
+    """
+
+
 def _format_project_panel(project_id: str, drilldown: ProjectDrilldown) -> str:
     token_trend_svg = _svg_line_chart(
         [(point.day[5:], float(point.total_tokens)) for point in drilldown.daily_points],
@@ -1963,12 +2200,13 @@ def _format_project_panel(project_id: str, drilldown: ProjectDrilldown) -> str:
     heatmap_svg = _svg_heatmap_chart(drilldown.activity_heatmap)
     top_rows = "".join(
         f"""
-        <tr>
+        <tr class="session-row" data-session-id="{escape(entry.session_id)}" tabindex="0" role="button" aria-expanded="false">
           <td>{escape(entry.model or 'unknown')}</td>
           <td>{entry.requests}</td>
           <td>{entry.total_tokens:,}</td>
           <td>${entry.estimated_cost_usd:.2f}</td>
         </tr>
+        {_format_session_expansion(entry.session_id, drilldown.sessions)}
         """
         for entry in drilldown.top_sessions
     ) or '<tr><td colspan="4">No data</td></tr>'

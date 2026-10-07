@@ -163,6 +163,15 @@ class SessionDetails:
     token_accounting: str = CACHED_WITHIN_INPUT
     tool_calls: tuple[ToolCall, ...] = ()
     abandoned_turns: int = 0
+    # Hermes counts context rewrites that failed to shrink a session ("compression
+    # was ineffective"); when the source records the count, sessions that paid for
+    # a rewrite and got nothing are visible rather than invisible.
+    compression_ineffective_count: int | None = None
+    # OpenCode records file-change totals on a session where it did not record the
+    # individual edits: (files, additions, deletions, diffs). Set only when the
+    # database has non-zero figures, so sources that report nothing stay "not
+    # recorded" instead of being read as "no files touched".
+    opencode_summary: tuple[int, int, int, int] | None = None
 
     def fresh_input_tokens(self) -> int:
         raw = self.input_tokens or 0
@@ -218,6 +227,8 @@ class SessionDetails:
             "file_edits": [edit.to_dict() for edit in self.file_edits],
             "tool_calls": [call.to_dict() for call in self.tool_calls],
             "abandoned_turns": self.abandoned_turns,
+            "compression_ineffective_count": self.compression_ineffective_count,
+            "opencode_summary": self.opencode_summary,
         }
         return payload
 
@@ -455,6 +466,40 @@ class TopEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class SessionDrilldown:
+    """One session, opened the way a project drilldown opens a project.
+
+    Top sessions answer which session cost the most; this is the rest of that
+    answer — the token split, the tools the session called and how often each one
+    failed, and the files it edited, when the source records them. Sources that
+    keep neither tools nor files legitimately show empty lists here.
+    """
+
+    session_id: str
+    project_name: str
+    branch: str | None
+    model: str | None
+    model_provider: str | None
+    created_at: datetime
+    updated_at: datetime
+    requests: int
+    total_tokens: int
+    estimated_cost_usd: float
+    token_split: TokenSplit
+    tools: list[ToolUsageEntry] = field(default_factory=list, repr=False)
+    file_edits: list[FileEdit] = field(default_factory=list, repr=False)
+    compression_ineffective_count: int | None = None
+    opencode_summary: tuple[int, int, int, int] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["created_at"] = self.created_at.isoformat()
+        payload["updated_at"] = self.updated_at.isoformat()
+        payload["token_split"] = self.token_split.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -801,6 +846,7 @@ class ProjectDrilldown:
     insights: InsightReport
     takeaways: list[str]
     file_impact: list[FileImpactEntry] = field(default_factory=list, repr=False)
+    sessions: list[SessionDrilldown] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -813,6 +859,7 @@ class ProjectDrilldown:
             "insights": self.insights.to_dict(),
             "takeaways": self.takeaways,
             "file_impact": [entry.to_dict() for entry in self.file_impact],
+            "sessions": [session.to_dict() for session in self.sessions],
         }
 
 
@@ -840,6 +887,14 @@ class DashboardData:
     windows: list[DashboardWindow] = field(default_factory=list, repr=False)
     scopes: list[DashboardScope] = field(default_factory=list)
     coverage_note: str | None = None
+    # Set when a user's config.toml could not be read. The run continues on the
+    # built-in rate table, so the page has to say that the prices below it are not
+    # the ones that file asked for.
+    config_error: str | None = None
+    # Set when the user configured a monthly budget and the calendar-month spend
+    # has reached the warn threshold. Kept alongside the other page-level notices:
+    # it qualifies every number the same way the coverage note does, once, up top.
+    budget_note: str | None = None
 
     def __post_init__(self) -> None:
         if not self.scopes and self.windows:
@@ -868,4 +923,6 @@ class DashboardData:
             "generated_at": self.generated_at.isoformat(),
             "scopes": [scope.to_dict() for scope in self.scopes],
             "coverage_note": self.coverage_note,
+            "config_error": self.config_error,
+            "budget_note": self.budget_note,
         }

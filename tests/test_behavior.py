@@ -35,6 +35,7 @@ from codex_stats.sources import (
     _connect_sqlite,
     _hermes_tool_calls,
     _ingest_hermes,
+    _ingest_opencode,
     _opencode_tool_calls,
     _parse_claude_session,
 )
@@ -815,6 +816,88 @@ class BehaviorPanelTest(unittest.TestCase):
         self.assertIn("<td>1</td>", html)
 
 
+class OpenCodeSummaryIngestionTest(unittest.TestCase):
+    """OpenCode can record file-change totals where it records no per-file edits.
+
+    Those totals belong on the session when they exist and must stay absent when
+    the columns are zero, so the drilldown shows "not recorded" rather than an
+    invented "changed nothing".
+    """
+
+    COLUMNS = (
+        "id, directory, model, cost, tokens_input, tokens_output, tokens_reasoning, "
+        "tokens_cache_read, tokens_cache_write, time_created, time_updated, "
+        "summary_files, summary_additions, summary_deletions, summary_diffs"
+    )
+
+    def _db(self, tmp: Path, summary_row: tuple) -> Path:
+        db_path = tmp / "opencode.db"
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute(f"CREATE TABLE session ({self.COLUMNS})")
+            # Ingest also reads request counts and tool calls.
+            connection.execute("CREATE TABLE message (id INTEGER PRIMARY KEY, session_id TEXT, data TEXT)")
+            connection.execute("CREATE TABLE part (id INTEGER PRIMARY KEY, session_id TEXT, data TEXT)")
+            connection.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", summary_row)
+            connection.commit()
+        finally:
+            connection.close()
+        return db_path
+
+    def test_recorded_summary_totals_surface_on_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._db(
+                Path(tmp),
+                (
+                    "s1",
+                    "/repos/alpha",
+                    "gpt-5.4",
+                    0.2,
+                    100,
+                    50,
+                    0,
+                    10,
+                    5,
+                    1_700_000_000,
+                    1_700_000_600,
+                    4,
+                    88,
+                    7,
+                    4,
+                ),
+            )
+            details = _ingest_opencode(db_path)
+
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0].opencode_summary, (4, 88, 7, 4))
+
+    def test_zero_totals_stay_absent_rather_than_reading_as_free(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._db(
+                Path(tmp),
+                (
+                    "s1",
+                    "/repos/alpha",
+                    "gpt-5.4",
+                    0.2,
+                    100,
+                    50,
+                    0,
+                    10,
+                    5,
+                    1_700_000_000,
+                    1_700_000_600,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            )
+            details = _ingest_opencode(db_path)
+
+        self.assertIsNone(details[0].opencode_summary)
+
+
 class HermesBranchIngestionTest(unittest.TestCase):
     """Hermes sessions do carry a branch, so the docs must not claim otherwise.
 
@@ -826,7 +909,8 @@ class HermesBranchIngestionTest(unittest.TestCase):
     COLUMNS = (
         "id, cwd, git_branch, git_repo_root, model, message_count, input_tokens, "
         "output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, "
-        "estimated_cost_usd, started_at, ended_at, last_activity_at, display_name, title"
+        "estimated_cost_usd, started_at, ended_at, last_activity_at, display_name, title, "
+        "compression_ineffective_count"
     )
 
     def _db(self, tmp: Path, rows: list[tuple]) -> Path:
@@ -868,6 +952,7 @@ class HermesBranchIngestionTest(unittest.TestCase):
                         1_700_000_600,
                         "alpha",
                         None,
+                        0,
                     )
                 ],
             )
@@ -901,6 +986,7 @@ class HermesBranchIngestionTest(unittest.TestCase):
                         1_700_000_600,
                         None,
                         "scratch",
+                        0,
                     )
                 ],
             )
@@ -911,6 +997,37 @@ class HermesBranchIngestionTest(unittest.TestCase):
     def test_missing_database_is_not_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(_ingest_hermes(Path(tmp) / "absent.db"), [])
+
+    def test_compression_ineffective_count_surfaces_when_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_db = self._db(
+                Path(tmp),
+                [
+                    (
+                        "s1",
+                        "/repos/alpha",
+                        "main",
+                        "/repos/alpha",
+                        "claude-sonnet-4-6",
+                        4,
+                        100,
+                        50,
+                        0,
+                        0,
+                        0,
+                        1.5,
+                        1_700_000_000,
+                        1_700_000_600,
+                        1_700_000_600,
+                        "alpha",
+                        None,
+                        3,
+                    )
+                ],
+            )
+            details = _ingest_hermes(state_db)
+
+        self.assertEqual(details[0].compression_ineffective_count, 3)
 
 
 if __name__ == "__main__":

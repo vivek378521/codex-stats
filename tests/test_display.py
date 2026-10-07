@@ -8,6 +8,8 @@ expected to change and the numbers are not.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 import sys
 import unittest
@@ -25,6 +27,7 @@ from codex_stats.display import (
     _format_efficiency_panel,
     _format_provider_panel,
     _format_reasoning_hint,
+    _compress_svg_assets,
     format_dashboard_html,
     format_dashboard_svg_assets,
 )
@@ -422,6 +425,31 @@ class DashboardStructureTest(unittest.TestCase):
         self.assertEqual(parser.errors, [])
         self.assertEqual(parser.stack, [])
 
+    def test_session_rows_render_an_expandable_detail_row(self) -> None:
+        html = self._render(
+            [
+                detail(
+                    session_id="abcdef",
+                    project="alpha",
+                    model="gpt-5.4",
+                    branch="feature/x",
+                    file_edits=(edit("src/app.py", 12, 3),),
+                )
+            ]
+        )
+        # The top-sessions rows are clickable, keyed to a hidden expansion row.
+        self.assertIn('<tr class="session-row"', html)
+        self.assertIn('data-session-id="abcdef"', html)
+        self.assertIn('data-session-expansion="abcdef"', html)
+        self.assertIn('<tr class="session-expansion"', html)
+        # The expansion opens the branch, the split, and the files behind one
+        # session, and stays cold until clicked.
+        self.assertIn("<strong>Branch</strong>", html)
+        self.assertIn("feature/x", html)
+        self.assertIn("Files edited", html)
+        self.assertIn("src/app.py", html)
+        self.assertIn("hidden", html)
+
     def test_output_is_balanced_when_empty(self) -> None:
         parser = TagBalanceParser()
         parser.feed(self._render([]))
@@ -498,6 +526,16 @@ class SvgAssetTest(unittest.TestCase):
         assets = format_dashboard_svg_assets(window, scope_label="Codex")
         restored = json.loads(json.dumps(assets))
         self.assertEqual(set(restored), set(assets))
+
+    def test_embedded_assets_are_gzip_payloads_that_decode_cleanly(self) -> None:
+        window = window_for([detail()])
+        assets = _compress_svg_assets(format_dashboard_svg_assets(window, scope_label="Codex"))
+        for name, payload in assets.items():
+            with self.subTest(asset=name):
+                self.assertNotIn("<svg", payload)
+                decoded = gzip.decompress(base64.b64decode(payload)).decode("utf-8")
+                self.assertTrue(decoded.startswith("<svg"), decoded[:40])
+                self.assertIn("</svg>", decoded)
 
 
 class TakeawayWiringTest(unittest.TestCase):

@@ -173,6 +173,23 @@ def _dt_from_unix_seconds(value: float | int | None) -> datetime | None:
     return datetime.fromtimestamp(float(value), tz=UTC)
 
 
+def _dt_from_unix_millis(value: float | int | None) -> datetime | None:
+    """Convert a millisecond epoch column, treating NULL as unusable.
+
+    A NULL is a real possibility here rather than a theoretical one: the query
+    filters on ``time_updated`` only, so a row with a created stamp but no updated
+    one still reaches this loop. Dividing before the None check raises TypeError
+    and kills ingest for every source, which is why the conversion is guarded
+    before any arithmetic happens.
+    """
+    if value is None:
+        return None
+    try:
+        return _dt_from_unix_seconds(value / 1000)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def _dt_from_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -201,7 +218,7 @@ def _as_float(value) -> float | None:
         return None
 
 
-def _fetchall(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
+def _fetchall(connection: sqlite3.Connection, query: str, parameters: tuple = ()) -> list[sqlite3.Row]:
     """Run a read, degrading to no rows when the schema has drifted.
 
     One unreadable source must not take down the dashboard for the other three.
@@ -211,9 +228,26 @@ def _fetchall(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     the reader the other three.
     """
     try:
+        if parameters:
+            return connection.execute(query, parameters).fetchall()
         return connection.execute(query).fetchall()
     except sqlite3.Error:
         return []
+
+
+def _chunks(values: set[str], size: int = 500) -> list[list[str]]:
+    """Slice an id set into IN-lists that stay under SQLite's variable limit.
+
+    The session cap can run to thousands of ids, and SQLite binds at most 999
+    variables per statement, so a single ``IN (...`` for the whole set would raise
+    when the cap is unset. Chunking keeps the query well under the limit.
+    """
+    ordered = list(values)
+    return [ordered[index:index + size] for index in range(0, len(ordered), size)]
+
+
+def _placeholders(count: int) -> str:
+    return ",".join("?" for _ in range(count))
 
 
 def _bounded_coverage(total: int) -> tuple[int, int]:
@@ -283,7 +317,11 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
                 tokens_cache_read,
                 tokens_cache_write,
                 time_created,
-                time_updated
+                time_updated,
+                summary_files,
+                summary_additions,
+                summary_deletions,
+                summary_diffs
             FROM session
             WHERE time_updated > 0
             ORDER BY time_updated DESC
@@ -295,25 +333,40 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
             # the same bound Codex applies, and the coverage note reports what it drops.
             query += f"\n            LIMIT {max_sessions}"
         rows = _fetchall(connection, query)
-        request_counts = {
-            row["session_id"]: row["count"]
-            for row in _fetchall(
-                connection,
-                """
-                SELECT session_id, COUNT(*) AS count
-                FROM message
-                WHERE json_extract(data, '$.role') = 'user'
-                GROUP BY session_id
-                """,
+        selected_ids = {row["id"] for row in rows}
+        # Restrict both reads below to the capped session set inside SQL. The session
+        # cap bounds which sessions matter, but message and part tables have no cap
+        # of their own, so without an explicit IN the whole history of both tables is
+        # pulled and filtered in Python on every launch.
+        request_counts = {} if rows else {}
+        for chunk in _chunks(selected_ids):
+            request_counts.update(
+                {
+                    row["session_id"]: row["count"]
+                    for row in _fetchall(
+                        connection,
+                        """
+                        SELECT session_id, COUNT(*) AS count
+                        FROM message
+                        WHERE session_id IN (%s)
+                          AND json_extract(data, '$.role') = 'user'
+                        GROUP BY session_id
+                        """ % _placeholders(len(chunk)),
+                        chunk,
+                    )
+                }
             )
-        } if rows else {}
-        tool_calls = _opencode_tool_calls(connection, {row["id"] for row in rows})
+        tool_calls = _opencode_tool_calls(connection, selected_ids)
     finally:
         connection.close()
 
     for row in rows:
-        created_at = _dt_from_unix_seconds(row["time_created"] / 1000)
-        updated_at = _dt_from_unix_seconds(row["time_updated"] / 1000)
+        # Convert before calling the guard, not after: dividing a NULL column raises
+        # TypeError, which is not caught here and would take down every tab rather
+        # than skipping the one unusable row. A session the tool cannot date cannot
+        # be placed in any window, so it is skipped instead.
+        created_at = _dt_from_unix_millis(row["time_created"])
+        updated_at = _dt_from_unix_millis(row["time_updated"])
         if created_at is None or updated_at is None:
             continue
         input_tokens = _as_int(row["tokens_input"])
@@ -350,9 +403,28 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
                 recorded_cost_usd=_as_float(row["cost"]),
                 token_accounting=CACHED_SEPARATE,
                 tool_calls=tuple(tool_calls.get(row["id"], ())),
+                opencode_summary=_opencode_file_summary(row),
             )
         )
     return details
+
+
+def _opencode_file_summary(row: sqlite3.Row) -> tuple[int, int, int, int] | None:
+    """The file-change totals OpenCode can record instead of per-file edits.
+
+    OpenCode's schema carries ``summary_files``, ``summary_additions``,
+    ``summary_deletions``, and ``summary_diffs`` as session-level totals. When the
+    database populates them the totals belong on the session; when the columns are
+    zero, the source is "did not record" rather than "changed nothing", so they are
+    omitted and the drilldown stays honest about the gap.
+    """
+    files = _as_int(row["summary_files"])
+    additions = _as_int(row["summary_additions"])
+    deletions = _as_int(row["summary_deletions"])
+    diffs = _as_int(row["summary_diffs"])
+    if not any((files, additions, deletions, diffs)):
+        return None
+    return (files, additions, deletions, diffs)
 
 
 def _opencode_tool_calls(
@@ -367,45 +439,59 @@ def _opencode_tool_calls(
     if not session_ids:
         return {}
     calls: dict[str, list[ToolCall]] = {}
-    try:
-        rows = connection.execute(
-            "SELECT session_id, data FROM part WHERE json_extract(data, '$.type') = 'tool'"
-        ).fetchall()
-    except sqlite3.OperationalError:
-        # A single malformed JSON row makes json_extract raise; fall back to scanning the
-        # table and parsing each blob in Python so one corrupt part cannot take down the
-        # whole dashboard. See roadmap: source parsing resilience.
-        rows = _fetchall(connection, "SELECT session_id, data FROM part")
-        parsed_rows: list = []
+    for chunk in _chunks(session_ids):
+        numbered = _placeholders(len(chunk))
+        try:
+            # Filter by session in SQL first: the table is keyed by session_id (the
+            # index makes that cheap), and only the capped session ids are wanted.
+            # Reading every ``tool`` part in the whole table and discarding most of
+            # it in Python was the original unbounded read in this source.
+            rows = _fetchall(
+                connection,
+                "SELECT session_id, data FROM part "
+                "WHERE session_id IN (%s) AND json_extract(data, '$.type') = 'tool'" % numbered,
+                tuple(chunk),
+            )
+        except sqlite3.OperationalError:
+            # A single malformed JSON row makes json_extract raise; fall back to
+            # scanning the table and parsing each blob in Python so one corrupt part
+            # cannot take down the whole dashboard. See roadmap: source parsing
+            # resilience.
+            rows = _fetchall(
+                connection,
+                "SELECT session_id, data FROM part WHERE session_id IN (%s)" % numbered,
+                tuple(chunk),
+            )
+            parsed_rows: list = []
+            for row in rows:
+                try:
+                    part = json.loads(row["data"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(part, dict) and part.get("type") == "tool":
+                    parsed_rows.append(row)
+            rows = parsed_rows
         for row in rows:
+            session_id = row["session_id"]
+            if session_id not in session_ids:
+                continue
             try:
                 part = json.loads(row["data"])
             except (json.JSONDecodeError, TypeError):
                 continue
-            if isinstance(part, dict) and part.get("type") == "tool":
-                parsed_rows.append(row)
-        rows = parsed_rows
-    for row in rows:
-        session_id = row["session_id"]
-        if session_id not in session_ids:
-            continue
-        try:
-            part = json.loads(row["data"])
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(part, dict):
-            continue
-        state = part.get("state")
-        state = state if isinstance(state, dict) else {}
-        arguments = state.get("input")
-        calls.setdefault(session_id, []).append(
-            make_tool_call(
-                part.get("tool"),
-                arguments,
-                status=_opencode_tool_status(state.get("status")),
-                duration_ms=_opencode_tool_duration_ms(state.get("time")),
+            if not isinstance(part, dict):
+                continue
+            state = part.get("state")
+            state = state if isinstance(state, dict) else {}
+            arguments = state.get("input")
+            calls.setdefault(session_id, []).append(
+                make_tool_call(
+                    part.get("tool"),
+                    arguments,
+                    status=_opencode_tool_status(state.get("status")),
+                    duration_ms=_opencode_tool_duration_ms(state.get("time")),
+                )
             )
-        )
     return calls
 
 
@@ -481,6 +567,38 @@ def _normalize_git_branch(value: str) -> str | None:
     return branch
 
 
+def _is_user_request(event: dict) -> bool:
+    """Is this a ``user`` event a person actually typed?
+
+    Claude Code writes most of its ``user`` events for itself: a ``tool_result``
+    block feeds the agent's last tool call back to it, and a plain ``[Request
+    interrupted...]`` text notes the user stopped a run. Neither is a request, and
+    counting them would inflate "requests" and "tokens per request" next to the
+    other sources, which only count real user turns. A real request has either a
+    plain-string content (Claude Code writes short prompts as a bare string) or a
+    ``text`` block that is not an interruption marker.
+    """
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        blocks = [block for block in content if isinstance(block, dict)]
+        if not blocks:
+            return False
+        if all(block.get("type") == "tool_result" for block in blocks):
+            return False
+        if any(block.get("type") == "text" for block in blocks):
+            return not any(
+                isinstance(block.get("text"), str) and "interrupted" in block["text"].lower()
+                for block in blocks
+            )
+        return False
+    return False
+
+
 def _parse_claude_session(path: Path) -> SessionDetails | None:
     timestamps: list[str] = []
     user_count = 0
@@ -522,7 +640,7 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
                 if branch:
                     branch_counter[branch] += 1
             event_type = event.get("type")
-            if event_type == "user":
+            if event_type == "user" and _is_user_request(event):
                 user_count += 1
             message = event.get("message")
             if not isinstance(message, dict):
@@ -662,9 +780,10 @@ def _claude_edits_from_tool_use(tool_name: object, tool_input: dict) -> list[Fil
                 edit = file_edit_from_args(tool_name, sub_args)
                 if edit is not None:
                     edits.append(edit)
-        edit = file_edit_from_args(tool_name, tool_input)
-        if edit is not None:
-            edits.append(edit)
+        # The parent MultiEdit input has file_path plus an ``edits`` array and no
+        # line text of its own, so running the parent through the ordinary parser
+        # falls through to a phantom 1-insertion edit that doubles as "a file was
+        # touched" once per MultiEdit call. The sub-edits above are the real work.
         return edits
     edit = file_edit_from_args(tool_name, tool_input)
     return [edit] if edit is not None else []
@@ -707,7 +826,8 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
                 ended_at,
                 last_activity_at,
                 display_name,
-                title
+                title,
+                compression_ineffective_count
             FROM sessions
             WHERE started_at > 0
             ORDER BY started_at DESC
@@ -765,6 +885,7 @@ def _ingest_hermes(state_db: Path) -> list[SessionDetails]:
                 recorded_cost_usd=_as_float(row["estimated_cost_usd"]),
                 token_accounting=CACHED_SEPARATE,
                 tool_calls=tuple(tool_calls.get(row["id"], ())),
+                compression_ineffective_count=_as_int(row["compression_ineffective_count"]) or None,
             )
         )
     return details

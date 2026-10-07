@@ -28,6 +28,7 @@ from .models import (
     ProjectDrilldown,
     SessionSpotlight,
     SessionDetails,
+    SessionDrilldown,
     TimeSummary,
     TokenSplit,
     ToolCategoryEntry,
@@ -62,20 +63,41 @@ def filter_details_by_project(details: list[SessionDetails], project_name: str |
     return [detail for detail in details if detail.session.project_name.lower() == lowered]
 
 
-def summarize_details(label: str, details: list[SessionDetails], pricing: PricingConfig | None = None) -> TimeSummary:
+def summarize_details(
+    label: str,
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+    *,
+    timezone: tzinfo | None = None,
+) -> TimeSummary:
     pricing = pricing or PricingConfig()
     sessions_count = len(details)
-    requests = sum(detail.request_count for detail in details)
-    input_tokens = sum(detail.input_tokens or 0 for detail in details)
-    output_tokens = sum(detail.output_tokens or 0 for detail in details)
-    cached_input_tokens = sum(detail.cached_input_tokens or 0 for detail in details)
-    reasoning_output_tokens = sum(detail.reasoning_output_tokens or 0 for detail in details)
-    total_tokens = sum(detail.effective_total_tokens() for detail in details)
-    model_counter = Counter(detail.session.model for detail in details if detail.session.model)
-    top_model = model_counter.most_common(1)[0][0] if model_counter else None
-    average_tokens_per_request = total_tokens / requests if requests else 0.0
+    requests = 0
+    input_tokens = 0
+    output_tokens = 0
+    cached_input_tokens = 0
+    reasoning_output_tokens = 0
+    total_tokens = 0
+    estimated_cost_usd = 0.0
+    largest_session_tokens = 0
+    unrated_sessions = 0
     split = TokenSplit()
+    model_counter: Counter[str] = Counter()
+    project_tokens: dict[str, int] = defaultdict(int)
+    active_days: set[date] = set()
     for detail in details:
+        requests += detail.request_count
+        input_tokens += detail.input_tokens or 0
+        output_tokens += detail.output_tokens or 0
+        cached_input_tokens += detail.cached_input_tokens or 0
+        reasoning_output_tokens += detail.reasoning_output_tokens or 0
+        session_tokens = detail.effective_total_tokens()
+        total_tokens += session_tokens
+        largest_session_tokens = max(largest_session_tokens, session_tokens)
+        project_tokens[detail.session.project_name] += session_tokens
+        active_days.add(local_date(detail.session.created_at, timezone))
+        if detail.session.model:
+            model_counter[detail.session.model] += 1
         part = detail.token_split()
         split = TokenSplit(
             fresh_input=split.fresh_input + part.fresh_input,
@@ -83,18 +105,23 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
             cache_write=split.cache_write + part.cache_write,
             output=split.output + part.output,
         )
+        # One cost pass instead of three: before, the split, the estimate, and the
+        # unrated tally each walked the session list and each re-derived the rate.
+        if uses_recorded_cost(detail):
+            estimated_cost_usd += detail.recorded_cost_usd or 0.0
+            continue
+        rates, is_fallback = pricing.rates_for(detail.session.source, detail.session.model)
+        estimated_cost_usd += rates.cost_for(part)
+        if is_fallback:
+            unrated_sessions += 1
+    top_model = model_counter.most_common(1)[0][0] if model_counter else None
+    top1_pct, top3_pct = _project_concentration_from_totals(project_tokens)
+    average_tokens_per_request = total_tokens / requests if requests else 0.0
     cache_ratio = split.cache_ratio()
-    unrated_sessions = sum(
-        1
-        for detail in details
-        if not uses_recorded_cost(detail)
-        and pricing.rates_for(detail.session.source, detail.session.model)[1]
-    )
-    largest_session_tokens = max((detail.effective_total_tokens() for detail in details), default=0)
     requests_per_session = requests / sessions_count if sessions_count else 0.0
+    session_durations = [detail.duration_minutes() for detail in details]
     session_totals = [detail.effective_total_tokens() for detail in details]
     session_requests = [detail.request_count for detail in details]
-    session_durations = [detail.duration_minutes() for detail in details]
     total_duration_minutes = sum(session_durations)
     return TimeSummary(
         label=label,
@@ -105,7 +132,7 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
         cached_input_tokens=cached_input_tokens,
         reasoning_output_tokens=reasoning_output_tokens,
         total_tokens=total_tokens,
-        estimated_cost_usd=round(sum(estimate_detail_cost(detail, pricing) for detail in details), 4),
+        estimated_cost_usd=round(estimated_cost_usd, 4),
         top_model=top_model,
         average_tokens_per_request=average_tokens_per_request,
         cache_ratio=cache_ratio,
@@ -116,9 +143,9 @@ def summarize_details(label: str, details: list[SessionDetails], pricing: Pricin
         average_session_duration_minutes=(total_duration_minutes / sessions_count) if sessions_count else 0.0,
         median_session_duration_minutes=float(median(session_durations)) if session_durations else 0.0,
         tokens_per_minute=(total_tokens / total_duration_minutes) if total_duration_minutes > 0 else 0.0,
-        project_concentration_top1_pct=_project_concentration(details, top_n=1),
-        project_concentration_top3_pct=_project_concentration(details, top_n=3),
-        longest_active_streak_days=_longest_active_streak_days(details),
+        project_concentration_top1_pct=top1_pct,
+        project_concentration_top3_pct=top3_pct,
+        longest_active_streak_days=_streak_days(active_days),
         model_switching_rate=_model_switching_rate(details),
         fresh_input_tokens=split.fresh_input,
         cache_read_tokens=split.cached_read,
@@ -399,7 +426,7 @@ def summarize_project_drilldowns_from_details(
     drilldowns: list[ProjectDrilldown] = []
     for entry in project_entries:
         project_details = filter_details_by_project(details, entry.name)
-        summary = summarize_details(entry.name, project_details, pricing)
+        summary = summarize_details(entry.name, project_details, pricing, timezone=current_time.tzinfo)
         insights = summarize_insights_from_details(project_details, pricing=pricing, month=summary, now=current_time)
         drilldowns.append(
             ProjectDrilldown(
@@ -412,6 +439,7 @@ def summarize_project_drilldowns_from_details(
                 insights=insights,
                 takeaways=summarize_takeaways(summary=summary, insights=insights, max_items=3, scope_label=entry.name),
                 file_impact=summarize_files_from_details(project_details, limit=10),
+                sessions=summarize_session_drilldowns_from_details(project_details, pricing, limit=5),
             )
         )
     return drilldowns
@@ -656,7 +684,9 @@ def summarize_daily_from_details(
     for offset in range(safe_days):
         current_day = current_time.date() - timedelta(days=safe_days - 1 - offset)
         day_details = day_map.get(current_day, [])
-        summary = summarize_details(current_day.isoformat(), day_details, pricing)
+        summary = summarize_details(
+            current_day.isoformat(), day_details, pricing, timezone=current_time.tzinfo
+        )
         points.append(
             DailyPoint(
                 day=current_day.isoformat(),
@@ -675,10 +705,14 @@ def summarize_compare_from_details(
     current_label: str,
     previous_label: str,
     pricing: PricingConfig | None = None,
+    current_summary: TimeSummary | None = None,
+    timezone: tzinfo | None = None,
 ) -> CompareReport:
     pricing = pricing or PricingConfig()
-    current_summary = summarize_details(current_label, current_details, pricing)
-    previous_summary = summarize_details(previous_label, previous_details, pricing)
+    current_summary = current_summary or summarize_details(
+        current_label, current_details, pricing, timezone=timezone
+    )
+    previous_summary = summarize_details(previous_label, previous_details, pricing, timezone=timezone)
     total_tokens_delta = current_summary.total_tokens - previous_summary.total_tokens
     total_tokens_delta_pct = None
     if previous_summary.total_tokens:
@@ -774,6 +808,16 @@ def summarize_insights_from_details(
         suggestion = "Large sessions detected. Consider shorter task-focused runs."
         recommendations.append("Use shorter, task-focused sessions.")
 
+    ineffective_rewrites = sum(
+        detail.compression_ineffective_count or 0 for detail in details
+    )
+    if ineffective_rewrites:
+        anomalies.append("Context rewrites that did not shrink sessions")
+        recommendations.append(
+            f"{ineffective_rewrites} context rewrite{'s' if ineffective_rewrites != 1 else ''} "
+            "cost tokens without shrinking a session; clear context before it grows instead."
+        )
+
     if not recommendations:
         recommendations.append("Current usage patterns look healthy.")
 
@@ -832,6 +876,64 @@ def summarize_top_sessions_from_details(
         )
         for detail in ordered[:limit]
     ]
+
+
+def summarize_session_drilldowns_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig,
+    limit: int = 5,
+) -> list[SessionDrilldown]:
+    """The most expensive sessions, opened up to the tools and files behind them.
+
+    Pairs with the top-sessions table: same ordering, and as much of the session
+    as the sources record. A session with no recorded tools (or no file edits) has
+    empty lists here rather than invented rows, so the expandable row only shows
+    what a source actually keeps.
+    """
+    ordered = sorted(details, key=lambda detail: detail.effective_total_tokens(), reverse=True)
+    drilldowns: list[SessionDrilldown] = []
+    for detail in ordered[: max(limit, 0)]:
+        tool_counts: Counter[str] = Counter()
+        tool_errors: Counter[str] = Counter()
+        tool_durations: Counter[str] = Counter()
+        tool_categories: dict[str, str] = {}
+        for call in detail.tool_calls:
+            tool_counts[call.name] += 1
+            tool_categories.setdefault(call.name, call.category)
+            if call.is_error:
+                tool_errors[call.name] += 1
+            if call.duration_ms is not None:
+                tool_durations[call.name] += call.duration_ms
+        tools = [
+            ToolUsageEntry(
+                name=name,
+                category=tool_categories.get(name, TOOL_CATEGORY_OTHER),
+                calls=count,
+                errors=tool_errors[name],
+                total_duration_ms=tool_durations[name],
+            )
+            for name, count in tool_counts.most_common()
+        ]
+        drilldowns.append(
+            SessionDrilldown(
+                session_id=detail.session.session_id,
+                project_name=detail.session.project_name,
+                branch=detail.session.git_branch,
+                model=detail.session.model,
+                model_provider=detail.session.model_provider,
+                created_at=detail.session.created_at,
+                updated_at=detail.session.updated_at,
+                requests=detail.request_count,
+                total_tokens=detail.effective_total_tokens(),
+                estimated_cost_usd=estimate_detail_cost(detail, pricing),
+                token_split=detail.token_split(),
+                tools=tools,
+                file_edits=list(detail.file_edits),
+                compression_ineffective_count=detail.compression_ineffective_count,
+                opencode_summary=detail.opencode_summary,
+            )
+        )
+    return drilldowns
 
 
 def summarize_files_from_details(
@@ -1216,28 +1318,34 @@ def _build_breakdown(grouped: dict[str, list[SessionDetails]], pricing: PricingC
     return sorted(entries, key=lambda entry: (-entry.total_tokens, entry.name))
 
 
-def _project_concentration(details: list[SessionDetails], *, top_n: int) -> float | None:
-    if not details:
-        return None
-    project_totals: dict[str, int] = defaultdict(int)
-    total_tokens = 0
-    for detail in details:
-        tokens = detail.effective_total_tokens()
-        total_tokens += tokens
-        project_totals[detail.session.project_name] += tokens
+def _project_concentration_from_totals(project_totals: dict[str, int]) -> tuple[float | None, float | None]:
+    """Top-1 and top-3 project share in one pass over a single aggregation.
+
+    Previously the same aggregation was rebuilt twice per window, once for top-1
+    and once for top-3; with a window per source the pair ran 40 times a run.
+    """
+    if not project_totals:
+        return None, None
+    total_tokens = sum(project_totals.values())
     if total_tokens <= 0:
-        return None
+        return None, None
     ranked = sorted(project_totals.values(), reverse=True)
-    return sum(ranked[:top_n]) / total_tokens
+    return sum(ranked[:1]) / total_tokens, sum(ranked[:3]) / total_tokens
 
 
-def _longest_active_streak_days(details: list[SessionDetails]) -> int:
-    active_days = sorted({detail.session.created_at.astimezone().date() for detail in details})
+def _streak_days(active_days: set[date]) -> int:
+    """Longest run of consecutive active days, given a day set in one timezone.
+
+    The day set is bucketed with the same timezone as everything else on the page
+    (``now.tzinfo``), so the streak matches the day histogram instead of using the
+    system timezone that nothing else on the page references.
+    """
     if not active_days:
         return 0
+    ordered = sorted(active_days)
     longest = 1
     current = 1
-    for previous, current_day in zip(active_days, active_days[1:]):
+    for previous, current_day in zip(ordered, ordered[1:]):
         if (current_day - previous).days == 1:
             current += 1
             longest = max(longest, current)

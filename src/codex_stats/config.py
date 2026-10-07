@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -152,18 +152,35 @@ class PricingConfig:
     default_usd_per_1k_tokens: float | None = None
     model_rates: dict[str, ModelRates] | None = None
     source_rates: dict[str, float] | None = None
+    _rates_cache: dict[tuple[str, str], tuple[ModelRates, bool]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def rates_for(self, source: str, model: str | None) -> tuple[ModelRates, bool]:
+        key = (source or "", model or "")
+        cached = self._rates_cache.get(key)
+        if cached is not None:
+            return cached
         if source and self.source_rates and source in self.source_rates:
-            return ModelRates.uniform(self.source_rates[source]), False
-        if model:
+            resolved = (ModelRates.uniform(self.source_rates[source]), False)
+        elif model:
+            found = None
             for table in (self.model_rates, DEFAULT_MODEL_RATES):
                 found = _lookup_rates(table, source, model)
                 if found is not None:
-                    return found, False
-        if self.default_usd_per_1k_tokens is not None:
-            return ModelRates.uniform(self.default_usd_per_1k_tokens), True
-        return DEFAULT_FALLBACK_RATES, True
+                    break
+            if found is not None:
+                resolved = (found, False)
+            elif self.default_usd_per_1k_tokens is not None:
+                resolved = (ModelRates.uniform(self.default_usd_per_1k_tokens), True)
+            else:
+                resolved = (DEFAULT_FALLBACK_RATES, True)
+        elif self.default_usd_per_1k_tokens is not None:
+            resolved = (ModelRates.uniform(self.default_usd_per_1k_tokens), True)
+        else:
+            resolved = (DEFAULT_FALLBACK_RATES, True)
+        self._rates_cache[key] = resolved
+        return resolved
 
 
 def _lookup_rates(table: dict[str, ModelRates] | None, source: str, model: str) -> ModelRates | None:
@@ -193,16 +210,104 @@ def _rate_keys(source: str, model: str) -> list[str]:
     return keys
 
 
+class ConfigError(Exception):
+    """The user's config file exists but could not be used.
+
+    Raised as a message rather than left to propagate, because this file is written
+    by hand from the README and a stray bracket is the most likely mistake anyone
+    makes with it. A traceback out of a tool you run to look at a chart is a worse
+    answer than a sentence naming the line and the file.
+    """
+
+    def __init__(self, path: Path, detail: str) -> None:
+        self.path = path
+        self.detail = detail
+        super().__init__(f"{path}: {detail}")
+
+
+@dataclass(frozen=True)
+class BudgetConfig:
+    """An optional monthly spend limit the dashboard compares itself against.
+
+    Both fields come from ``[budget]`` in the same config.toml as pricing, so a
+    budget is a number the user chose rather than the 30-day projection already on
+    the page. ``warn_at_ratio`` is the fraction of the limit where the banner
+    starts to look urgent; the default keeps a heads-up at 80%.
+    """
+
+    monthly_limit_usd: float | None = None
+    warn_at_ratio: float = 0.8
+
+
+def load_budget_config(paths: Paths) -> BudgetConfig:
+    if not paths.config_file.exists():
+        return BudgetConfig()
+    raw = paths.config_file.read_text(encoding="utf-8")
+    try:
+        payload = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigError(paths.config_file, str(error)) from error
+    if not isinstance(payload, dict):  # pragma: no cover - tomllib always returns a dict
+        raise ConfigError(paths.config_file, "the file did not contain a table.")
+    budget = payload.get("budget", {})
+    if not isinstance(budget, dict):
+        raise ConfigError(
+            paths.config_file,
+            "[budget] must be a table, so it needs to start with [budget] on its own line.",
+        )
+    limit_raw = budget.get("monthly_limit_usd")
+    if limit_raw is None:
+        return BudgetConfig()
+    try:
+        limit = _rate_number(limit_raw)
+        ratio_raw = budget.get("warn_at_ratio", 0.8)
+        ratio = _rate_number(ratio_raw) if ratio_raw is not None else 0.8
+    except (TypeError, ValueError) as error:
+        raise ConfigError(
+            paths.config_file,
+            f"{error}. Budget values must be numbers, for example monthly_limit_usd = 100.0.",
+        ) from error
+    if limit <= 0:
+        raise ConfigError(paths.config_file, "monthly_limit_usd must be greater than zero.")
+    if not 0 < ratio <= 1:
+        raise ConfigError(paths.config_file, "warn_at_ratio must be between 0 and 1.")
+    return BudgetConfig(monthly_limit_usd=limit, warn_at_ratio=ratio)
+
+
 def load_pricing_config(paths: Paths) -> PricingConfig:
     if not paths.config_file.exists():
         return PricingConfig()
 
-    payload = tomllib.loads(paths.config_file.read_text(encoding="utf-8"))
+    raw = paths.config_file.read_text(encoding="utf-8")
+    try:
+        payload = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as error:
+        # The parser knows the exact line and column, which is the difference between
+        # a fixable sentence and a stack trace pointing into the standard library.
+        raise ConfigError(paths.config_file, str(error)) from error
+    if not isinstance(payload, dict):  # pragma: no cover - tomllib always returns a dict
+        raise ConfigError(paths.config_file, "the file did not contain a table.")
     pricing = payload.get("pricing", {})
-    default_rate_raw = pricing.get("default_usd_per_1k_tokens")
-    default_rate = float(default_rate_raw) if default_rate_raw is not None else None
-    model_rates = _flatten_model_rates(pricing.get("model_usd_per_1k_tokens", {}))
-    source_rates = {str(k): float(v) for k, v in pricing.get("source_usd_per_1k_tokens", {}).items()}
+    if not isinstance(pricing, dict):
+        raise ConfigError(
+            paths.config_file,
+            "[pricing] must be a table, so it needs to start with [pricing] on its own line.",
+        )
+    try:
+        default_rate_raw = pricing.get("default_usd_per_1k_tokens")
+        default_rate = _rate_number(default_rate_raw) if default_rate_raw is not None else None
+        model_rates = _flatten_model_rates(pricing.get("model_usd_per_1k_tokens", {}))
+        source_rates = {
+            str(k): _rate_number(v) for k, v in pricing.get("source_usd_per_1k_tokens", {}).items()
+        }
+    except (TypeError, ValueError) as error:
+        # A quoted rate, a boolean, or a word where a number belongs. Same class of
+        # mistake as the syntax error above and the same fix: name the file and the
+        # value instead of raising out of the middle of a float conversion.
+        raise ConfigError(
+            paths.config_file,
+            f"{error}. Rates must be numbers, for example input = 0.0025.",
+        ) from error
     return PricingConfig(
         default_usd_per_1k_tokens=default_rate,
         model_rates=model_rates,
@@ -210,8 +315,30 @@ def load_pricing_config(paths: Paths) -> PricingConfig:
     )
 
 
+def _rate_number(value: object) -> float:
+    """Coerce a configured rate, refusing values TOML can produce but nobody means.
+
+    ``float()`` accepts a bool as 1.0, so ``default_usd_per_1k_tokens = true``
+    would silently become a flat $1.00 per 1k tokens and inflate every cost on the
+    page by roughly two orders of magnitude, with nothing on screen to say so. A
+    quoted number is refused for the same reason: TOML already has a number type,
+    and quotes are almost always a typo rather than an intent.
+    """
+    if isinstance(value, bool):
+        raise ValueError(
+            f"got the boolean {str(value).lower()}, which would be read as the rate {float(value)}."
+        )
+    if isinstance(value, str):
+        raise ValueError(f"got the quoted string {value!r}; rates are written unquoted, as in 0.003.")
+    return float(value)
+
+
 def _flatten_model_rates(payload: dict, prefix: str = "") -> dict[str, ModelRates]:
     flattened: dict[str, ModelRates] = {}
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"model_usd_per_1k_tokens must be a table, but it is a {type(payload).__name__}."
+        )
     for key, value in payload.items():
         next_key = f"{prefix}.{key}" if prefix else str(key)
         if isinstance(value, dict):
@@ -221,7 +348,7 @@ def _flatten_model_rates(payload: dict, prefix: str = "") -> dict[str, ModelRate
             else:
                 flattened[next_key] = rates
         else:
-            flattened[next_key] = ModelRates.uniform(float(value))
+            flattened[next_key] = ModelRates.uniform(_rate_number(value))
     return flattened
 
 
@@ -239,7 +366,7 @@ _RATE_FIELDS = {
 
 
 def _parse_rate_table(payload: dict) -> ModelRates | None:
-    fields = {_RATE_FIELDS[k]: float(v) for k, v in payload.items() if k in _RATE_FIELDS}
+    fields = {_RATE_FIELDS[k]: _rate_number(v) for k, v in payload.items() if k in _RATE_FIELDS}
     if not fields:
         return None
     return ModelRates(

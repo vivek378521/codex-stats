@@ -58,6 +58,13 @@ DEFAULT_SUBMIT_KEY = "554f68344e64f04e870de3640b7bf5a35d33903f2d084a0b679fca54a7
 ENV_DISABLE = "CODEX_STATS_DISABLE_LEADERBOARD"
 _TRUTHY = {"1", "true", "yes", "on"}
 
+# How long the submit endpoint waits for a submission before stopping itself. The
+# page that can submit was already handed to the browser by the time this starts,
+# so the endpoint has to outlive the run that wrote it, and it has to stop on its
+# own. The deadline restarts on every submission.
+ENV_IDLE_TIMEOUT = "CODEX_STATS_LEADERBOARD_TIMEOUT"
+DEFAULT_IDLE_TIMEOUT_SECONDS = 300.0
+
 # ``tool_breakdown`` entries carry display labels, so map them back to source keys.
 _LABEL_TO_SOURCE = {label: key for key, label in SOURCE_LABELS.items()}
 
@@ -238,6 +245,10 @@ class LeaderboardSubmitServer:
     numbers are read from the dashboard object this server was built with, so
     editing the generated HTML cannot change what is reported. The per-run nonce
     in the path means another page in the same browser cannot drive this server.
+
+    Binding and serving are separate steps so the submit URL can be baked into the
+    HTML before anything starts listening: the dashboard is rendered once, on the
+    run that creates this server, so the port has to be known at that point.
     """
 
     def __init__(self, config: LeaderboardConfig, dashboard: DashboardData) -> None:
@@ -248,20 +259,85 @@ class LeaderboardSubmitServer:
         self._thread: threading.Thread | None = None
         self.submit_url: str = ""
         self.port: int = 0
+        self._last_submission = 0.0
+
+    def bind(self) -> str:
+        """Bind the loopback port without serving yet, and return the submit URL."""
+        if self._httpd is None:
+            self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _build_handler(self))
+            self._httpd.daemon_threads = True
+            host, port = self._httpd.server_address[:2]
+            self.port = port
+            self.submit_url = f"http://{host}:{port}/submit/{self._nonce}"
+        return self.submit_url
 
     def start(self) -> str:
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _build_handler(self))
-        self._httpd.daemon_threads = True
+        """Bind, then serve in a daemon thread owned by this process."""
+        url = self.bind()
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="codex-stats-leaderboard",
             daemon=True,
         )
         self._thread.start()
-        host, port = self._httpd.server_address[:2]
-        self.port = port
-        self.submit_url = f"http://{host}:{port}/submit/{self._nonce}"
-        return self.submit_url
+        return url
+
+    def note_submission(self) -> None:
+        """Record activity so the idle deadline starts again from this moment."""
+        self._last_submission = time.monotonic()
+
+    def serve_until_idle(self, timeout: float, poll_seconds: float = 1.0) -> None:
+        """Serve until ``timeout`` elapses with no submission, then return.
+
+        The endpoint has to outlive the run that wrote the dashboard, because the
+        page that can submit is the page the browser already holds. But it must not
+        outlive the run indefinitely, or every invocation leaves a process behind.
+        The deadline therefore restarts on each submission and never exceeds
+        ``timeout`` from the moment the dashboard was handed over.
+        """
+        if self._thread is None:
+            self.start()
+        self.note_submission()
+        while time.monotonic() - self._last_submission < timeout:
+            time.sleep(min(poll_seconds, max(timeout, 0.0)))
+        self.close()
+
+    def detach(self, timeout: float) -> bool:
+        """Hand the bound port to a detached child, so this process can exit.
+
+        Returning ``True`` means the child is serving and the caller should return
+        from ``main`` immediately. ``False`` means the caller has to keep the
+        process alive itself, which is the fallback where ``fork`` is unavailable.
+        """
+        if self._httpd is None:
+            return False
+        if not hasattr(os, "fork"):
+            self.start()
+            return False
+        pid = os.fork()
+        if pid == 0:
+            # Child: serve until idle, then leave without running any atexit hook
+            # or flushing the parent's buffered stdout a second time.
+            try:
+                # The child holds no output of its own, but it inherits the parent's
+                # stdout. Anything reading this process's output as a stream, such as
+                # a pipe into another command, would otherwise wait on the child for
+                # as long as the endpoint lives. Detach the handles instead.
+                devnull = os.open(os.devnull, os.O_RDWR)
+                for handle in (0, 1, 2):
+                    try:
+                        os.dup2(devnull, handle)
+                    except OSError:
+                        pass
+                if devnull > 2:
+                    os.close(devnull)
+                self.serve_until_idle(timeout)
+            finally:
+                os._exit(0)
+        self._httpd.server_close()
+        self._httpd = None
+        self._thread = None
+        return True
 
     def preview(self) -> dict[str, Any]:
         stats = collect_all_time_stats(self._dashboard)
@@ -277,15 +353,16 @@ class LeaderboardSubmitServer:
             ],
         }
 
-    def wait(self) -> None:
-        if self._thread is not None:
-            self._thread.join()
+    
 
     def close(self) -> None:
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
             self._httpd = None
+        if self._thread is not None:
+            self._thread.join(timeout=REQUEST_TIMEOUT_SECONDS)
+            self._thread = None
 
 
 def _build_handler(server: LeaderboardSubmitServer) -> type[BaseHTTPRequestHandler]:
@@ -317,6 +394,9 @@ def _build_handler(server: LeaderboardSubmitServer) -> type[BaseHTTPRequestHandl
             except ValueError as error:
                 self._respond(400, {"ok": False, "error": str(error)})
                 return
+            # A submission is the only reason this process stayed alive, so the idle
+            # deadline restarts from here and the user gets another window to submit.
+            server.note_submission()
             self._respond(200, result)
 
         def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler

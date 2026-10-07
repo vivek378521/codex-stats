@@ -53,6 +53,7 @@ from codex_stats.metrics import (
     summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
     summarize_providers_from_details,
+    summarize_session_drilldowns_from_details,
     summarize_source_breakdown_from_details,
     summarize_source_daily_from_details,
     summarize_takeaways,
@@ -72,6 +73,7 @@ from codex_stats.models import (
     SessionRecord,
 )
 from codex_stats.sources import (
+    SOURCE_CLAUDE,
     _ingest_claude,
     _ingest_hermes,
     _ingest_opencode,
@@ -460,6 +462,46 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(write_block.action, "created")
         self.assertEqual(write_block.insertions, 2)
 
+    def test_claude_multiedit_emits_no_phantom_parent_edit(self) -> None:
+        projects_dir = Path(self.tmpdir.name) / "claude-projects"
+        project_dir = projects_dir / "tmp-claude-project"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        transcript = [
+            {
+                "timestamp": "2026-04-03T10:00:00.000Z",
+                "type": "assistant",
+                "cwd": "/tmp/claude-project",
+                "message": {
+                    "model": "claude-opus-4",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_edit",
+                            "name": "MultiEdit",
+                            "input": {
+                                "file_path": "src/app.py",
+                                "edits": [
+                                    {"old_string": "aaa", "new_string": "bbb"},
+                                    {"old_string": "ccc", "new_string": "ddd"},
+                                ],
+                            },
+                        }
+                    ],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
+        ]
+        (project_dir / "abc123.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in transcript),
+            encoding="utf-8",
+        )
+        details = _ingest_claude(projects_dir)
+        edits = details[0].file_edits
+        # Two sub-edits, both on the parent's path, and no extra 1-insertion
+        # placeholder invented out of a call that changed two things at once.
+        self.assertEqual(len(edits), 2)
+        self.assertEqual([(edit.path, edit.insertions, edit.deletions) for edit in edits], [("src/app.py", 1, 1), ("src/app.py", 1, 1)])
+
     def test_parse_custom_tool_call_apply_patch(self) -> None:
         patch = (
             "*** Begin Patch\n"
@@ -575,6 +617,60 @@ class MetricsTestCase(unittest.TestCase):
         self.assertGreaterEqual(len(drilldowns[0].takeaways), 1)
         self.assertEqual(len(top), 1)
         self.assertEqual(top[0].project_name, "project")
+
+    def test_session_drilldowns_open_the_expensive_sessions(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        details = _details(self.paths, 2, now=now)
+        pricing = load_pricing_config(self.paths)
+        sessions = summarize_session_drilldowns_from_details(details, pricing, limit=5)
+        self.assertEqual(len(sessions), 1)
+        for session in sessions:
+            self.assertEqual(session.project_name, "project")
+            self.assertIsNone(session.branch)
+            self.assertEqual(session.model, "gpt-5.4")
+            # The token split always exists; tools and files only when recorded.
+            self.assertEqual(
+                session.token_split.fresh_input + session.token_split.cached_read
+                + session.token_split.cache_write + session.token_split.output,
+                session.total_tokens,
+            )
+
+    def test_session_drilldown_sums_only_what_the_source_records(self) -> None:
+        stamp = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
+        detail = SessionDetails(
+            session=SessionRecord(
+                session_id="s1",
+                created_at=stamp,
+                updated_at=stamp,
+                cwd="/tmp/p",
+                model="claude-haiku-4.5",
+                model_provider="anthropic",
+                tokens_used=400,
+                rollout_path=Path("/tmp/r.jsonl"),
+                git_branch=None,
+                git_origin_url=None,
+                source=SOURCE_CLAUDE,
+            ),
+            request_count=2,
+            input_tokens=300,
+            output_tokens=100,
+            cached_input_tokens=0,
+            reasoning_output_tokens=0,
+            total_tokens_from_rollout=400,
+            started_at=stamp,
+            token_accounting=CACHED_SEPARATE,
+            file_edits=(),
+            tool_calls=(),
+        )
+        pricing = PricingConfig()
+        sessions = summarize_session_drilldowns_from_details([detail], pricing, limit=1)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].total_tokens, 400)
+        # No tool calls and no file edits means empty drilled-down lists, not
+        # invented zero-quantity rows that would read as "the tool did nothing".
+        self.assertEqual(sessions[0].tools, [])
+        self.assertEqual(sessions[0].file_edits, [])
+        self.assertIsNone(sessions[0].branch)
 
     def test_takeaways_summarize_usage_story(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
@@ -895,6 +991,45 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(detail.cache_creation_tokens(), 33)
         self.assertEqual(detail.token_split().total, 145)
 
+    def test_claude_tool_result_events_are_not_counted_as_requests(self) -> None:
+        root = Path(self.tmpdir.name) / "claude-projects"
+        project_dir = root / "-tmp-claude"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        events = [
+            {"timestamp": "2026-04-03T13:17:23.324Z", "type": "user", "cwd": "/tmp/claude", "message": {"role": "user", "content": "hi"}},
+            {"timestamp": "2026-04-03T13:17:24.324Z", "type": "assistant", "cwd": "/tmp/claude", "message": {"model": "claude-opus-4", "content": [{"type": "tool_use", "id": "call_1", "name": "Read"}], "usage": {}}},
+            # A tool result is written as a user event, but it is the agent feeding
+            # itself an answer, not a turn the person typed. Counted before, it
+            # inflated requests and tokens-per-request next to the other sources.
+            {
+                "timestamp": "2026-04-03T13:17:25.324Z",
+                "type": "user",
+                "cwd": "/tmp/claude",
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "checked"}]},
+            },
+            {"timestamp": "2026-04-03T13:17:26.324Z", "type": "user", "cwd": "/tmp/claude", "message": {"role": "user", "content": "and now this"}},
+        ]
+        (project_dir / "conv1.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events), encoding="utf-8"
+        )
+        detail = _ingest_claude(root)[0]
+        self.assertEqual(detail.request_count, 2)
+
+    def test_claude_interrupt_and_empty_user_events_are_not_requests(self) -> None:
+        root = Path(self.tmpdir.name) / "claude-projects"
+        project_dir = root / "-tmp-claude"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        events = [
+            {"timestamp": "2026-04-03T13:17:23.324Z", "type": "user", "cwd": "/tmp/claude", "message": {"role": "user", "content": ""}},
+            {"timestamp": "2026-04-03T13:17:24.324Z", "type": "user", "cwd": "/tmp/claude", "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}},
+            {"timestamp": "2026-04-03T13:17:25.324Z", "type": "user", "cwd": "/tmp/claude", "message": {"role": "user", "content": "keep going"}},
+        ]
+        (project_dir / "conv1.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events), encoding="utf-8"
+        )
+        detail = _ingest_claude(root)[0]
+        self.assertEqual(detail.request_count, 1)
+
     def test_canonical_split_reconciles_with_provider_total(self) -> None:
         for detail in [get_session_details(self.paths, get_session(self.paths))]:
             self.assertEqual(detail.token_split().total, detail.effective_total_tokens())
@@ -1039,6 +1174,10 @@ class HistoryBoundTestCase(unittest.TestCase):
         self.addCleanup(os.environ.pop, ENV_MAX_SESSIONS, None)
         os.environ.pop(ENV_MAX_SESSIONS, None)
 
+    def _write_config(self, text: str) -> None:
+        self.paths.config_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.config_file.write_text(text.strip(), encoding="utf-8")
+
     def _seed(self, count: int, step: timedelta = timedelta(hours=1)) -> None:
         """Seed `count` sessions where session 0 is the newest, one `step` apart."""
         connection = sqlite3.connect(self.state_db)
@@ -1171,6 +1310,35 @@ class HistoryBoundTestCase(unittest.TestCase):
         self.assertIsNone(dashboard.coverage_note)
         self.assertNotIn("Partial history", format_dashboard_html(dashboard))
 
+    def test_budget_stays_quiet_below_the_warn_ratio(self) -> None:
+        self._seed(count=2)
+        self._write_config("[budget]\nmonthly_limit_usd = 10000.0")
+        dashboard = _build_dashboard(self.paths, now=datetime(2026, 4, 10, 12, tzinfo=UTC))
+        self.assertIsNone(dashboard.budget_note)
+        self.assertNotIn("Watch the budget", format_dashboard_html(dashboard))
+
+    def test_budget_confesses_an_over_limit_month(self) -> None:
+        # Tiny limit against any seeded spend: the note must say the month overshot
+        # rather than quietly leaving the limit off the page.
+        self._seed(count=3)
+        self._write_config("[budget]\nmonthly_limit_usd = 0.0000001\nwarn_at_ratio = 0.5")
+        dashboard = _build_dashboard(self.paths, now=datetime(2026, 4, 10, 12, tzinfo=UTC))
+        self.assertIsNotNone(dashboard.budget_note)
+        assert dashboard.budget_note is not None
+        self.assertIn("Over the $0.00 monthly budget", dashboard.budget_note)
+        html = format_dashboard_html(dashboard)
+        self.assertIn("Over budget.", html)
+        self.assertEqual(html.count("Over budget."), 1)
+
+    def test_budget_warns_but_does_not_overstate_before_the_limit(self) -> None:
+        self._seed(count=1)
+        self._write_config("[budget]\nmonthly_limit_usd = 1.0\nwarn_at_ratio = 0.000001")
+        dashboard = _build_dashboard(self.paths, now=datetime(2026, 4, 10, 12, tzinfo=UTC))
+        self.assertIsNotNone(dashboard.budget_note)
+        self.assertIn("Approaching the $1.00 monthly budget", dashboard.budget_note)
+        self.assertIn("Watch the budget.", format_dashboard_html(dashboard))
+        self.assertNotIn("Over the $1.00 monthly budget", dashboard.budget_note)
+
     def test_dashboard_discloses_the_cut_when_history_is_truncated(self) -> None:
         self._seed(count=9)
         os.environ[ENV_MAX_SESSIONS] = "4"
@@ -1245,12 +1413,14 @@ class NonCodexHistoryBoundTestCase(unittest.TestCase):
 
     OPENCODE_COLUMNS = (
         "id, directory, model, cost, tokens_input, tokens_output, tokens_reasoning, "
-        "tokens_cache_read, tokens_cache_write, time_created, time_updated"
+        "tokens_cache_read, tokens_cache_write, time_created, time_updated, "
+        "summary_files, summary_additions, summary_deletions, summary_diffs"
     )
     HERMES_COLUMNS = (
         "id, cwd, git_branch, git_repo_root, model, message_count, input_tokens, "
         "output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, "
-        "estimated_cost_usd, started_at, ended_at, last_activity_at, display_name, title"
+        "estimated_cost_usd, started_at, ended_at, last_activity_at, display_name, title, "
+        "compression_ineffective_count"
     )
 
     def setUp(self) -> None:
@@ -1289,6 +1459,10 @@ class NonCodexHistoryBoundTestCase(unittest.TestCase):
                     0,
                     1_700_000_000 + index * 60,
                     1_700_000_000 + index * 60,
+                    0,
+                    0,
+                    0,
+                    0,
                 )
                 for index in range(count)
             ]
@@ -1325,6 +1499,7 @@ class NonCodexHistoryBoundTestCase(unittest.TestCase):
                     1_700_000_600 + index * 60,
                     "alpha",
                     None,
+                    0,
                 )
                 for index in range(count)
             ]

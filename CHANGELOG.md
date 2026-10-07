@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-10-07
+
+### Added
+
+- **Session drilldown.** Top sessions are now a list you can click. Each row
+  expands in place to show the session's branch, provider, created and last
+  updated times, request count, token split (fresh input / cache reads / cache
+  writes / output), the tools it called, and the files it edited. Panels render
+  only what the source records: Hermes sessions with a compression
+  ineffective-rewrite counter show it, and OpenCode file-change totals appear
+  when its `summary_*` columns are populated. Tools that record none of it are
+  labelled "Not recorded" rather than presented as zero.
+- **Insights that keep their integrity.** Insights now notice when a context
+  rewrite "bought" no space. The count comes only from what a source actually
+  records (`compression_ineffective_count`), so a tool that has never recorded
+  one stays silent instead of being reported as healthy.
+- **Monthly spend thresholds.** A `[budget]` table in `config.toml` with a
+  `monthly_limit_usd` and an optional `warn_at_ratio` (default 0.8). When the
+  current calendar month's spend reaches that ratio of the limit, the dashboard
+  says so with a note under the totals; going over the limit changes the note to
+  an over-budget warning. The note names the sources and months it can price,
+  and says outright when pricing is missing, rather than reading a silent
+  comparison as a healthy one.
+- **Leaderboard.** The README now documents the optional leaderboard
+  submission: what is sent, what is never sent (rollout paths, prompts, tool
+  calls, token counts), the device id's message-authentication, and the meaning
+  of the shared key baked into the wheel.
+
+### Changed
+
+- **Startup reads are now scoped in SQL, not brewed in Python.** OpenCode
+  request counts and tool calls were read whole and filtered in Python; a long
+  history cost real time even after the session cap. Both are now `WHERE
+  session_id IN (...)` reads with chunked parameters, and the malformed-JSON
+  fallback is scoped to the sessions being read. An isolated warm ingest of the
+  local OpenCode history went from seconds that scaled with history length to
+  ~0.4s.
+- **The single-file dashboard got roughly a megabyte lighter.** The embedded
+  chart assets were base64 of full SVGs; they are now gzip-compressed first
+  (~1.4 MB to ~206 KB of payload) and only the requested card is inflated when
+  exported. Total page weight dropped from ~3.9 MB to ~2.9 MB with no change in
+  the exports.
+- **The coverage note reuses work already done.** `_coverage_note` now takes
+  the already-built source objects instead of re-walking the source databases a
+  second time on every build.
+
 ## [1.14.0] - 2026-10-04
 
 ### Added

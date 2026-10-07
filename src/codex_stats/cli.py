@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import os
 import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import Paths, PricingConfig, load_pricing_config
+from .config import BudgetConfig, ConfigError, Paths, PricingConfig, load_budget_config, load_pricing_config
 from .display import format_dashboard_html
 from .ingest import ENV_MAX_SESSIONS
-from .leaderboard import LeaderboardConfig, LeaderboardSubmitServer
+from .leaderboard import (
+    DEFAULT_IDLE_TIMEOUT_SECONDS,
+    ENV_IDLE_TIMEOUT,
+    LeaderboardConfig,
+    LeaderboardSubmitServer,
+)
 from .metrics import (
     DEFAULT_IDLE_BRANCH_DAYS,
     local_date,
@@ -21,6 +27,7 @@ from .metrics import (
     summarize_daily_from_details,
     summarize_details,
     summarize_efficiency_from_details,
+    estimate_detail_cost,
     summarize_expensive_session,
     summarize_files_from_details,
     summarize_history_from_details,
@@ -41,7 +48,7 @@ from .models import (
     DashboardWindow,
     SessionDetails,
 )
-from .sources import iter_sources
+from .sources import Source, iter_sources
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,29 +71,69 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote dashboard to {output_path}")
     _open_report_in_browser(output_path)
     print(f"Opened dashboard in browser: {output_path}")
-    if submit_server is None:
+    return _run_submit_endpoint(submit_server)
+
+
+def _run_submit_endpoint(server: LeaderboardSubmitServer | None) -> int:
+    """Keep the dashboard submittable, then hand the shell back.
+
+    The Submit button posts to a loopback endpoint, and the only copy of the page
+    that can post lives in the browser, so the endpoint cannot be closed the moment
+    the dashboard opens. It is detached into its own process so this command still
+    returns immediately, and that process stops on its own once nobody submits.
+    """
+    if server is None:
         return 0
-    print("Leaderboard enabled: use Submit to Leaderboard in the dashboard. Press Ctrl+C to stop.")
+    timeout = _idle_timeout_seconds()
     try:
-        submit_server.wait()
-    except KeyboardInterrupt:
-        print("\nLeaderboard submit endpoint stopped.")
-    finally:
-        submit_server.close()
+        detached = server.detach(timeout)
+    except OSError:
+        detached = False
+        server.start()
+    if not detached:
+        # No fork on this platform, so this process owns the endpoint and has to
+        # stay alive to serve it. Say so rather than appearing to hang.
+        minutes = max(round(timeout / 60.0), 1)
+        print(
+            f"Leaderboard enabled: Submit to Leaderboard stays available for {minutes} "
+            f"minute{'s' if minutes != 1 else ''}. Press Ctrl+C to stop it now."
+        )
+        try:
+            server.serve_until_idle(timeout)
+        except KeyboardInterrupt:
+            print("\nLeaderboard submit endpoint stopped.")
+        finally:
+            server.close()
+        return 0
+    print(
+        f"Leaderboard enabled: Submit to Leaderboard stays available for "
+        f"{_duration_label(timeout)}. This command has returned; the endpoint stops on its own."
+    )
     return 0
 
 
-def _start_leaderboard(dashboard: DashboardData) -> LeaderboardSubmitServer | None:
-    """Bring up the loopback submit endpoint when the leaderboard is configured.
+def _duration_label(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)} second{'s' if seconds != 1 else ''}"
+    minutes = seconds / 60.0
+    rounded = round(minutes)
+    if rounded == 1:
+        return "1 minute"
+    return f"{rounded} minutes" if abs(minutes - rounded) < 0.5 else f"{minutes:.1f} minutes"
 
-    Binding here, before the dashboard is rendered, is what lets the generated
-    HTML carry a URL that is already live.
+
+def _start_leaderboard(dashboard: DashboardData) -> LeaderboardSubmitServer | None:
+    """Bind the loopback submit endpoint when the leaderboard is configured.
+
+    Binding, rather than serving, happens here: the generated HTML has to carry a
+    URL that is already live, and the port is only known once the socket exists.
+    Nothing accepts connections until ``detach`` hands the socket off.
     """
     config = LeaderboardConfig.from_env()
     if config is None:
         return None
     server = LeaderboardSubmitServer(config, dashboard)
-    server.start()
+    server.bind()
     return server
 
 
@@ -96,9 +143,30 @@ def _leaderboard_preview(server: LeaderboardSubmitServer | None) -> dict[str, ob
     return server.preview()
 
 
+def _idle_timeout_seconds() -> float:
+    """How long the detached submit endpoint waits for a submission before exiting.
+
+    The dashboard is a file the browser already holds, so the endpoint that page
+    talks to has to outlive the run that wrote it. Bounding that wait is what stops
+    every invocation from leaving a process behind: without a deadline the command
+    never returns, and a tool you run from a shell has to give the shell back.
+    """
+    raw = os.environ.get(ENV_IDLE_TIMEOUT, "").strip()
+    if not raw:
+        return DEFAULT_IDLE_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return DEFAULT_IDLE_TIMEOUT_SECONDS
+    return max(seconds, 0.0)
+
+
 def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData:
     current_time = now or datetime.now().astimezone()
-    pricing = load_pricing_config(paths)
+    pricing, config_error = _load_pricing_or_default(paths)
+    budget, budget_error = _load_budget_or_default(paths)
+    if config_error is None and budget_error is not None:
+        config_error = budget_error
     selected_sources = iter_sources(paths)
     source_details = {source.key: source.ingest() for source in selected_sources}
     all_details = [detail for source in selected_sources for detail in source_details[source.key]]
@@ -128,22 +196,89 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
     return DashboardData(
         generated_at=current_time,
         scopes=[overview, *tool_scopes],
-        coverage_note=_coverage_note(paths),
+        coverage_note=_coverage_note(selected_sources),
+        config_error=config_error,
+        budget_note=_budget_note(budget, pricing, all_details, current_time),
     )
 
 
-def _coverage_note(paths: Paths) -> str | None:
+def _load_budget_or_default(paths: Paths) -> tuple[BudgetConfig, str | None]:
+    """Read the optional monthly budget, or the unlimited default.
+
+    A malformed ``[budget]`` block is surfaced through the same config_error banner
+    as a bad pricing table: same file, same class of hand-edited mistake, same one-
+    line answer instead of a traceback.
+    """
+    try:
+        return load_budget_config(paths), None
+    except ConfigError as error:
+        return BudgetConfig(), f"{error.path}: {error.detail}"
+
+
+def _budget_note(
+    budget: BudgetConfig,
+    pricing: PricingConfig,
+    details: list[SessionDetails],
+    current_time: datetime,
+) -> str | None:
+    """Compare the calendar-month spend to the user's limit, if any.
+
+    The budget is measured against the calendar month, not the rolling 30-day tab:
+    a budget is a per-month commitment in someone's calendar terms, and the page
+    already shows the rolling figure elsewhere. The banner appears at the warn
+    ratio and turns into an over-limit statement once the limit passes.
+    """
+    if budget.monthly_limit_usd is None:
+        return None
+    month_start = current_time.date().replace(day=1)
+    spent = sum(
+        estimate_detail_cost(detail, pricing)
+        for detail in details
+        if month_start <= local_date(detail.session.created_at, current_time.tzinfo) <= current_time.date()
+    )
+    limit = budget.monthly_limit_usd
+    ratio = spent / limit
+    if ratio < budget.warn_at_ratio:
+        return None
+    if ratio >= 1.0:
+        return (
+            f"Over the ${limit:,.2f} monthly budget: ${spent:,.2f} spent this calendar month "
+            f"({ratio:.0%} of limit)."
+        )
+    return (
+        f"Approaching the ${limit:,.2f} monthly budget: ${spent:,.2f} spent this calendar month "
+        f"({ratio:.0%} of limit)."
+    )
+
+
+def _load_pricing_or_default(paths: Paths) -> tuple[PricingConfig, str | None]:
+    """Read the rate table, degrading to the built-in one on a bad config file.
+
+    The dashboard is still worth rendering with stock rates: a user with a typo in
+    one override can see everything except their own custom prices, and is told on
+    the page which file was ignored. Raising instead would make a one-character
+    mistake cost the entire report.
+    """
+    try:
+        return load_pricing_config(paths), None
+    except ConfigError as error:
+        return PricingConfig(), f"{error.path}: {error.detail}"
+
+
+def _coverage_note(sources: list[Source]) -> str | None:
     """Admit to a bounded history read, or stay quiet when nothing was dropped.
 
     Every source that can drop history reports it here, because a window that
     silently shows a partial history is worse than one that says it is partial.
     Sources are named individually so a reader can tell which of their tools was
-    truncated instead of inferring it from a single blended total.
+    truncated instead of inferring it from a single blended total. The source
+    objects come from the ingest pass rather than being rebuilt here, so the
+    availability flags and paths are looked up once per run.
     """
     dropped_by_source: list[str] = []
     total_analyzed = 0
     total_on_disk = 0
-    for source in iter_sources(paths):
+    for source in sources:
         if not source.available:
             continue
         try:
@@ -260,13 +395,15 @@ def _build_window(
     now: datetime,
     build_tool_breakdown: bool = False,
 ) -> DashboardWindow:
-    summary = summarize_details(current_label, current_details, pricing)
+    summary = summarize_details(current_label, current_details, pricing, timezone=now.tzinfo)
     comparison = summarize_compare_from_details(
         current_details,
         previous_details,
         current_label=current_label,
         previous_label=previous_label,
         pricing=pricing,
+        current_summary=summary,
+        timezone=now.tzinfo,
     )
     insights = summarize_insights_from_details(current_details, pricing=pricing, month=summary, now=now)
     costs = summarize_costs_from_details(
@@ -358,7 +495,7 @@ def _build_all_time_window(
     now: datetime,
     build_tool_breakdown: bool = False,
 ) -> DashboardWindow:
-    summary = summarize_details("all time", all_details, pricing)
+    summary = summarize_details("all time", all_details, pricing, timezone=now.tzinfo)
     recent_details = _details_for_last_days(all_details, 30, now)
     previous_details = _details_for_previous_window(all_details, 30, now)
     comparison = summarize_compare_from_details(
@@ -367,6 +504,7 @@ def _build_all_time_window(
         current_label="recent 30 days",
         previous_label="prior 30 days",
         pricing=pricing,
+        timezone=now.tzinfo,
     )
     costs = summarize_costs_from_details(all_details, pricing=pricing, now=now)
     insights = summarize_insights_from_details(all_details, pricing=pricing, month=summary, now=now)

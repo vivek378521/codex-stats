@@ -89,6 +89,43 @@ Inside the dashboard, use the action bar to:
 Codex `state_5.sqlite` and rollout files, the OpenCode database, Claude Code project
 transcripts, and the Hermes database, then normalizes everything into one session model.
 
+## Leaderboard
+
+The dashboard can submit your all-time totals to a shared leaderboard. The page you
+open never sends a number itself: it saves a username locally, and the submission is
+built and signed by `codex-stats` (not the browser) from the already-computed
+dashboard totals, then delivered straight from the tool to the server.
+
+What is published, and what is not:
+
+- **Sent:** a username you type, plus totals for all-time tokens, requests, sessions,
+  estimated cost, and per-CLI token share — the same figures already on your page.
+- **Not sent:** model names, prompts and tool calls, file names, project names, session
+  details, timestamps, money in "real" units beyond the rounded cost share, or your IP
+  beyond what any HTTPS request exposes to its server.
+- **Device identity:** each machine gets an opaque 32-char id derived from an HMAC of
+  its MAC address. The MAC itself is read locally and never transmitted; the id cannot
+  be reversed into the hardware address by the server, and it is what keeps one person
+  from overwriting another's row.
+
+The leaderboard is **on by default** after the first release that ships a key. To turn
+it off or move it, see the env vars:
+
+| Variable | Effect |
+| --- | --- |
+| `CODEX_STATS_DISABLE_LEADERBOARD=1` | Silence the whole feature: no embed, no endpoint, no "Submit" button |
+| `CODEX_STATS_LEADERBOARD_URL` | Point submission at your own server (`/api/submit`) |
+| `CODEX_STATS_LEADERBOARD_KEY` | Override the shared submit key (lets admins rotate without a release) |
+| `CODEX_STATS_LEADERBOARD_TIMEOUT` | Seconds the submit endpoint waits before exiting (default 300) |
+
+Why a shared key ships, honestly: it is public the moment it ships, so it cannot keep
+the numbers genuine. What it protects is that stats come from the local database
+rather than forged or inflated by browser Javascript, and that one row cannot be
+overwritten without the owner's device id. Blocking spam is the server's job, not
+this client's. The feature is the same either way: `codex-stats` runs a short-lived
+local endpoint after writing the dashboard, hands the page the username dialog, and
+exits on its own once the window passes without a submission.
+
 ## Notes
 
 - **Branches are grouped per repository.** A branch name is only unique inside its own
@@ -176,6 +213,13 @@ transcripts, and the Hermes database, then normalizes everything into one sessio
   # a source rate overrides the model table
   [pricing.source_usd_per_1k_tokens]
   claude = 0.015
+
+  [budget]
+  # optional: warn once the current calendar month reaches this spend, and
+  # state clearly when it passes. Omit the whole [budget] table for no banner.
+  monthly_limit_usd = 120.0
+  # optional: how near the limit is "approaching" (default 0.8 = 80%)
+  warn_at_ratio = 0.9
   ```
 
 - Output depends on local file formats remaining compatible.

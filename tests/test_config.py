@@ -10,9 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_stats.config import (
     DEFAULT_FALLBACK_RATES,
     DEFAULT_MODEL_RATES,
+    BudgetConfig,
+    ConfigError,
     ModelRates,
     Paths,
     PricingConfig,
+    load_budget_config,
     load_pricing_config,
 )
 
@@ -173,6 +176,42 @@ claude = 0.05
         self.assertEqual(pricing.rates_for("claude", None), (ModelRates.uniform(0.05), False))
         self.assertEqual(pricing.rates_for("opencode", None)[0], ModelRates.uniform(0.01))
         self.assertTrue(pricing.rates_for("opencode", None)[1])
+
+    def _write_config(self, text: str) -> None:
+        self.paths.config_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.config_file.write_text(text.strip(), encoding="utf-8")
+
+    def test_budget_absent_by_default_and_absent_from_file(self) -> None:
+        self.assertEqual(load_budget_config(self.paths), BudgetConfig())
+        self._write_config("[pricing]\ndefault_usd_per_1k_tokens = 0.01")
+        self.assertEqual(load_budget_config(self.paths), BudgetConfig())
+
+    def test_budget_parses_a_limit_and_ratio(self) -> None:
+        self._write_config("[budget]\nmonthly_limit_usd = 120.0\nwarn_at_ratio = 0.75")
+        self.assertEqual(
+            load_budget_config(self.paths),
+            BudgetConfig(monthly_limit_usd=120.0, warn_at_ratio=0.75),
+        )
+
+    def test_budget_uses_default_warn_ratio_when_omitted(self) -> None:
+        self._write_config("[budget]\nmonthly_limit_usd = 100.0")
+        budget = load_budget_config(self.paths)
+        self.assertEqual(budget.monthly_limit_usd, 100.0)
+        self.assertEqual(budget.warn_at_ratio, 0.8)
+
+    def test_budget_rejects_a_boolean_limit(self) -> None:
+        # True float()s to 1.0, same silent-inflation trap as a pricing rate.
+        self._write_config("[budget]\nmonthly_limit_usd = true")
+        with self.assertRaises(ConfigError):
+            load_budget_config(self.paths)
+
+    def test_budget_rejects_nonpositive_or_out_of_range_values(self) -> None:
+        self._write_config("[budget]\nmonthly_limit_usd = 0")
+        with self.assertRaises(ConfigError):
+            load_budget_config(self.paths)
+        self._write_config("[budget]\nmonthly_limit_usd = 10.0\nwarn_at_ratio = 1.5")
+        with self.assertRaises(ConfigError):
+            load_budget_config(self.paths)
 
 
 if __name__ == "__main__":
