@@ -50,6 +50,16 @@ All notable changes to this project are documented here. The format follows
   the already-built source objects instead of re-walking the source databases a
   second time on every build.
 
+## [1.16.0] - 2026-10-12
+
+### Added
+
+- **Regression detection vs last run.** On each run, a small snapshot of key metrics is saved to the cache; next run computes deltas (cost/1k lines, repeat rate, read-only share) and prints/ displays a short "vs last run" diff.
+- **Top leaks view.** Surfaces concrete offenders (repeated tool calls/time, tool failures, most expensive idle branches, most-rewritten files) as banner bullets and per-window "Leaks" panels.
+- **Runway & burn rate.** Projects days until hitting the configured `[budget]` limit using recent burn rate, with on-track/approaching/exceeding status; also accepts per-project limits in `[budget.projects.*]`.
+- **Efficiency trends.** Adds an "Efficiency Trend" panel per window (cost/1k lines, read/write ratio, read-only share where available).
+- **Offender-aware takeaways.** Takeaways now include the specific worst offender when present (measured facts outrank generic advice).
+
 ## [1.14.0] - 2026-10-04
 
 ### Added
