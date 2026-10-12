@@ -41,6 +41,10 @@ from .metrics import (
     summarize_top_sessions_from_details,
     summarize_tool_efficiency_from_details,
     summarize_work_rhythm,
+    summarize_leaks,
+    summarize_runway,
+    summarize_regression,
+    summarize_efficiency_trend,
 )
 from .models import (
     DashboardData,
@@ -49,6 +53,7 @@ from .models import (
     SessionDetails,
 )
 from .sources import Source, iter_sources
+from .state import StateStore, Snapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -193,12 +198,67 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
         )
         for source in selected_sources
     ]
+    # compute regression and leaks summary for top level
+    # build a merged leaks summary from overview windows? take first window (overview has multiple windows)
+    leaks_summary = None
+    try:
+        ov_win = overview.windows[0] if overview.windows else None
+        if ov_win and ov_win.leaks:
+            leaks_summary = ov_win.leaks
+    except Exception:
+        pass
+    # regression
+    regression_summary = None
+    regression_stdout = None
+    try:
+        store = StateStore(paths.dashboard_file.parent)
+        prev = store.load()
+        # build snapshot for current - use ov_win if exists
+        if ov_win:
+            eff = ov_win.efficiency
+            beh = ov_win.behavior
+            br = ov_win.branches
+            cur = {
+                'cost_per_1k_lines': eff.cost_per_1k_lines if eff and eff.tracked else None,
+                'repeat_rate': beh.repeat_rate if beh and beh.supported else None,
+                'read_only_cost_share': eff.read_only_cost_share if eff and eff.tracked else None,
+            }
+            prevd = {
+                'cost_per_1k_lines': prev.cost_per_1k_lines,
+                'repeat_rate': prev.repeat_rate,
+                'read_only_cost_share': prev.read_only_cost_share,
+            }
+            regression_summary, regression_stdout = summarize_regression(cur, prevd)
+            # save new snapshot
+            snap = Snapshot(
+                generated_at=current_time,
+                window_key=ov_win.key,
+                window_label=ov_win.label,
+                cost_per_1k_lines=eff.cost_per_1k_lines if eff and eff.tracked else None,
+                repeat_rate=beh.repeat_rate if beh and beh.supported else None,
+                repeat_time_rate=beh.repeat_time_rate if beh and beh.supported else None,
+                read_only_cost_share=eff.read_only_cost_share if eff and eff.tracked else None,
+                read_write_ratio=beh.read_write_ratio if beh and beh.supported else None,
+                unrated_sessions=ov_win.summary.unrated_sessions,
+                total_tokens=ov_win.summary.total_tokens,
+                estimated_cost_usd=ov_win.summary.estimated_cost_usd,
+                branches_idle_cost_usd=br.idle_cost_usd if br else 0.0,
+                behavior_supported=beh.supported if beh else False,
+                efficiency_supported=eff.tracked if eff else False,
+                leaks=[e.to_dict() for e in (leaks_summary.entries if leaks_summary else [])],
+            )
+            store.save(snap)
+    except Exception:
+        pass
     return DashboardData(
         generated_at=current_time,
         scopes=[overview, *tool_scopes],
         coverage_note=_coverage_note(selected_sources),
         config_error=config_error,
         budget_note=_budget_note(budget, pricing, all_details, current_time),
+        leaks_summary=leaks_summary,
+        regression_summary=regression_summary,
+        regression_stdout=regression_stdout,
     )
 
 
@@ -315,6 +375,7 @@ def _build_scope(
     source: str,
     details: list[SessionDetails],
     pricing: PricingConfig,
+    budget: BudgetConfig | None = None,
     now: datetime,
     build_tool_breakdown: bool = False,
 ) -> DashboardScope:
@@ -333,6 +394,7 @@ def _build_scope(
             trend_days=1,
             all_details=details,
             pricing=pricing,
+            budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
         ),
@@ -347,6 +409,7 @@ def _build_scope(
             trend_days=7,
             all_details=details,
             pricing=pricing,
+            budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
         ),
@@ -361,12 +424,14 @@ def _build_scope(
             trend_days=30,
             all_details=details,
             pricing=pricing,
+            budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
         ),
         _build_all_time_window(
             all_details=details,
             pricing=pricing,
+            budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
         ),
@@ -392,6 +457,7 @@ def _build_window(
     trend_days: int,
     all_details: list[SessionDetails],
     pricing: PricingConfig,
+    budget: BudgetConfig | None = None,
     now: datetime,
     build_tool_breakdown: bool = False,
 ) -> DashboardWindow:
@@ -485,6 +551,9 @@ def _build_window(
             if build_tool_breakdown
             else None
         ),
+        leaks=summarize_leaks(behavior=behavior, branches=branches, efficiency=efficiency),
+        runway=summarize_runway(daily_points, costs=costs, budget=budget),
+        efficiency_trend=summarize_efficiency_trend(current_details, [label], pricing=pricing),
     )
 
 
@@ -492,6 +561,7 @@ def _build_all_time_window(
     *,
     all_details: list[SessionDetails],
     pricing: PricingConfig,
+    budget: BudgetConfig | None = None,
     now: datetime,
     build_tool_breakdown: bool = False,
 ) -> DashboardWindow:
@@ -580,6 +650,9 @@ def _build_all_time_window(
             if build_tool_breakdown
             else None
         ),
+        leaks=summarize_leaks(behavior=behavior, branches=branches, efficiency=efficiency),
+        runway=summarize_runway(daily_points, costs=costs, budget=budget),
+        efficiency_trend=summarize_efficiency_trend(all_details, ["all time"], pricing=pricing),
     )
 
 

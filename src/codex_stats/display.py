@@ -148,6 +148,14 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
             f"<strong>{'Over budget.' if over else 'Watch the budget.'}</strong> {escape(dashboard.budget_note)}"
             "</div>"
         )
+    regression_html = ""
+    if dashboard.regression_stdout:
+        items = ''.join(f'<li>{escape(x)}</li>' for x in dashboard.regression_stdout)
+        regression_html = f'<div class="coverage-note" role="status"><strong>Regression</strong><ul style="margin:4px 0 0 18px">{items}</ul></div>'
+    leaks_banner_html = ""
+    if dashboard.leaks_summary and dashboard.leaks_summary.has_leaks:
+        items = ''.join(f'<li>{escape(e.description)}</li>' for e in dashboard.leaks_summary.entries[:5])
+        leaks_banner_html = f'<div class="coverage-note" role="status"><strong>Top leaks</strong><ul style="margin:4px 0 0 18px">{items}</ul></div>' 
     scope_sections = "".join(        "".join(
             _format_dashboard_window_section(
                 window,
@@ -1158,6 +1166,8 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       {coverage_note_html}
       {config_error_html}
       {budget_html}
+      {regression_html}
+      {leaks_banner_html}
       <div class="toolbar">
         <div class="tabs">
           <div class="scope-tabs">{scope_buttons}</div>
@@ -1738,6 +1748,28 @@ def format_dashboard_svg_assets(window: DashboardWindow, *, scope_label: str = "
     }
 
 
+
+def _render_leaks_panel(window) -> str:
+    leaks = getattr(window, 'leaks', None)
+    if not leaks or not leaks.entries:
+        return ''
+    items = ''.join(f'<li>{escape(e.description)}</li>' for e in leaks.entries[:6])
+    return f'<section class="panel"><header class="panel-header"><h2>Leaks</h2></header><div class="panel-body"><ul>{items}</ul></div></section>'
+
+def _render_runway_panel(window) -> str:
+    runway = getattr(window, 'runway', None)
+    if not runway or runway.status == 'unknown' and not runway.message:
+        return ''
+    msg = escape(runway.message or f"Status: {runway.status}")
+    return f'<section class="panel"><header class="panel-header"><h2>Runway & Burn</h2></header><div class="panel-body"><p>{msg}</p><p>Burn: ${runway.burn_rate_usd_per_day:.4f}/day (last {runway.days_in_window}d)</p></div></section>'
+
+def _render_efficiency_trend_panel(window) -> str:
+    trend = getattr(window, 'efficiency_trend', None)
+    if not trend or not trend.points:
+        return ''
+    rows = ''.join(f'<tr><td>{escape(p.label)}</td><td>{f"${p.cost_per_1k_lines:.3f}" if p.cost_per_1k_lines is not None else "—"}</td><td>{f"{p.read_write_ratio:.2f}" if p.read_write_ratio is not None else "—"}</td></tr>' for p in trend.points)
+    return f'<section class="panel"><header class="panel-header"><h2>Efficiency Trend</h2></header><div class="panel-body"><table class="data-table"><thead><tr><th>Window</th><th>Cost/1k</th><th>Read:Write</th></tr></thead><tbody>{rows}</tbody></table></div></section>'
+
 def _format_dashboard_window_section(
     window: DashboardWindow,
     *,
@@ -1942,7 +1974,13 @@ def _format_dashboard_window_section(
 
         {_format_behavior_panel(window)}
 
-        {_format_branch_panel(window)}
+        {_render_leaks_panel(window)}
+
+        {_render_runway_panel(window)}
+
+        {_render_efficiency_trend_panel(window)}
+
+{_format_branch_panel(window)}
 
         {_format_provider_panel(window)}
 

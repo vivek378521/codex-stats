@@ -672,6 +672,10 @@ class DashboardWindow:
     providers: list[BreakdownEntry] = field(default_factory=list, repr=False)
     efficiency: "EfficiencySummary | None" = None
     tool_efficiency: list["ToolEfficiency"] = field(default_factory=list, repr=False)
+    leaks: "LeakSummary | None" = None
+    runway: "RunwayInfo | None" = None
+    regression: "RegressionDiff | None" = None
+    efficiency_trend: "EfficiencyTrend | None" = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -694,13 +698,17 @@ class DashboardWindow:
             "work_rhythm": self.work_rhythm.to_dict(),
             "project_drilldowns": [drilldown.to_dict() for drilldown in self.project_drilldowns],
             "tool_breakdown": [entry.to_dict() for entry in self.tool_breakdown] if self.tool_breakdown else None,
-            "tool_daily_points": [point.to_dict() for point in self.tool_daily_points] if self.tool_daily_points else None,
+            "tool_daily_points": [point.to_dict() for entry in self.tool_daily_points] if self.tool_daily_points else None,
             "file_impact": [entry.to_dict() for entry in self.file_impact],
             "behavior": self.behavior.to_dict() if self.behavior else None,
             "branches": self.branches.to_dict() if self.branches else None,
             "providers": [entry.to_dict() for entry in self.providers],
             "efficiency": self.efficiency.to_dict() if self.efficiency else None,
             "tool_efficiency": [entry.to_dict() for entry in self.tool_efficiency],
+            "leaks": self.leaks.to_dict() if self.leaks else None,
+            "runway": self.runway.to_dict() if self.runway else None,
+            "regression": self.regression.to_dict() if self.regression else None,
+            "efficiency_trend": self.efficiency_trend.to_dict() if self.efficiency_trend else None,
         }
 
 
@@ -821,6 +829,91 @@ class ToolEfficiency:
 
 
 @dataclass(frozen=True)
+class LeakEntry:
+    """A specific offender that represents waste or a problem."""
+
+    category: str  # "repeats", "idle_branch", "rewritten_file", "error_tool"
+    description: str
+    project: str | None = None
+    tool: str | None = None
+    branch: str | None = None
+    cost_usd: float | None = None
+    impact: float | None = None  # e.g. repeat_time_rate, count, days
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class LeakSummary:
+    """Top leaks/offenders for the current window."""
+
+    entries: list[LeakEntry] = field(default_factory=list)
+    has_leaks: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "entries": [entry.to_dict() for entry in self.entries],
+            "has_leaks": self.has_leaks,
+        }
+
+
+@dataclass(frozen=True)
+class RunwayInfo:
+    """Runway/burn rate projection based on recent spend."""
+
+    days_until_exceed: int | None = None
+    burn_rate_usd_per_day: float = 0.0
+    spend_last_days_usd: float = 0.0
+    days_in_window: int = 7
+    monthly_limit_usd: float | None = None
+    status: str = "unknown"  # on_track, approaching, exceeding, unknown
+    message: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RegressionDiff:
+    """Diff vs last run snapshot."""
+
+    has_change: bool = False
+    lines: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EfficiencyTrendPoint:
+    """Point in efficiency trend over time."""
+
+    label: str
+    cost_per_1k_lines: float | None = None
+    read_write_ratio: float | None = None
+    read_only_cost_share: float | None = None
+    cache_ratio: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EfficiencyTrend:
+    """Trend of efficiency metrics over time."""
+
+    points: list[EfficiencyTrendPoint] = field(default_factory=list)
+    supported: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "points": [point.to_dict() for point in self.points],
+            "supported": self.supported,
+        }
+
+
+@dataclass(frozen=True)
 class FileImpactEntry:
     path: str
     edits: int
@@ -895,6 +988,9 @@ class DashboardData:
     # has reached the warn threshold. Kept alongside the other page-level notices:
     # it qualifies every number the same way the coverage note does, once, up top.
     budget_note: str | None = None
+    leaks_summary: "LeakSummary | None" = None
+    regression_summary: "RegressionDiff | None" = None
+    regression_stdout: list[str] | None = None
 
     def __post_init__(self) -> None:
         if not self.scopes and self.windows:
@@ -925,4 +1021,7 @@ class DashboardData:
             "coverage_note": self.coverage_note,
             "config_error": self.config_error,
             "budget_note": self.budget_note,
+            "leaks_summary": self.leaks_summary.to_dict() if self.leaks_summary else None,
+            "regression_summary": self.regression_summary.to_dict() if self.regression_summary else None,
+            "regression_stdout": self.regression_stdout,
         }

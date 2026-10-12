@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, field
 from pathlib import Path
 
 
@@ -237,6 +237,7 @@ class BudgetConfig:
 
     monthly_limit_usd: float | None = None
     warn_at_ratio: float = 0.8
+    project_limits: dict[str, float] = field(default_factory=dict)
 
 
 def load_budget_config(paths: Paths) -> BudgetConfig:
@@ -271,7 +272,15 @@ def load_budget_config(paths: Paths) -> BudgetConfig:
         raise ConfigError(paths.config_file, "monthly_limit_usd must be greater than zero.")
     if not 0 < ratio <= 1:
         raise ConfigError(paths.config_file, "warn_at_ratio must be between 0 and 1.")
-    return BudgetConfig(monthly_limit_usd=limit, warn_at_ratio=ratio)
+    projects = {}
+    projs = budget.get("projects")
+    if isinstance(projs, dict):
+        for k, v in projs.items():
+            try:
+                projects[str(k)] = _rate_number(v)
+            except Exception:
+                pass
+    return BudgetConfig(monthly_limit_usd=limit, warn_at_ratio=ratio, project_limits=projects)
 
 
 def load_pricing_config(paths: Paths) -> PricingConfig:

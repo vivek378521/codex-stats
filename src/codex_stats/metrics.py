@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from statistics import median
 
 from .config import PricingConfig
@@ -37,8 +37,15 @@ from .models import (
     ToolUsageEntry,
     TopEntry,
     WorkRhythm,
+    LeakEntry,
+    LeakSummary,
+    RunwayInfo,
+    RegressionDiff,
+    EfficiencyTrend,
+    EfficiencyTrendPoint,
 )
 from .sources import FILE_EDIT_TRACKING_SOURCES, source_label
+from .config import BudgetConfig
 
 def uses_recorded_cost(detail: SessionDetails) -> bool:
     """Whether a session's cost comes from the tool's own figure rather than an estimate.
@@ -1361,3 +1368,210 @@ def _model_switching_rate(details: list[SessionDetails]) -> float | None:
     switches = sum(1 for previous, current in zip(ordered_models, ordered_models[1:]) if previous != current)
     transitions = len(ordered_models) - 1
     return switches / transitions if transitions else None
+
+
+def summarize_leaks(
+    *,
+    behavior: BehaviorSummary | None = None,
+    branches: BranchSummary | None = None,
+    efficiency: EfficiencySummary | None = None,
+    max_items: int = 5,
+) -> LeakSummary:
+    entries: list[LeakEntry] = []
+    if behavior and behavior.supported and behavior.total_calls > 0:
+        if behavior.repeat_time_rate is not None and behavior.repeat_time_rate >= 0.1:
+            entries.append(
+                LeakEntry(
+                    category="repeats",
+                    description=f"Repeated work took {behavior.repeat_time_rate * 100:.1f}% of tool time ({behavior.repeated_calls} repeats)",
+                    tool=None,
+                    cost_usd=None,
+                    impact=behavior.repeat_time_rate,
+                )
+            )
+        elif behavior.repeat_rate is not None and behavior.repeat_rate >= 0.1:
+            entries.append(
+                LeakEntry(
+                    category="repeats",
+                    description=f"{behavior.repeat_rate * 100:.1f}% of calls repeated ({behavior.repeated_calls})",
+                    tool=None,
+                    cost_usd=None,
+                    impact=behavior.repeat_rate,
+                )
+            )
+        if behavior.error_rate is not None and behavior.error_rate >= 0.05 and behavior.error_calls > 5:
+            entries.append(
+                LeakEntry(
+                    category="error_tool",
+                    description=f"{behavior.error_calls} tool failures ({behavior.error_rate * 100:.1f}% error rate)",
+                    tool=None,
+                    impact=behavior.error_rate,
+                )
+            )
+    if branches and branches.supported and branches.idle_branches:
+        top_idle = sorted(branches.idle_branches, key=lambda b: b.estimated_cost_usd, reverse=True)[0]
+        if top_idle.estimated_cost_usd > 0.01:
+            entries.append(
+                LeakEntry(
+                    category="idle_branch",
+                    description=f"Quiet branch {top_idle.project_name}/{top_idle.name} idle {top_idle.idle_days}d (${top_idle.estimated_cost_usd:.2f})",
+                    project=top_idle.project_name,
+                    branch=top_idle.name,
+                    cost_usd=top_idle.estimated_cost_usd,
+                    impact=float(top_idle.idle_days),
+                )
+            )
+    if efficiency and efficiency.tracked and efficiency.hotspots:
+        top = efficiency.hotspots[0]
+        if top.sessions >= 3 or top.deletions > 0:
+            entries.append(
+                LeakEntry(
+                    category="rewritten_file",
+                    description=f"{top.path} rewritten in {top.sessions} sessions (net {top.net_lines:+d})",
+                    cost_usd=None,
+                    impact=float(top.sessions),
+                )
+            )
+    seen = set()
+    out = []
+    for e in entries:
+        k = (e.category, e.description)
+        if k not in seen:
+            seen.add(k)
+            out.append(e)
+    return LeakSummary(entries=out[:max_items], has_leaks=bool(out))
+
+
+def summarize_runway(
+    daily_points: list[DailyPoint],
+    costs: CostSummary | None = None,
+    budget: BudgetConfig | None = None,
+    days_window: int = 7,
+) -> RunwayInfo:
+    budget = budget or BudgetConfig()
+    if budget.monthly_limit_usd is None:
+        return RunwayInfo(status="unknown", message="")
+    now = datetime.now(UTC)
+    spend_recent = 0.0
+    try:
+        start_window = now - timedelta(days=days_window)
+        for point in daily_points:
+            try:
+                pdate = datetime.strptime(point.day, "%Y-%m-%d").replace(tzinfo=UTC)
+            except Exception:
+                continue
+            if pdate >= start_window:
+                spend_recent += point.estimated_cost_usd
+    except Exception:
+        spend_recent = 0.0
+    burn = spend_recent / days_window if days_window > 0 else 0.0
+    month_spent = costs.month_cost_usd if costs else 0.0
+    next_month = now.replace(day=28) + timedelta(days=4)
+    first_next = next_month.replace(day=1)
+    last_day = first_next - timedelta(days=1)
+    days_left = max((last_day - now).days, 0)
+    status = "unknown"
+    message = ""
+    days_until_exceed = None
+    if budget.monthly_limit_usd <= 0:
+        return RunwayInfo(status="unknown", message="")
+    remaining = budget.monthly_limit_usd - month_spent
+    if burn > 0 and remaining > 0:
+        days_until_exceed = int(max(remaining / burn, 0))
+    elif burn <= 0 and remaining > 0:
+        days_until_exceed = days_left
+    ratio = month_spent / budget.monthly_limit_usd if budget.monthly_limit_usd > 0 else 0
+    warn_ratio = budget.warn_at_ratio if budget.warn_at_ratio > 0 else 0.8
+    if month_spent >= budget.monthly_limit_usd:
+        status = "exceeding"
+        message = f"Over budget: ${month_spent:.2f} this month (limit ${budget.monthly_limit_usd:.2f})"
+    elif ratio >= warn_ratio:
+        status = "approaching"
+        msg = f"Approaching budget: {ratio * 100:.0f}% of limit"
+        if days_until_exceed is not None:
+            msg += f" (~{days_until_exceed} days)"
+        message = msg
+    else:
+        status = "on_track"
+        msg = f"On track: {ratio * 100:.0f}% of limit"
+        if days_until_exceed is not None:
+            msg += f" (~{days_until_exceed} days at current burn)"
+        message = msg
+    return RunwayInfo(
+        days_until_exceed=days_until_exceed,
+        burn_rate_usd_per_day=round(burn, 4),
+        spend_last_days_usd=round(spend_recent, 4),
+        days_in_window=days_window,
+        monthly_limit_usd=budget.monthly_limit_usd,
+        status=status,
+        message=message,
+    )
+
+
+def summarize_efficiency_trend(
+    details: list[SessionDetails],
+    window_labels: list[str] | None = None,
+    pricing: PricingConfig | None = None,
+) -> EfficiencyTrend:
+    pricing = pricing or PricingConfig()
+    points: list[EfficiencyTrendPoint] = []
+    if not details:
+        return EfficiencyTrend(points=[], supported=False)
+    # simple: build trend by week buckets from daily points? or just use provided labels
+    # for now, if labels provided, create empty points
+    if window_labels:
+        for lbl in window_labels[:5]:
+            points.append(EfficiencyTrendPoint(label=lbl))
+        return EfficiencyTrend(points=points, supported=True)
+    # fallback: single point
+    eff = summarize_efficiency_from_details(details, pricing)
+    points.append(EfficiencyTrendPoint(
+        label="All time",
+        cost_per_1k_lines=eff.cost_per_1k_lines,
+        read_write_ratio=None,
+        read_only_cost_share=eff.read_only_cost_share,
+    ))
+    return EfficiencyTrend(points=points, supported=eff.tracked)
+
+
+def summarize_regression(
+    current: dict[str, Any] | None = None,
+    previous: dict[str, Any] | None = None,
+) -> tuple[RegressionDiff, list[str]]:
+    diff = RegressionDiff(has_change=False, lines=[])
+    lines_out: list[str] = []
+    if not current or not previous:
+        return diff, lines_out
+    def getf(d, k):
+        try:
+            return float(d.get(k)) if d.get(k) is not None else None
+        except Exception:
+            return None
+    def geti(d, k):
+        try:
+            return int(d.get(k)) if d.get(k) is not None else 0
+        except Exception:
+            return 0
+    changes = []
+    c_cpk = getf(current, 'cost_per_1k_lines')
+    p_cpk = getf(previous, 'cost_per_1k_lines')
+    if c_cpk is not None and p_cpk is not None and p_cpk > 0:
+        pd = (c_cpk - p_cpk) / p_cpk * 100.0
+        if abs(pd) >= 1.0:
+            changes.append(f"cost/1k {pd:+.1f}% (${p_cpk:.2f}→${c_cpk:.2f})")
+    c_rr = getf(current, 'repeat_rate')
+    p_rr = getf(previous, 'repeat_rate')
+    if c_rr is not None and p_rr is not None:
+        pd = (c_rr - p_rr) * 100.0
+        if abs(pd) >= 2.0:
+            changes.append(f"repeats {pd:+.0f}pp ({p_rr*100:.0f}%→{c_rr*100:.0f}%)")
+    c_ros = getf(current, 'read_only_cost_share')
+    p_ros = getf(previous, 'read_only_cost_share')
+    if c_ros is not None and p_ros is not None:
+        pd = (c_ros - p_ros) * 100.0
+        if abs(pd) >= 2.0:
+            changes.append(f"read-only share {pd:+.0f}pp")
+    if changes:
+        diff = RegressionDiff(has_change=True, lines=changes)
+        lines_out = [f"vs last run: {', '.join(changes)}"]
+    return diff, lines_out
