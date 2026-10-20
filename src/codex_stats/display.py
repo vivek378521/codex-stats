@@ -2395,7 +2395,7 @@ def _format_behavior_panel(window: DashboardWindow) -> str:
               <h2>Tool Behavior</h2>
             </div>
           </div>
-          {_format_empty_showcase("No tool calls recorded for this view.", "This is either a genuinely quiet range, or a scope that does not report tool use. Tool calls are read from Codex rollouts, Claude Code transcripts, the OpenCode part table, and the Hermes message log; switch to All Time to see which applies.")}
+          {_format_empty_showcase("No tool calls recorded for this view.", "This is either a genuinely quiet range, or a scope that does not report tool use. Tool calls are read from Codex rollouts, Claude Code transcripts, the OpenCode part table, the Hermes message log, and DeepSeek Harness event logs; switch to All Time to see which applies.")}
         </section>
         """
 
@@ -2483,7 +2483,7 @@ def _format_branch_panel(window: DashboardWindow) -> str:
               <h2>Branches</h2>
             </div>
           </div>
-          {_format_empty_showcase("No branch data for this view.", "Branches are read from the Codex session database and from Claude Code transcripts, and from the Hermes database when one was recorded. OpenCode never records one, and a session started outside a checkout has none, so those sessions never appear here; switch tools or windows to see branch-level spend.")}
+          {_format_empty_showcase("No branch data for this view.", "Branches are read from the Codex session database and from Claude Code transcripts, and from the Hermes database when one was recorded. OpenCode and DeepSeek Harness never record one, and a session started outside a checkout has none, so those sessions never appear here; switch tools or windows to see branch-level spend.")}
         </section>
         """
 
@@ -2661,7 +2661,7 @@ def _format_efficiency_panel(window: DashboardWindow) -> str:
               <h2>Efficiency</h2>
             </div>
           </div>
-          {_format_empty_showcase("This view records no file changes.", f"{escape(named)} store tokens and cost but not which files a session edited, so cost per line changed cannot be computed here. Adding Codex or Claude Code sessions gives this panel something to measure.")}
+          {_format_empty_showcase("This view records no file changes.", f"{escape(named)} store tokens and cost but not which files a session edited, so cost per line changed cannot be computed here. Adding Codex, Claude Code, or DeepSeek Harness sessions gives this panel something to measure.")}
         </section>
         """
 
@@ -2959,7 +2959,7 @@ def _svg_line_chart(
     value_formatter,
 ) -> str:
     if not points:
-        return _format_empty_chart("No trend yet.", "Use Codex on more than one day in this window to reveal the trend line.")
+        return _format_empty_chart("No trend yet.", "Activity on more than one day in this window is what draws the trend line.")
     width = 760
     height = 240
     padding_left = 48
@@ -3142,7 +3142,7 @@ def _format_tool_trend(window: DashboardWindow) -> str:
 
 def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
     if not cells:
-        return _format_empty_chart("No activity map yet.", "This heatmap fills in after you use Codex across different hours of the day.")
+        return _format_empty_chart("No activity map yet.", "This heatmap fills in once activity spans different hours of the day.")
     width = 760
     height = 290
     left = 68

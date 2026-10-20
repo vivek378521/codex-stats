@@ -709,6 +709,24 @@ class MetricsTestCase(unittest.TestCase):
         self.assertIsNotNone(rhythm.peak_day)
         self.assertIsNotNone(rhythm.peak_hour)
 
+    def test_work_rhythm_empty_state_names_the_active_tool(self) -> None:
+        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
+        empty = summarize_work_rhythm([], [])
+        self.assertIn("your agents", empty.detail)
+        named = summarize_work_rhythm([], [], scope_phrase="OpenCode")
+        self.assertIn("OpenCode", named.detail)
+        dashboard = _build_dashboard(self.paths, now=now)
+        by_key = {scope.key: scope for scope in dashboard.scopes}
+        for key, label in (
+            ("opencode", "OpenCode"),
+            ("claude", "Claude Code"),
+            ("hermes", "Hermes"),
+            ("dsh", "DeepSeek Harness"),
+        ):
+            detail = by_key[key].windows[1].work_rhythm.detail
+            self.assertIn(label, detail, key)
+            self.assertNotIn("Codex", detail, key)
+
     def test_dashboard_html_output(self) -> None:
         now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         dashboard = _build_dashboard(self.paths, now=now)

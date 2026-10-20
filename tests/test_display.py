@@ -208,7 +208,7 @@ class BranchPanelTest(unittest.TestCase):
         html = _format_branch_panel(window)
         self.assertIn("No branch data for this view.", html)
         # The empty state has to name the limitation, or a quiet week looks like no work.
-        self.assertIn("OpenCode never records one", html)
+        self.assertIn("OpenCode and DeepSeek Harness never record one", html)
 
     def test_empty_state_when_there_is_no_summary_at_all(self) -> None:
         class NoBranches:

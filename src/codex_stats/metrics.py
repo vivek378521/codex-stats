@@ -600,12 +600,14 @@ def summarize_expensive_session(
 def summarize_work_rhythm(
     daily_points: list[DailyPoint],
     activity_heatmap: list[HeatmapCell],
+    *,
+    scope_phrase: str = "your agents",
 ) -> WorkRhythm:
     active_days = [point for point in daily_points if point.total_tokens > 0]
     if not active_days or not activity_heatmap:
         return WorkRhythm(
             headline="Still learning your rhythm.",
-            detail="Use Codex across a few days and times to unlock a clearer work pattern summary.",
+            detail=f"Use {scope_phrase} across a few days and times to unlock a clearer work pattern summary.",
             peak_day=None,
             peak_hour=None,
         )
@@ -637,7 +639,7 @@ def summarize_work_rhythm(
     elif weekday_name:
         detail = f"Your strongest weekday is {weekday_name}."
     else:
-        detail = "Use Codex across a few more sessions to unlock a clearer work pattern summary."
+        detail = f"Use {scope_phrase} across a few more sessions to unlock a clearer work pattern summary."
     return WorkRhythm(
         headline=f"Your work is {cadence}.",
         detail=detail,

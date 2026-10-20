@@ -382,6 +382,10 @@ def _build_scope(
     today_details = _details_for_last_days(details, 1, now)
     week_details = _details_for_last_days(details, 7, now)
     month_details = _details_for_last_days(details, 30, now)
+    # Empty-state copy has to name what the reader is actually looking at:
+    # "Use Codex" on the OpenCode tab is simply wrong, and Overview is every
+    # tool combined, so no single tool name fits it.
+    scope_phrase = label if key != "all" else "your agents"
     windows = [
         _build_window(
             key="day",
@@ -397,6 +401,7 @@ def _build_scope(
             budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
+            scope_phrase=scope_phrase,
         ),
         _build_window(
             key="week",
@@ -412,6 +417,7 @@ def _build_scope(
             budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
+            scope_phrase=scope_phrase,
         ),
         _build_window(
             key="month",
@@ -427,6 +433,7 @@ def _build_scope(
             budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
+            scope_phrase=scope_phrase,
         ),
         _build_all_time_window(
             all_details=details,
@@ -434,6 +441,7 @@ def _build_scope(
             budget=budget,
             now=now,
             build_tool_breakdown=build_tool_breakdown,
+            scope_phrase=scope_phrase,
         ),
     ]
     return DashboardScope(
@@ -460,6 +468,7 @@ def _build_window(
     budget: BudgetConfig | None = None,
     now: datetime,
     build_tool_breakdown: bool = False,
+    scope_phrase: str = "your agents",
 ) -> DashboardWindow:
     summary = summarize_details(current_label, current_details, pricing, timezone=now.tzinfo)
     comparison = summarize_compare_from_details(
@@ -518,7 +527,7 @@ def _build_window(
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(current_details, pricing),
-        work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap),
+        work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap, scope_phrase=scope_phrase),
         project_drilldowns=summarize_project_drilldowns_from_details(
             current_details,
             days=max(trend_days, 1),
@@ -564,6 +573,7 @@ def _build_all_time_window(
     budget: BudgetConfig | None = None,
     now: datetime,
     build_tool_breakdown: bool = False,
+    scope_phrase: str = "your agents",
 ) -> DashboardWindow:
     summary = summarize_details("all time", all_details, pricing, timezone=now.tzinfo)
     recent_details = _details_for_last_days(all_details, 30, now)
@@ -617,7 +627,7 @@ def _build_all_time_window(
         ),
         badges=summarize_badges(summary=summary, daily_points=daily_points, activity_heatmap=activity_heatmap),
         expensive_session=summarize_expensive_session(all_details, pricing),
-        work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap),
+        work_rhythm=summarize_work_rhythm(daily_points, activity_heatmap, scope_phrase=scope_phrase),
         project_drilldowns=summarize_project_drilldowns_from_details(
             all_details,
             days=trend_days,
