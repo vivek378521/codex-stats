@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-10-20
+
+### Added
+
+- **DeepSeek Harness source.** The dashboard now reads dsh sessions from
+  `$DSH_HOME/sessions` (override with `CODEX_STATS_DSH_HOME`), parsing the
+  per-session JSONL event logs that dsh writes — including the zstd-compressed
+  generations it has written by default since v2. Requests are counted from
+  genuine user messages, token usage is summed across assistant turns and
+  compaction summaries into the four normalised buckets (dsh reports
+  cache writes separately, though DeepSeek bills none), tool calls are paired
+  with their results for status and duration, and `edit`/`write` tool calls
+  reconstruct per-file insertions and deletions, so DeepSeek Harness joins
+  Codex and Claude Code in the efficiency and file-impact panels. Sessions
+  written by a newer, unknown format version are skipped rather than
+  mis-parsed, and a torn zstd tail (the crash signature of an interrupted
+  writer) keeps the complete frames instead of losing the session.
+- **DeepSeek pricing.** Off-peak published rates for the `deepseek-flash` and
+  `deepseek-v4-pro` tiers (plus the retired `deepseek-chat`/`deepseek-reasoner`
+  aliases still found in historical sessions). Peak-hour double rates are not
+  modelled and the snapshot says so.
+- **dsh tool taxonomy.** dsh's `terminal_*`/`job_*` tools classify as Execute,
+  `send_message`/agent tools as Subagent, and goal/plan tools as Plan, so the
+  Tool Behavior panel covers the new source without inventing categories.
+
 ## [1.15.0] - 2026-10-07
 
 ### Added

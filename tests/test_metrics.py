@@ -83,9 +83,9 @@ from codex_stats.sources import (
 
 
 def _isolate_sources(test: unittest.TestCase, root: Path) -> None:
-    """Point the three non-Codex sources at empty dirs for the duration of a test.
+    """Point the non-Codex sources at empty dirs for the duration of a test.
 
-    Only Codex is reached through ``Paths``; the other three resolve their own
+    Only Codex is reached through ``Paths``; the others resolve their own
     locations from the environment. Without this, a test that builds a dashboard
     silently merges whatever the developer happens to have installed locally, so
     the run passes or fails depending on whose machine it is on.
@@ -94,6 +94,7 @@ def _isolate_sources(test: unittest.TestCase, root: Path) -> None:
         ("CODEX_STATS_OPENCODE_HOME", "empty-opencode"),
         ("CODEX_STATS_CLAUDE_PROJECTS_DIR", "empty-claude"),
         ("CODEX_STATS_HERMES_HOME", "empty-hermes"),
+        ("CODEX_STATS_DSH_HOME", "empty-dsh"),
     ):
         previous = os.environ.get(var)
         test.addCleanup(os.environ.pop, var, None)
@@ -806,9 +807,9 @@ class MetricsTestCase(unittest.TestCase):
         dashboard = _build_dashboard(self.paths, now=now)
         self.assertEqual(
             [scope.key for scope in dashboard.scopes],
-            ["overview", "codex", "opencode", "claude", "hermes"],
+            ["overview", "codex", "opencode", "claude", "hermes", "dsh"],
         )
-        self.assertEqual(len(dashboard.windows), 20)
+        self.assertEqual(len(dashboard.windows), 24)
         for scope in dashboard.scopes:
             self.assertEqual([window.key for window in scope.windows], ["day", "week", "month", "all"])
             self.assertEqual(scope.windows[1].label, "Week")
@@ -848,7 +849,10 @@ class MetricsTestCase(unittest.TestCase):
 
     def test_source_ingesters_skip_missing_data(self) -> None:
         sources = iter_sources(self.paths)
-        self.assertEqual([source.key for source in sources], ["codex", "opencode", "claude", "hermes"])
+        self.assertEqual(
+            [source.key for source in sources],
+            ["codex", "opencode", "claude", "hermes", "dsh"],
+        )
         self.assertTrue(sources[0].available)
         self.assertFalse(any(source.available for source in sources[1:]))
         self.assertEqual(len(sources[0].ingest()), 1)
@@ -927,7 +931,7 @@ class MetricsTestCase(unittest.TestCase):
         dashboard = _build_dashboard(self.paths, now=now)
         self.assertEqual(
             [scope.key for scope in dashboard.scopes],
-            ["overview", "codex", "opencode", "claude", "hermes"],
+            ["overview", "codex", "opencode", "claude", "hermes", "dsh"],
         )
 
     def _write_claude_transcript(self, usage: dict) -> Path:
@@ -1581,7 +1585,7 @@ class NonCodexHistoryBoundTestCase(unittest.TestCase):
         os.environ["CODEX_HOME"] = str(self.root / "no-codex")
         dashboard = _build_dashboard(Paths.discover())
         keys = {scope.key for scope in dashboard.scopes}
-        self.assertEqual(keys, {"overview", "codex", "opencode", "claude", "hermes"})
+        self.assertEqual(keys, {"overview", "codex", "opencode", "claude", "hermes", "dsh"})
         html = format_dashboard_html(dashboard)
         self.assertIn("OpenCode", html)
 

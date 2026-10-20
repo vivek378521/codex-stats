@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Callable
 
 from .config import Paths
+from .dsh_ingest import (
+    SOURCE_DSH,
+    dsh_coverage,
+    dsh_sessions_dir,
+    iter_dsh_session_details as _dsh_iter_session_details,
+)
 from .ingest import (
     codex_session_coverage,
     file_edit_from_args,
@@ -135,11 +141,25 @@ def _hermes_source(paths: Paths | None = None) -> Source:
     )
 
 
+def _dsh_source(paths: Paths | None = None) -> Source:
+    sessions_dir = dsh_sessions_dir()
+    return Source(
+        key=SOURCE_DSH,
+        label="DeepSeek Harness",
+        description="DeepSeek Harness (dsh) agent sessions from the JSONL event logs under ~/.dsh/sessions.",
+        available=bool(sessions_dir.is_dir() and any(sessions_dir.iterdir())),
+        path_hint=str(sessions_dir),
+        ingest=lambda: _dsh_iter_session_details(sessions_dir),
+        coverage=lambda: dsh_coverage(sessions_dir),
+    )
+
+
 _SOURCE_FACTORIES: list[Callable[[Paths], Source]] = [
     _codex_source,
     _opencode_source,
     _claude_source,
     _hermes_source,
+    _dsh_source,
 ]
 
 SOURCE_LABELS: dict[str, str] = {
@@ -147,6 +167,7 @@ SOURCE_LABELS: dict[str, str] = {
     SOURCE_OPENCODE: "OpenCode",
     SOURCE_CLAUDE: "Claude Code",
     SOURCE_HERMES: "Hermes",
+    SOURCE_DSH: "DeepSeek Harness",
 }
 
 # The sources whose transcripts name the files a session edited. OpenCode and
@@ -155,8 +176,9 @@ SOURCE_LABELS: dict[str, str] = {
 # their sessions as read-only would invent a finding the data cannot support. Any
 # metric that joins spend to work has to gate on this rather than deriving the
 # answer from an absence of edits, which is indistinguishable from a session that
-# genuinely changed nothing.
-FILE_EDIT_TRACKING_SOURCES = frozenset({SOURCE_CODEX, SOURCE_CLAUDE})
+# genuinely changed nothing. dsh qualifies: its ``edit``/``write`` tool calls log
+# the file path and the old/new text, so per-file line counts are reconstructable.
+FILE_EDIT_TRACKING_SOURCES = frozenset({SOURCE_CODEX, SOURCE_CLAUDE, SOURCE_DSH})
 
 
 def iter_sources(paths: Paths | None = None) -> list[Source]:

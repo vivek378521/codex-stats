@@ -87,6 +87,7 @@ RATE_SNAPSHOT_DATE = "2026-09-26"
 RATE_SNAPSHOT_SOURCES = (
     "https://developers.openai.com/api/docs/pricing",
     "https://platform.claude.com/docs/en/about-claude/pricing",
+    "https://api-docs.deepseek.com/quick_start/pricing",
 )
 
 # Published prices in USD per million tokens, as
@@ -136,9 +137,25 @@ _ANTHROPIC_RATES_PER_1M: dict[str, tuple[float, float, float, float]] = {
     "claude-haiku-4.5": (1.00, 0.10, 1.25, 5.00),
 }
 
+# DeepSeek: off-peak published rates. Peak hours (01:00-04:00 and 06:00-10:00
+# UTC, Mon-Fri) are double these figures and are not modeled, so a session that
+# ran mostly at peak is underpriced. DeepSeek bills no separate cache-write fee
+# (prefix caching is implicit), so cache_write is 0. The legacy deepseek-chat
+# and deepseek-reasoner aliases were retired in July 2026 but historical dsh
+# sessions still name them; both routed to the Flash tier.
+_DEEPSEEK_RATES_PER_1M: dict[str, tuple[float, float, float, float]] = {
+    "deepseek-flash": (0.15, 0.003, 0.00, 0.60),
+    "deepseek-v4.1-flash": (0.15, 0.003, 0.00, 0.60),
+    "deepseek-v4-flash": (0.15, 0.003, 0.00, 0.60),
+    "deepseek-chat": (0.15, 0.003, 0.00, 0.60),
+    "deepseek-reasoner": (0.15, 0.003, 0.00, 0.60),
+    "deepseek-v4-pro": (0.66, 0.022, 0.00, 1.98),
+}
+
 DEFAULT_MODEL_RATES: dict[str, ModelRates] = {
     **{name: _per_1m(*rates) for name, rates in _OPENAI_RATES_PER_1M.items()},
     **{name: _per_1m(*rates) for name, rates in _ANTHROPIC_RATES_PER_1M.items()},
+    **{name: _per_1m(*rates) for name, rates in _DEEPSEEK_RATES_PER_1M.items()},
 }
 
 # Mid-tier published rates (Claude Sonnet class) used only for models that cannot be

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-stats"
-version = "1.16.0"
-description = "Local-first usage dashboard and leaderboard for AI coding agent sessions: tokens, cost and activity across Codex, OpenCode, Claude Code and Hermes, read straight from the databases those tools already keep on your machine."
+version = "1.17.0"
+description = "Local-first usage dashboard and leaderboard for AI coding agent sessions: tokens, cost and activity across Codex, OpenCode, Claude Code, Hermes and DeepSeek Harness, read straight from the databases those tools already keep on your machine."
 readme = "README.md"
 requires-python = ">=3.11"
 # SPDX form (PEP 639). The License classifier is deliberately absent: setuptools

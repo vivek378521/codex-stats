@@ -72,12 +72,22 @@ _EXACT_CATEGORIES: dict[str, str] = {
     "exec": TOOL_CATEGORY_EXEC,
     "execcommand": TOOL_CATEGORY_EXEC,
     "bash": TOOL_CATEGORY_EXEC,
+    "pwsh": TOOL_CATEGORY_EXEC,
     "sh": TOOL_CATEGORY_EXEC,
     "shell": TOOL_CATEGORY_EXEC,
     "run": TOOL_CATEGORY_EXEC,
     "runcommand": TOOL_CATEGORY_EXEC,
     "runterminalcmd": TOOL_CATEGORY_EXEC,
     "terminal": TOOL_CATEGORY_EXEC,
+    "terminalopen": TOOL_CATEGORY_EXEC,
+    "terminalsend": TOOL_CATEGORY_EXEC,
+    "terminalread": TOOL_CATEGORY_EXEC,
+    "terminallist": TOOL_CATEGORY_EXEC,
+    "terminalclose": TOOL_CATEGORY_EXEC,
+    "terminalsignal": TOOL_CATEGORY_EXEC,
+    "joblist": TOOL_CATEGORY_EXEC,
+    "joboutput": TOOL_CATEGORY_EXEC,
+    "jobkill": TOOL_CATEGORY_EXEC,
     "writestdin": TOOL_CATEGORY_EXEC,
     "wait": TOOL_CATEGORY_EXEC,
     # search
@@ -105,6 +115,10 @@ _EXACT_CATEGORIES: dict[str, str] = {
     "agent": TOOL_CATEGORY_AGENT,
     "subagent": TOOL_CATEGORY_AGENT,
     "dispatchagent": TOOL_CATEGORY_AGENT,
+    "sendmessage": TOOL_CATEGORY_AGENT,
+    "interruptagent": TOOL_CATEGORY_AGENT,
+    "listagents": TOOL_CATEGORY_AGENT,
+    "listsubagentmodels": TOOL_CATEGORY_AGENT,
     # plan
     "plan": TOOL_CATEGORY_PLAN,
     "todowrite": TOOL_CATEGORY_PLAN,
@@ -115,6 +129,9 @@ _EXACT_CATEGORIES: dict[str, str] = {
     "updateplan": TOOL_CATEGORY_PLAN,
     "enterplanmode": TOOL_CATEGORY_PLAN,
     "exitplanmode": TOOL_CATEGORY_PLAN,
+    "creategoal": TOOL_CATEGORY_PLAN,
+    "getgoal": TOOL_CATEGORY_PLAN,
+    "updategoal": TOOL_CATEGORY_PLAN,
 }
 
 # Names that must never be caught by a substring rule even though they look like one.

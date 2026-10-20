@@ -4,7 +4,7 @@
 
 It reads local session data from every coding assistant installed on the machine and surfaces:
 
-- a browser dashboard with an **Overview** tab for every tool combined, plus one tab per tool (Codex, OpenCode, Claude Code, Hermes)
+- a browser dashboard with an **Overview** tab for every tool combined, plus one tab per tool (Codex, OpenCode, Claude Code, Hermes, DeepSeek Harness)
 - day, week, month, and all-time windows inside every tab
 - model and project breakdowns
 - recent session history
@@ -16,7 +16,7 @@ It reads local session data from every coding assistant installed on the machine
 - a **provider breakdown** showing which vendor each dollar went to, derived from the model name each session recorded
 - a reasoning-token share in Work Patterns, for models that bill thinking separately
 - anomaly-aware usage insights and recommendations
-- file-level impact tracking: a "Most Edited Files in This Project" table inside each project drilldown, showing per-file edit counts and add/delete line totals parsed from Codex and Claude Code rollouts
+- file-level impact tracking: a "Most Edited Files in This Project" table inside each project drilldown, showing per-file edit counts and add/delete line totals parsed from Codex, Claude Code, and DeepSeek Harness rollouts
 - regression detection vs last run, leaks (top offenders), runway/burn rate, and efficiency trends
 - **tool behavior tracking**: a "Tool Behavior" panel showing the tools each agent actually called — normalized into shared categories (Read, Edit, Execute, Search, Web, Subagent, Plan), with per-tool failure rates, repeated-call detection, read/write ratio, and abandoned-turn counts, across every tool with recorded calls
 - shareable JPG cards and browser PDF export from the dashboard
@@ -32,11 +32,43 @@ sessions render an empty state instead of being hidden.
 | OpenCode | `~/.local/share/opencode/opencode.db` | recorded cost + tokens per session |
 | Claude Code | `~/.claude/projects/**/*.jsonl` | per-project transcripts, including git branch |
 | Hermes | `~/.hermes/state.db` | recorded cost + tokens per session |
+| DeepSeek Harness | `~/.dsh/sessions` | JSONL event logs (zstd-compressed by default): tokens, tool calls, file edits |
 
 Use these environment variables to point at non-default locations (also used for test isolation):
 
 - `CODEX_HOME` (Codex), `CODEX_STATS_OPENCODE_HOME` (OpenCode),
-  `CODEX_STATS_CLAUDE_PROJECTS_DIR` (Claude), `CODEX_STATS_HERMES_HOME` (Hermes)
+  `CODEX_STATS_CLAUDE_PROJECTS_DIR` (Claude), `CODEX_STATS_HERMES_HOME` (Hermes),
+  `CODEX_STATS_DSH_HOME` (DeepSeek Harness — the directory holding the
+  per-project session folders, i.e. `$DSH_HOME/sessions`)
+
+### DeepSeek Harness
+
+DeepSeek Harness (`dsh`) keeps one folder per session under
+`$DSH_HOME/sessions/<project>/<session-id>/`, holding a versioned JSONL log that
+is zstd-compressed by default. `codex-stats` reads the newest generation of each
+session (`session.v<N>.jsonl[.zstd]`), where a session is a folder named for its
+project and id — never the `session.lock` file, and never an older generation
+that a rewrite left behind.
+
+- **Requests** are counted from genuine user messages. dsh also logs tool
+  results as message events; counting those would inflate every session with
+  the agent's own replies.
+- **Tokens** come from each assistant turn's usage block plus any compaction
+  summary, normalised into fresh input / cache reads / cache writes / output.
+  DeepSeek charges nothing extra for cache writes, so that bucket stays zero.
+- **File edits** are reconstructed from `edit`, `write`, and
+  `str_replace_editor` tool calls, which record the path and the old/new text —
+  enough to count insertions and deletions per file, so dsh joins Codex and
+  Claude Code in the efficiency and rewritten-files panels.
+- **No git branch.** dsh logs never name one, so its sessions are absent from
+  the Branches panel rather than shown under a guessed branch.
+- **Cost** is estimated from DeepSeek's published off-peak rates. Peak hours
+  (01:00–04:00 and 06:00–10:00 UTC on weekdays) are double that and are not
+  modelled, so a peak-heavy session reads a little low.
+- **Format changes are skipped, not guessed.** A session written by a newer
+  dsh format version than this build knows is left out with a note, and an
+  interrupted write (a torn final zstd frame) keeps the complete frames rather
+  than losing the whole session.
 
 Reading a session means parsing its rollout or transcript line by line, and that
 cost is linear in total history on every launch, so each source reads only the
@@ -79,7 +111,7 @@ Override the location with `XDG_CACHE_HOME`.
 
 Inside the dashboard, use the action bar to:
 
-- switch tools with the **Overview / Codex / OpenCode / Claude Code / Hermes** tab row
+- switch tools with the **Overview / Codex / OpenCode / Claude Code / Hermes / DeepSeek Harness** tab row
 - switch between `Day`, `Week`, `Month`, and `All Time` inside the active tool
 - print the active tool and window to PDF
 - download shareable JPG cards for summary, cost, focus, and project share
@@ -88,7 +120,8 @@ Inside the dashboard, use the action bar to:
 
 `codex-stats` does not proxy or intercept API traffic. It reads local artifacts:
 Codex `state_5.sqlite` and rollout files, the OpenCode database, Claude Code project
-transcripts, and the Hermes database, then normalizes everything into one session model.
+transcripts, the Hermes database, and DeepSeek Harness session event logs, then
+normalizes everything into one session model.
 
 ## Leaderboard
 
@@ -131,8 +164,9 @@ exits on its own once the window passes without a submission.
 
 - **Branches are grouped per repository.** A branch name is only unique inside its own
   checkout, so `feature/login` in two projects is tracked as two branches. Codex reads the
-  branch from its session database and Claude Code records one per event; OpenCode records
-  none at all, so its sessions never appear in the Branches panel. Hermes reads a branch
+  branch from its session database and Claude Code records one per event; OpenCode and
+  DeepSeek Harness record none at all, so their sessions never appear in the Branches
+  panel. Hermes reads a branch
   from its own database, but leaves it null for sessions started outside a checkout, so its
   sessions appear only when one was recorded. A detached checkout is reported as having no
   branch rather than as a branch called `HEAD`. If a session switched branches mid-run, it
@@ -141,13 +175,15 @@ exits on its own once the window passes without a submission.
   separately, because a branch that consumed tokens and then stopped is work that was paid
   for and never finished — invisible in a project-level view, where every branch of a
   repository collapses into one number.
-- **Vendors are resolved from the model name, not the recorded provider.** Codex records the
-  real vendor (`openai`), but OpenCode and Hermes record their own CLI name there instead,
+- **Vendors are resolved from the model name, not the recorded provider.** Codex and
+  DeepSeek Harness record the real vendor (`openai` and `deepseek`), but OpenCode and
+  Hermes record their own CLI name there instead,
   and those may route to any vendor, so grouping on that field would answer "which CLI"
   while claiming to answer "which vendor". Model names are matched with any `vendor/` prefix
   stripped, so `anthropic/claude-opus-4.6` and `claude-opus-4.6` land in the same bucket.
-- **Cost per line is only computed where file edits are recorded.** Codex and Claude Code
-  name the files a session edited; OpenCode and Hermes record tokens and cost but nothing
+- **Cost per line is only computed where file edits are recorded.** Codex, Claude Code,
+  and DeepSeek Harness name the files a session edited; OpenCode and Hermes record tokens
+  and cost but nothing
   about files. Their spend is excluded from every ratio rather than counted as cost with
   no work to divide by, their sessions are not counted as read-only, and the per-tool
   table marks them "Not recorded" instead of dropping them or ranking them as expensive.
