@@ -4,6 +4,67 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-10-26
+
+### Added
+
+- **Project grouping by working directory.** Sessions are no longer merged just
+  because two checkouts share a folder name; metrics, branch tables, history,
+  spotlights, drilldowns, and project filtering now use the full project path.
+  Display labels fall back from `name` to `parent/name` to a full path only when
+  needed, and the project filter accepts the same labels.
+- **Source health panel and search.** The dashboard now lists every source's
+  path, session count, decoder note, and ingest error under **Data sources**,
+  and the action bar has a filter for sessions, projects, and models.
+- **Real efficiency trends.** The Efficiency Trend panel now buckets weekly (up
+  to 60 days) or monthly and reports cost per 1k lines, read/write ratio,
+  read-only share, and cache ratio for each bucket instead of rendering an empty
+  table.
+- **Per-project budgets.** `[budget.projects]` limits compare each project's
+  calendar-month spend against its own limit and name the project in the warning.
+- **Ingest cache.** Parsed sessions are cached per source under the dashboard
+  cache directory and reused while the source fingerprint and
+  `CODEX_STATS_MAX_SESSIONS` are unchanged.
+- **dsh decoder diagnostics.** When compressed dsh sessions exist but the
+  decoder is unavailable, the source note explains how to install `zstandard`
+  instead of silently reporting no sessions.
+- **CI quality gates.** Python 3.11–3.14 now run ruff, mypy, tests, and coverage
+  (`fail_under = 85`, branch coverage enabled).
+
+### Changed
+
+- **Leaderboard is opt-in.** Set `CODEX_STATS_ENABLE_LEADERBOARD=1` to enable
+  the embed, local submit endpoint, and button. `CODEX_STATS_DISABLE_LEADERBOARD`
+  still wins when both are set.
+- **Runway uses the calendar month and recent daily burn.** Budget runway now
+  compares the configured monthly limit against calendar-month spend (falling
+  back to rolling-month spend), ignores future/out-of-window points, and uses the
+  last seven days for burn rate.
+- **Existing SQLite sources are opened read-only.** The dashboard no longer
+  writes journals or creates files next to a source database; missing databases
+  still fall back to read-write creation for test isolation.
+- **Hermes queries are chunked by session id.** Message reads use
+  `WHERE session_id IN (...)` in batches of 500 instead of scanning the table.
+- **Coverage notes include source notes and ingest errors.** One unreadable
+  source degrades to an empty tab with its error shown, while other sources keep
+  their data.
+
+### Fixed
+
+- Cost summaries now carry a distinct calendar-month figure; the budget banner
+  no longer compares a rolling 30-day figure against a monthly limit.
+- Efficiency trend no longer returns empty points while claiming support.
+- Regression snapshots use the monthly window, skip empty snapshots, and compare
+  only within the same window key.
+- Dashboard JSON is escaped for `<`, `>`, `&`, U+2028, and U+2029 before being
+  embedded in a script, so model or path text cannot close the script block.
+- `tool_daily_points` no longer crashes while serializing a window.
+- Project and branch labels, top sessions, history, spotlights, and session
+  drilldowns remain consistent when projects share a basename.
+- Ruff and mypy issues across `src` were resolved, including missing
+  annotations, import order, and unused imports.
+- Removed a duplicated sentence in the README's vendor note.
+
 ## [1.17.0] - 2026-10-20
 
 ### Added

@@ -11,7 +11,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_stats.cli import _open_report_in_browser, _write_dashboard_output, build_parser, main
+from codex_stats.cli import (
+    _open_report_in_browser,
+    _write_dashboard_output,
+    build_parser,
+    main,
+)
 
 
 class CliTestCase(unittest.TestCase):

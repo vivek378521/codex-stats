@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -274,10 +274,8 @@ def load_budget_config(paths: Paths) -> BudgetConfig:
             "[budget] must be a table, so it needs to start with [budget] on its own line.",
         )
     limit_raw = budget.get("monthly_limit_usd")
-    if limit_raw is None:
-        return BudgetConfig()
     try:
-        limit = _rate_number(limit_raw)
+        limit = _rate_number(limit_raw) if limit_raw is not None else None
         ratio_raw = budget.get("warn_at_ratio", 0.8)
         ratio = _rate_number(ratio_raw) if ratio_raw is not None else 0.8
     except (TypeError, ValueError) as error:
@@ -285,18 +283,29 @@ def load_budget_config(paths: Paths) -> BudgetConfig:
             paths.config_file,
             f"{error}. Budget values must be numbers, for example monthly_limit_usd = 100.0.",
         ) from error
-    if limit <= 0:
+    if limit is not None and limit <= 0:
         raise ConfigError(paths.config_file, "monthly_limit_usd must be greater than zero.")
     if not 0 < ratio <= 1:
         raise ConfigError(paths.config_file, "warn_at_ratio must be between 0 and 1.")
-    projects = {}
+    projects: dict[str, float] = {}
     projs = budget.get("projects")
-    if isinstance(projs, dict):
-        for k, v in projs.items():
-            try:
-                projects[str(k)] = _rate_number(v)
-            except Exception:
-                pass
+    if projs is not None and not isinstance(projs, dict):
+        raise ConfigError(paths.config_file, "[budget.projects] must be a table of project limits.")
+    for key, value in (projs or {}).items():
+        try:
+            project_limit = _rate_number(value)
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                paths.config_file,
+                f"{error}. Budget values must be numbers, for example app = 40.0.",
+            ) from error
+        if project_limit <= 0:
+            raise ConfigError(
+                paths.config_file, f"budget.projects.{key} must be greater than zero."
+            )
+        projects[str(key)] = project_limit
+    if limit is None and not projects:
+        return BudgetConfig(warn_at_ratio=ratio)
     return BudgetConfig(monthly_limit_usd=limit, warn_at_ratio=ratio, project_limits=projects)
 
 
@@ -356,6 +365,8 @@ def _rate_number(value: object) -> float:
         )
     if isinstance(value, str):
         raise ValueError(f"got the quoted string {value!r}; rates are written unquoted, as in 0.003.")
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"expected a number, got {type(value).__name__}.")
     return float(value)
 
 

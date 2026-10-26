@@ -32,7 +32,7 @@ sessions render an empty state instead of being hidden.
 | OpenCode | `~/.local/share/opencode/opencode.db` | recorded cost + tokens per session |
 | Claude Code | `~/.claude/projects/**/*.jsonl` | per-project transcripts, including git branch |
 | Hermes | `~/.hermes/state.db` | recorded cost + tokens per session |
-| DeepSeek Harness | `~/.dsh/sessions` | JSONL event logs (zstd-compressed by default): tokens, tool calls, file edits |
+| DeepSeek Harness | `~/.dsh/sessions` | JSONL event logs (zstd-compressed by default): tokens, tool calls, file edits. Python < 3.14 installs `zstandard` automatically |
 
 Use these environment variables to point at non-default locations (also used for test isolation):
 
@@ -81,6 +81,13 @@ partial history as a complete one.
   Set it to `0` to read everything and get exact figures, which takes
   proportionally longer on a long history.
 
+Parsed sessions are cached under `~/.cache/codex-stats` so a repeat launch does not
+re-read unchanged transcripts. The cache is keyed per source by file count, total
+size, newest modification time, Python version, and `CODEX_STATS_MAX_SESSIONS`; a
+changed source or cap invalidates that source's entry. The dashboard always reads
+the local files once to compute the fingerprint, but skips the expensive per-line
+parse when nothing changed. Delete the cache directory to force a full re-read.
+
 ## Install
 
 ```bash
@@ -113,6 +120,8 @@ Inside the dashboard, use the action bar to:
 
 - switch tools with the **Overview / Codex / OpenCode / Claude Code / Hermes / DeepSeek Harness** tab row
 - switch between `Day`, `Week`, `Month`, and `All Time` inside the active tool
+- filter sessions, projects, and models with the search box in the action bar
+- expand **Data sources** to see each source's path, session count, notes, and any ingest error
 - print the active tool and window to PDF
 - download shareable JPG cards for summary, cost, focus, and project share
 
@@ -142,12 +151,14 @@ What is published, and what is not:
   be reversed into the hardware address by the server, and it is what keeps one person
   from overwriting another's row.
 
-The leaderboard is **on by default** after the first release that ships a key. To turn
-it off or move it, see the env vars:
+The leaderboard is **opt-in**. Without `CODEX_STATS_ENABLE_LEADERBOARD=1` there is
+no leaderboard embed, no local submission endpoint, and no "Submit" button. To turn
+it on, move it, or hard-disable it, see the env vars:
 
 | Variable | Effect |
 | --- | --- |
-| `CODEX_STATS_DISABLE_LEADERBOARD=1` | Silence the whole feature: no embed, no endpoint, no "Submit" button |
+| `CODEX_STATS_ENABLE_LEADERBOARD=1` | Enable the leaderboard embed, endpoint, and "Submit" button |
+| `CODEX_STATS_DISABLE_LEADERBOARD=1` | Hard-disable the feature even if the enable variable is set |
 | `CODEX_STATS_LEADERBOARD_URL` | Point submission at your own server (`/api/submit`) |
 | `CODEX_STATS_LEADERBOARD_KEY` | Override the shared submit key (lets admins rotate without a release) |
 | `CODEX_STATS_LEADERBOARD_TIMEOUT` | Seconds the submit endpoint waits before exiting (default 300) |
@@ -162,6 +173,10 @@ exits on its own once the window passes without a submission.
 
 ## Notes
 
+- **Projects are identified by working directory, not folder name alone.** Two checkouts
+  called `app` in different parents are separate projects. When labels would collide, the
+  dashboard shows the shortest unambiguous form (`name`, then `parent/name`, then the full
+  path), and the project filter accepts any of those forms.
 - **Branches are grouped per repository.** A branch name is only unique inside its own
   checkout, so `feature/login` in two projects is tracked as two branches. Codex reads the
   branch from its session database and Claude Code records one per event; OpenCode and
@@ -257,6 +272,13 @@ exits on its own once the window passes without a submission.
   monthly_limit_usd = 120.0
   # optional: how near the limit is "approaching" (default 0.8 = 80%)
   warn_at_ratio = 0.9
+
+  # optional: per-project calendar-month limits, keyed by project folder name
+  # or by a disambiguated name such as "parent/name". Project limits work
+  # without monthly_limit_usd.
+  [budget.projects]
+  app = 40.0
+  "work/client" = 75.0
   ```
 
 - Output depends on local file formats remaining compatible.
@@ -291,4 +313,14 @@ Run without installing:
 
 ```bash
 PYTHONPATH=src python3 -m codex_stats
+```
+
+Run the checks used by CI:
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+ruff check src tests
+mypy src/codex_stats
+PYTHONPATH=src python3 -m coverage run -m unittest discover -s tests
+python3 -m coverage report
 ```

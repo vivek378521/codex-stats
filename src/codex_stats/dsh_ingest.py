@@ -135,6 +135,29 @@ def dsh_session_files(sessions_dir: Path) -> list[Path]:
     return files
 
 
+def dsh_decoder_note(sessions_dir: Path) -> str | None:
+    """Explain compressed sessions this interpreter cannot decode.
+
+    Returning ``None`` when everything is readable keeps the page quiet. When
+    the directory holds ``.zstd`` logs and neither stdlib zstd nor the
+    ``zstandard`` package is importable, the sessions would otherwise vanish
+    from every total with no clue why.
+    """
+    if dsh_zstd_available():
+        return None
+    try:
+        compressed = any(path.name.endswith(".zstd") for path in dsh_session_files(sessions_dir))
+    except OSError:
+        return None
+    if not compressed:
+        return None
+    return (
+        "DeepSeek Harness sessions are zstd-compressed, but this Python has no zstd "
+        "decoder. Install the package with `pip install zstandard` (or use Python 3.14+) "
+        "to include them."
+    )
+
+
 def dsh_coverage(sessions_dir: Path) -> tuple[int, int]:
     """(sessions read, sessions on disk) for dsh, or (0, 0) if unavailable."""
     total = len(dsh_session_files(sessions_dir))
@@ -258,7 +281,7 @@ def _parse_session_file(path: Path) -> SessionDetails | None:
     event_times: list[int] = []
     header: dict | None = None
     pending_calls: list[dict] = []
-    call_results: dict[str, tuple[bool, int]] = {}
+    call_results: dict[str, tuple[bool, int | None]] = {}
     edits: list[FileEdit] = []
 
     def _add_usage(usage: object) -> None:
@@ -398,7 +421,7 @@ def _parse_session_file(path: Path) -> SessionDetails | None:
 
 def _dsh_tool_calls(
     pending_calls: list[dict],
-    call_results: dict[str, tuple[bool, int]],
+    call_results: dict[str, tuple[bool, int | None]],
 ) -> list[ToolCall]:
     """Resolve recorded calls against their results.
 

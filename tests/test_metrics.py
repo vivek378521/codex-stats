@@ -31,8 +31,8 @@ from codex_stats.ingest import (
     resolve_max_sessions,
 )
 from codex_stats.metrics import (
+    UNIDENTIFIED_VENDOR_LABEL,
     estimate_detail_cost,
-    uses_recorded_cost,
     filter_details_by_project,
     local_date,
     model_vendor,
@@ -57,10 +57,10 @@ from codex_stats.metrics import (
     summarize_source_breakdown_from_details,
     summarize_source_daily_from_details,
     summarize_takeaways,
-    summarize_top_sessions_from_details,
     summarize_tool_efficiency_from_details,
+    summarize_top_sessions_from_details,
     summarize_work_rhythm,
-    UNIDENTIFIED_VENDOR_LABEL,
+    uses_recorded_cost,
 )
 from codex_stats.models import (
     CACHED_SEPARATE,
@@ -810,9 +810,16 @@ class MetricsTestCase(unittest.TestCase):
             now=now,
         )
         self.assertEqual(day_window.costs.today_cost_usd, day_window.summary.estimated_cost_usd)
-        self.assertEqual(month_window.costs.today_cost_usd, month_window.summary.estimated_cost_usd)
-        self.assertGreater(month_window.costs.today_cost_usd, day_window.costs.today_cost_usd)
-        self.assertGreater(month_window.costs.highest_session_cost_usd, day_window.costs.highest_session_cost_usd)
+        self.assertEqual(month_window.costs.today_cost_usd, day_window.costs.today_cost_usd)
+        self.assertGreater(month_window.costs.month_cost_usd, month_window.costs.today_cost_usd)
+        self.assertEqual(
+            month_window.costs.highest_session_cost_usd,
+            day_window.costs.highest_session_cost_usd,
+        )
+        self.assertEqual(
+            month_window.costs.calendar_month_cost_usd,
+            day_window.summary.estimated_cost_usd,
+        )
         self.assertGreaterEqual(len(day_window.takeaways), 1)
         self.assertGreaterEqual(len(day_window.badges), 1)
         self.assertIsNotNone(day_window.expensive_session)
@@ -878,7 +885,6 @@ class MetricsTestCase(unittest.TestCase):
             self.assertEqual(source.ingest(), [])
 
     def test_source_breakdown_sums_usage(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         pricing = load_pricing_config(self.paths)
         base_detail = get_session_details(self.paths, get_session(self.paths))
         codex_detail = replace(
@@ -903,7 +909,6 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(source_label("pi"), "Pi")
 
     def test_recorded_cost_wins_over_estimate(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         pricing = load_pricing_config(self.paths)
         base_detail = get_session_details(self.paths, get_session(self.paths))
         estimated = estimate_detail_cost(base_detail, pricing)
@@ -1079,7 +1084,6 @@ class MetricsTestCase(unittest.TestCase):
         self.assertEqual(summary.fresh_input_tokens + summary.cache_read_tokens, summary.input_tokens)
 
     def test_mixed_convention_sessions_do_not_exceed_one(self) -> None:
-        now = datetime.fromisoformat("2026-04-03T18:30:00+05:30")
         codex_detail = get_session_details(self.paths, get_session(self.paths))
         projects_dir = self._write_claude_transcript(
             {"input_tokens": 15, "output_tokens": 5, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 40}

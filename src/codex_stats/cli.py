@@ -6,7 +6,14 @@ import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import BudgetConfig, ConfigError, Paths, PricingConfig, load_budget_config, load_pricing_config
+from .config import (
+    BudgetConfig,
+    ConfigError,
+    Paths,
+    PricingConfig,
+    load_budget_config,
+    load_pricing_config,
+)
 from .display import format_dashboard_html
 from .ingest import ENV_MAX_SESSIONS
 from .leaderboard import (
@@ -17,6 +24,7 @@ from .leaderboard import (
 )
 from .metrics import (
     DEFAULT_IDLE_BRANCH_DAYS,
+    estimate_detail_cost,
     local_date,
     summarize_activity_heatmap_from_details,
     summarize_badges,
@@ -27,33 +35,33 @@ from .metrics import (
     summarize_daily_from_details,
     summarize_details,
     summarize_efficiency_from_details,
-    estimate_detail_cost,
+    summarize_efficiency_trend,
     summarize_expensive_session,
     summarize_files_from_details,
     summarize_history_from_details,
     summarize_insights_from_details,
+    summarize_leaks,
     summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
     summarize_providers_from_details,
+    summarize_regression,
+    summarize_runway,
     summarize_source_breakdown_from_details,
     summarize_source_daily_from_details,
     summarize_takeaways,
-    summarize_top_sessions_from_details,
     summarize_tool_efficiency_from_details,
+    summarize_top_sessions_from_details,
     summarize_work_rhythm,
-    summarize_leaks,
-    summarize_runway,
-    summarize_regression,
-    summarize_efficiency_trend,
 )
 from .models import (
     DashboardData,
     DashboardScope,
     DashboardWindow,
     SessionDetails,
+    SourceHealth,
 )
 from .sources import Source, iter_sources
-from .state import StateStore, Snapshot
+from .state import IngestCache, Snapshot, StateStore, ingest_fingerprint
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,8 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         paths.dashboard_file,
     )
     print(f"Wrote dashboard to {output_path}")
-    _open_report_in_browser(output_path)
-    print(f"Opened dashboard in browser: {output_path}")
+    if _open_report_in_browser(output_path):
+        print(f"Opened dashboard in browser: {output_path}")
+    else:
+        print(f"No browser could be opened automatically. Open this file: {output_path}")
     return _run_submit_endpoint(submit_server)
 
 
@@ -173,7 +183,35 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
     if config_error is None and budget_error is not None:
         config_error = budget_error
     selected_sources = iter_sources(paths)
-    source_details = {source.key: source.ingest() for source in selected_sources}
+    source_details: dict[str, list[SessionDetails]] = {}
+    source_health: list[SourceHealth] = []
+    cache = IngestCache(paths.dashboard_file.parent)
+    max_sessions = os.environ.get(ENV_MAX_SESSIONS, "")
+    for source in selected_sources:
+        error: str | None = None
+        fingerprint = ingest_fingerprint(source.path_hint, max_sessions)
+        details = cache.get(source.key, fingerprint)
+        if details is None:
+            try:
+                details = source.ingest()
+            except Exception as exc:  # one broken transcript must not hide every other tool
+                details = []
+                error = f"{type(exc).__name__}: {exc}"
+            if error is None:
+                cache.put(source.key, fingerprint, details)
+        source_details[source.key] = details
+        source_health.append(
+            SourceHealth(
+                key=source.key,
+                label=source.label,
+                available=source.available,
+                path=source.path_hint,
+                sessions=len(details),
+                note=source.note,
+                error=error,
+            )
+        )
+    cache.save()
     all_details = [detail for source in selected_sources for detail in source_details[source.key]]
 
     overview = _build_scope(
@@ -183,6 +221,7 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
         source="all",
         details=all_details,
         pricing=pricing,
+        budget=budget,
         now=current_time,
         build_tool_breakdown=True,
     )
@@ -194,6 +233,7 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
             source=source.key,
             details=source_details[source.key],
             pricing=pricing,
+            budget=budget,
             now=current_time,
         )
         for source in selected_sources
@@ -202,19 +242,19 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
     # build a merged leaks summary from overview windows? take first window (overview has multiple windows)
     leaks_summary = None
     try:
-        ov_win = overview.windows[0] if overview.windows else None
+        ov_win = next((window for window in overview.windows if window.key == "month"), None)
         if ov_win and ov_win.leaks:
             leaks_summary = ov_win.leaks
     except Exception:
         pass
-    # regression
+    # Regression compares the rolling 30-day window. Today is partial by definition,
+    # so snapshotting it made every morning look like a collapse in efficiency.
     regression_summary = None
     regression_stdout = None
     try:
         store = StateStore(paths.dashboard_file.parent)
         prev = store.load()
-        # build snapshot for current - use ov_win if exists
-        if ov_win:
+        if ov_win and ov_win.summary.sessions > 0:
             eff = ov_win.efficiency
             beh = ov_win.behavior
             br = ov_win.branches
@@ -223,13 +263,13 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
                 'repeat_rate': beh.repeat_rate if beh and beh.supported else None,
                 'read_only_cost_share': eff.read_only_cost_share if eff and eff.tracked else None,
             }
-            prevd = {
-                'cost_per_1k_lines': prev.cost_per_1k_lines,
-                'repeat_rate': prev.repeat_rate,
-                'read_only_cost_share': prev.read_only_cost_share,
-            }
-            regression_summary, regression_stdout = summarize_regression(cur, prevd)
-            # save new snapshot
+            if prev is not None and prev.window_key == ov_win.key:
+                prevd = {
+                    'cost_per_1k_lines': prev.cost_per_1k_lines,
+                    'repeat_rate': prev.repeat_rate,
+                    'read_only_cost_share': prev.read_only_cost_share,
+                }
+                regression_summary, regression_stdout = summarize_regression(cur, prevd)
             snap = Snapshot(
                 generated_at=current_time,
                 window_key=ov_win.key,
@@ -253,12 +293,13 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
     return DashboardData(
         generated_at=current_time,
         scopes=[overview, *tool_scopes],
-        coverage_note=_coverage_note(selected_sources),
+        coverage_note=_coverage_note(selected_sources, source_health),
         config_error=config_error,
         budget_note=_budget_note(budget, pricing, all_details, current_time),
         leaks_summary=leaks_summary,
         regression_summary=regression_summary,
         regression_stdout=regression_stdout,
+        source_health=source_health,
     )
 
 
@@ -281,34 +322,62 @@ def _budget_note(
     details: list[SessionDetails],
     current_time: datetime,
 ) -> str | None:
-    """Compare the calendar-month spend to the user's limit, if any.
+    """Compare calendar-month spend to the monthly and per-project budgets.
 
     The budget is measured against the calendar month, not the rolling 30-day tab:
     a budget is a per-month commitment in someone's calendar terms, and the page
     already shows the rolling figure elsewhere. The banner appears at the warn
-    ratio and turns into an over-limit statement once the limit passes.
+    ratio and turns into an over-limit statement once any limit passes.
     """
-    if budget.monthly_limit_usd is None:
-        return None
     month_start = current_time.date().replace(day=1)
-    spent = sum(
-        estimate_detail_cost(detail, pricing)
+    calendar_details = [
+        detail
         for detail in details
         if month_start <= local_date(detail.session.created_at, current_time.tzinfo) <= current_time.date()
-    )
-    limit = budget.monthly_limit_usd
-    ratio = spent / limit
-    if ratio < budget.warn_at_ratio:
-        return None
-    if ratio >= 1.0:
-        return (
-            f"Over the ${limit:,.2f} monthly budget: ${spent:,.2f} spent this calendar month "
-            f"({ratio:.0%} of limit)."
-        )
-    return (
-        f"Approaching the ${limit:,.2f} monthly budget: ${spent:,.2f} spent this calendar month "
-        f"({ratio:.0%} of limit)."
-    )
+    ]
+    messages: list[str] = []
+    if budget.monthly_limit_usd is not None:
+        spent = sum(estimate_detail_cost(detail, pricing) for detail in calendar_details)
+        limit = budget.monthly_limit_usd
+        ratio = spent / limit if limit > 0 else 0.0
+        if ratio >= budget.warn_at_ratio:
+            if ratio >= 1.0:
+                messages.append(
+                    f"Over the ${limit:,.2f} monthly budget: ${spent:,.2f} spent this calendar month "
+                    f"({ratio:.0%} of limit)."
+                )
+            else:
+                messages.append(
+                    f"Approaching the ${limit:,.2f} monthly budget: ${spent:,.2f} spent this calendar month "
+                    f"({ratio:.0%} of limit)."
+                )
+    if budget.project_limits:
+        entries = summarize_projects_from_details(calendar_details, pricing)
+        for configured_name, limit in budget.project_limits.items():
+            if limit is None or limit <= 0:
+                continue
+            lowered = configured_name.strip().lower()
+            matches = [entry for entry in entries if entry.name.strip().lower() == lowered]
+            if not matches:
+                matches = [entry for entry in entries if Path(entry.name).name.lower() == lowered]
+            if not matches:
+                continue
+            spent = sum(entry.estimated_cost_usd for entry in matches)
+            ratio = spent / limit
+            if ratio < budget.warn_at_ratio:
+                continue
+            label = configured_name.strip()
+            if ratio >= 1.0:
+                messages.append(
+                    f"Over the ${limit:,.2f} project budget for {label}: "
+                    f"${spent:,.2f} this calendar month ({ratio:.0%} of limit)."
+                )
+            else:
+                messages.append(
+                    f"Approaching the ${limit:,.2f} project budget for {label}: "
+                    f"${spent:,.2f} this calendar month ({ratio:.0%} of limit)."
+                )
+    return " ".join(messages) if messages else None
 
 
 def _load_pricing_or_default(paths: Paths) -> tuple[PricingConfig, str | None]:
@@ -325,7 +394,7 @@ def _load_pricing_or_default(paths: Paths) -> tuple[PricingConfig, str | None]:
         return PricingConfig(), f"{error.path}: {error.detail}"
 
 
-def _coverage_note(sources: list[Source]) -> str | None:
+def _coverage_note(sources: list[Source], health: list[SourceHealth] | None = None) -> str | None:
     """Admit to a bounded history read, or stay quiet when nothing was dropped.
 
     Every source that can drop history reports it here, because a window that
@@ -335,6 +404,10 @@ def _coverage_note(sources: list[Source]) -> str | None:
     objects come from the ingest pass rather than being rebuilt here, so the
     availability flags and paths are looked up once per run.
     """
+    notes = [source.note for source in sources if source.note]
+    for item in health or []:
+        if item.error:
+            notes.append(f"{item.label} could not be read ({item.error}); its sessions are excluded.")
     dropped_by_source: list[str] = []
     total_analyzed = 0
     total_on_disk = 0
@@ -354,10 +427,10 @@ def _coverage_note(sources: list[Source]) -> str | None:
         total_analyzed += analyzed
         total_on_disk += total
     if not dropped_by_source:
-        return None
+        return " ".join(notes) if notes else None
     dropped = total_on_disk - total_analyzed
     listed = "; ".join(dropped_by_source)
-    return (
+    coverage = (
         f"Showing the most recent {total_analyzed:,} of {total_on_disk:,} sessions "
         f"across your tools ({listed}). "
         f"{dropped:,} older session{'s' if dropped != 1 else ''} "
@@ -365,6 +438,7 @@ def _coverage_note(sources: list[Source]) -> str | None:
         f"recent-history total rather than a lifetime one. "
         f"Set {ENV_MAX_SESSIONS}=0 to read everything, which takes longer."
     )
+    return " ".join([*notes, coverage])
 
 
 def _build_scope(
@@ -453,6 +527,39 @@ def _build_scope(
     )
 
 
+def _cost_summaries(
+    all_details: list[SessionDetails],
+    pricing: PricingConfig,
+    now: datetime,
+) -> tuple:
+    """Today/week/rolling-month/calendar-month summaries for the cost panel.
+
+    The previous code passed the active window's own summary three times, so every
+    window reported the same "today", "week" and "month" number. The calendar
+    month is separate because budgets are monthly commitments, not rolling 30-day
+    totals.
+    """
+    today = summarize_details(
+        "today", _details_for_last_days(all_details, 1, now), pricing, timezone=now.tzinfo
+    )
+    week = summarize_details(
+        "last 7 days", _details_for_last_days(all_details, 7, now), pricing, timezone=now.tzinfo
+    )
+    month = summarize_details(
+        "last 30 days", _details_for_last_days(all_details, 30, now), pricing, timezone=now.tzinfo
+    )
+    month_start = now.date().replace(day=1)
+    calendar_details = [
+        detail
+        for detail in all_details
+        if month_start <= local_date(detail.session.created_at, now.tzinfo) <= now.date()
+    ]
+    calendar = summarize_details(
+        "this month", calendar_details, pricing, timezone=now.tzinfo
+    )
+    return today, week, month, calendar
+
+
 def _build_window(
     *,
     key: str,
@@ -481,12 +588,16 @@ def _build_window(
         timezone=now.tzinfo,
     )
     insights = summarize_insights_from_details(current_details, pricing=pricing, month=summary, now=now)
+    today_summary, week_summary, month_summary, calendar_summary = _cost_summaries(
+        all_details, pricing, now
+    )
     costs = summarize_costs_from_details(
-        current_details,
+        all_details,
         pricing=pricing,
-        today=summary,
-        week=summary,
-        month=summary,
+        today=today_summary,
+        week=week_summary,
+        month=month_summary,
+        calendar_month=calendar_summary,
         now=now,
     )
     history_source = current_details if current_details else all_details
@@ -561,8 +672,13 @@ def _build_window(
             else None
         ),
         leaks=summarize_leaks(behavior=behavior, branches=branches, efficiency=efficiency),
-        runway=summarize_runway(daily_points, costs=costs, budget=budget),
-        efficiency_trend=summarize_efficiency_trend(current_details, [label], pricing=pricing),
+        runway=summarize_runway(
+            summarize_daily_from_details(all_details, days=7, now=now, pricing=pricing),
+            costs=costs,
+            budget=budget,
+            now=now,
+        ),
+        efficiency_trend=summarize_efficiency_trend(current_details, pricing=pricing, now=now),
     )
 
 
@@ -586,7 +702,18 @@ def _build_all_time_window(
         pricing=pricing,
         timezone=now.tzinfo,
     )
-    costs = summarize_costs_from_details(all_details, pricing=pricing, now=now)
+    today_summary, week_summary, month_summary, calendar_summary = _cost_summaries(
+        all_details, pricing, now
+    )
+    costs = summarize_costs_from_details(
+        all_details,
+        pricing=pricing,
+        today=today_summary,
+        week=week_summary,
+        month=month_summary,
+        calendar_month=calendar_summary,
+        now=now,
+    )
     insights = summarize_insights_from_details(all_details, pricing=pricing, month=summary, now=now)
     trend_days = _all_time_trend_days(all_details, now)
     trend_details = _details_for_last_days(all_details, trend_days, now)
@@ -661,8 +788,13 @@ def _build_all_time_window(
             else None
         ),
         leaks=summarize_leaks(behavior=behavior, branches=branches, efficiency=efficiency),
-        runway=summarize_runway(daily_points, costs=costs, budget=budget),
-        efficiency_trend=summarize_efficiency_trend(all_details, ["all time"], pricing=pricing),
+        runway=summarize_runway(
+            summarize_daily_from_details(all_details, days=7, now=now, pricing=pricing),
+            costs=costs,
+            budget=budget,
+            now=now,
+        ),
+        efficiency_trend=summarize_efficiency_trend(all_details, pricing=pricing, now=now),
     )
 
 
@@ -715,7 +847,7 @@ def _write_dashboard_output(content: str, output_path: Path | None = None) -> Pa
     return target
 
 
-def _open_report_in_browser(path: Path) -> None:
+def _open_report_in_browser(path: Path) -> bool:
     """Open the dashboard, defeating the browser's copy of a previous run.
 
     Now that the path is stable, a plain ``file://`` open can be served straight
@@ -728,7 +860,7 @@ def _open_report_in_browser(path: Path) -> None:
         version = path.stat().st_mtime_ns
     except OSError:
         version = 0
-    webbrowser.open(f"{uri}?v={version}")
+    return bool(webbrowser.open(f"{uri}?v={version}"))
 
 
 if __name__ == "__main__":

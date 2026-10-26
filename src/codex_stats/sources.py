@@ -13,15 +13,20 @@ from .config import Paths
 from .dsh_ingest import (
     SOURCE_DSH,
     dsh_coverage,
+    dsh_decoder_note,
     dsh_sessions_dir,
+)
+from .dsh_ingest import (
     iter_dsh_session_details as _dsh_iter_session_details,
 )
 from .ingest import (
     codex_session_coverage,
     file_edit_from_args,
     is_file_editing_tool,
-    iter_session_details as _codex_iter_session_details,
     resolve_max_sessions,
+)
+from .ingest import (
+    iter_session_details as _codex_iter_session_details,
 )
 from .models import (
     CACHED_SEPARATE,
@@ -63,6 +68,7 @@ class Source:
         compare=False,
         default=lambda: (0, 0),
     )
+    note: str | None = field(default=None, compare=False)
 
 
 def _codex_source(paths: Paths | None = None) -> Source:
@@ -143,18 +149,20 @@ def _hermes_source(paths: Paths | None = None) -> Source:
 
 def _dsh_source(paths: Paths | None = None) -> Source:
     sessions_dir = dsh_sessions_dir()
+    available = bool(sessions_dir.is_dir() and any(sessions_dir.iterdir()))
     return Source(
         key=SOURCE_DSH,
         label="DeepSeek Harness",
         description="DeepSeek Harness (dsh) agent sessions from the JSONL event logs under ~/.dsh/sessions.",
-        available=bool(sessions_dir.is_dir() and any(sessions_dir.iterdir())),
+        available=available,
         path_hint=str(sessions_dir),
         ingest=lambda: _dsh_iter_session_details(sessions_dir),
         coverage=lambda: dsh_coverage(sessions_dir),
+        note=dsh_decoder_note(sessions_dir) if available else None,
     )
 
 
-_SOURCE_FACTORIES: list[Callable[[Paths], Source]] = [
+_SOURCE_FACTORIES: list[Callable[[Paths | None], Source]] = [
     _codex_source,
     _opencode_source,
     _claude_source,
@@ -222,7 +230,17 @@ def _dt_from_iso(value: str | None) -> datetime | None:
 
 
 def _connect_sqlite(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(path)
+    """Open a source database read-only.
+
+    The dashboard has no reason to write to another tool's state; opening with
+    ``mode=ro`` guarantees a malformed query or schema probe cannot alter it.
+    """
+    if path.exists():
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    else:
+        # Only tests create a database through this helper; real sources are
+        # guarded by an existence check before they get here.
+        connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -374,7 +392,7 @@ def _ingest_opencode(db_path: Path) -> list[SessionDetails]:
                           AND json_extract(data, '$.role') = 'user'
                         GROUP BY session_id
                         """ % _placeholders(len(chunk)),
-                        chunk,
+                        tuple(chunk),
                     )
                 }
             )
@@ -934,14 +952,21 @@ def _hermes_tool_calls(
     denied: set[str] = set()
     pending: dict[str, list[dict]] = {}
 
-    rows = _fetchall(
-        connection,
-        "SELECT session_id, tool_calls, tool_call_id, effect_disposition FROM messages",
-    )
+    rows: list[sqlite3.Row] = []
+    ordered_ids = sorted(session_ids)
+    for offset in range(0, len(ordered_ids), 500):
+        chunk = ordered_ids[offset : offset + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(
+            _fetchall(
+                connection,
+                f"SELECT session_id, tool_calls, tool_call_id, effect_disposition "
+                f"FROM messages WHERE session_id IN ({placeholders})",
+                tuple(chunk),
+            )
+        )
     for row in rows:
         session_id = row["session_id"]
-        if session_id not in session_ids:
-            continue
         call_id = row["tool_call_id"]
         if isinstance(call_id, str) and call_id:
             key = f"{session_id}\x00{call_id}"

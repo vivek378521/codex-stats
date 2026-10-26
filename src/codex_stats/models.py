@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_SOURCE = "codex"
 
 
@@ -64,12 +63,31 @@ class SessionRecord:
         cwd_path = Path(self.cwd)
         return cwd_path.name or self.cwd
 
+    @property
+    def project_key(self) -> str:
+        """Stable grouping key for the full workspace path.
+
+        Project *names* are only unique within their parent directory: two
+        checkouts called ``app`` are different projects, and grouping by
+        basename silently merged their spend. The key keeps the whole path so
+        those sessions stay separate; the display layer shortens it only when
+        a basename is unambiguous.
+        """
+        cwd = (self.cwd or "").strip()
+        if not cwd:
+            return ""
+        try:
+            return str(Path(cwd).expanduser().resolve())
+        except OSError:
+            return str(Path(cwd).expanduser())
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["created_at"] = self.created_at.isoformat()
         payload["updated_at"] = self.updated_at.isoformat()
         payload["rollout_path"] = str(self.rollout_path)
         payload["project_name"] = self.project_name
+        payload["project_key"] = self.project_key
         return payload
 
 
@@ -393,6 +411,10 @@ class CostSummary:
     month_cost_usd: float
     projected_monthly_cost_usd: float
     highest_session_cost_usd: float
+    # Calendar-month spend, which is what a monthly budget is measured against.
+    # ``month_cost_usd`` is the rolling 30-day figure shown on the Month tab; the
+    # two are intentionally different and this field keeps runway honest.
+    calendar_month_cost_usd: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -698,7 +720,7 @@ class DashboardWindow:
             "work_rhythm": self.work_rhythm.to_dict(),
             "project_drilldowns": [drilldown.to_dict() for drilldown in self.project_drilldowns],
             "tool_breakdown": [entry.to_dict() for entry in self.tool_breakdown] if self.tool_breakdown else None,
-            "tool_daily_points": [point.to_dict() for entry in self.tool_daily_points] if self.tool_daily_points else None,
+            "tool_daily_points": [point.to_dict() for point in self.tool_daily_points] if self.tool_daily_points else None,
             "file_impact": [entry.to_dict() for entry in self.file_impact],
             "behavior": self.behavior.to_dict() if self.behavior else None,
             "branches": self.branches.to_dict() if self.branches else None,
@@ -975,6 +997,22 @@ class DashboardScope:
 
 
 @dataclass(frozen=True)
+class SourceHealth:
+    """One source's availability and ingest outcome for this run."""
+
+    key: str
+    label: str
+    available: bool
+    path: str
+    sessions: int
+    note: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class DashboardData:
     generated_at: datetime
     windows: list[DashboardWindow] = field(default_factory=list, repr=False)
@@ -991,6 +1029,7 @@ class DashboardData:
     leaks_summary: "LeakSummary | None" = None
     regression_summary: "RegressionDiff | None" = None
     regression_stdout: list[str] | None = None
+    source_health: list[SourceHealth] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.scopes and self.windows:
@@ -1024,4 +1063,5 @@ class DashboardData:
             "leaks_summary": self.leaks_summary.to_dict() if self.leaks_summary else None,
             "regression_summary": self.regression_summary.to_dict() if self.regression_summary else None,
             "regression_stdout": self.regression_stdout,
+            "source_health": [item.to_dict() for item in self.source_health],
         }

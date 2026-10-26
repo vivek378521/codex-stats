@@ -4,10 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-stats"
-version = "1.17.0"
+version = "1.18.0"
 description = "Local-first usage dashboard and leaderboard for AI coding agent sessions: tokens, cost and activity across Codex, OpenCode, Claude Code, Hermes and DeepSeek Harness, read straight from the databases those tools already keep on your machine."
 readme = "README.md"
 requires-python = ">=3.11"
+# dsh writes its session logs zstd-compressed by default. Python 3.14 ships
+# zstd in the standard library; older interpreters need the third-party
+# package or every compressed dsh session is silently skipped.
+dependencies = [
+  "zstandard>=0.22; python_version < '3.14'",
+]
 # SPDX form (PEP 639). The License classifier is deliberately absent: setuptools
 # rejects having both, and the old license = { text = ... } table is deprecated.
 license = "MIT"
@@ -46,6 +52,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Build Tools",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: System :: Monitoring",
@@ -57,6 +64,9 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
   "build>=1.2.2",
+  "coverage[toml]>=7.6",
+  "mypy>=1.10",
+  "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -75,3 +85,24 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+files = ["src/codex_stats"]
+
+[tool.coverage.run]
+source = ["codex_stats"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true

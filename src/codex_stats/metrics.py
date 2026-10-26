@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
+from pathlib import Path
 from statistics import median
+from typing import Any
 
-from .config import PricingConfig
+from .config import BudgetConfig, PricingConfig
 from .models import (
     TOOL_CATEGORY_EDIT,
     TOOL_CATEGORY_LABELS,
@@ -18,17 +20,23 @@ from .models import (
     ChurnEntry,
     CompareReport,
     CostSummary,
-    DashboardBadge,
     DailyPoint,
+    DashboardBadge,
     EfficiencySummary,
+    EfficiencyTrend,
+    EfficiencyTrendPoint,
     FileImpactEntry,
     HeatmapCell,
     HistoryEntry,
     InsightReport,
+    LeakEntry,
+    LeakSummary,
     ProjectDrilldown,
-    SessionSpotlight,
+    RegressionDiff,
+    RunwayInfo,
     SessionDetails,
     SessionDrilldown,
+    SessionSpotlight,
     TimeSummary,
     TokenSplit,
     ToolCategoryEntry,
@@ -37,15 +45,9 @@ from .models import (
     ToolUsageEntry,
     TopEntry,
     WorkRhythm,
-    LeakEntry,
-    LeakSummary,
-    RunwayInfo,
-    RegressionDiff,
-    EfficiencyTrend,
-    EfficiencyTrendPoint,
 )
 from .sources import FILE_EDIT_TRACKING_SOURCES, source_label
-from .config import BudgetConfig
+
 
 def uses_recorded_cost(detail: SessionDetails) -> bool:
     """Whether a session's cost comes from the tool's own figure rather than an estimate.
@@ -58,16 +60,60 @@ def uses_recorded_cost(detail: SessionDetails) -> bool:
 
 def estimate_detail_cost(detail: SessionDetails, pricing: PricingConfig) -> float:
     if uses_recorded_cost(detail):
-        return round(detail.recorded_cost_usd, 4)
+        return round(detail.recorded_cost_usd or 0.0, 4)
     rates, _ = pricing.rates_for(detail.session.source, detail.session.model)
     return rates.cost_for(detail.token_split())
+
+
+def _project_labels(details: list[SessionDetails]) -> dict[str, str]:
+    """Map full project keys to short, unambiguous display labels.
+
+    A basename is used when it identifies one project, ``parent/name`` when two
+    projects share a basename, and the full path when even the parent collides.
+    """
+    keys = sorted({detail.session.project_key for detail in details if detail.session.project_key})
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for key in keys:
+        by_name[Path(key).name or key].append(key)
+    labels: dict[str, str] = {}
+    for name, group in by_name.items():
+        if len(group) == 1:
+            labels[group[0]] = name
+            continue
+        by_parent: dict[str, list[str]] = defaultdict(list)
+        for key in group:
+            by_parent[Path(key).parent.name or str(Path(key).parent)].append(key)
+        for parent, subgroup in by_parent.items():
+            if len(subgroup) == 1:
+                labels[subgroup[0]] = f"{parent}/{name}"
+            else:
+                for key in subgroup:
+                    labels[key] = key
+    return labels
+
+
+def _project_label(detail: SessionDetails, labels: dict[str, str]) -> str:
+    key = detail.session.project_key
+    return labels.get(key) or detail.session.project_name or key
 
 
 def filter_details_by_project(details: list[SessionDetails], project_name: str | None) -> list[SessionDetails]:
     if not project_name:
         return details
     lowered = project_name.lower()
-    return [detail for detail in details if detail.session.project_name.lower() == lowered]
+    labels = _project_labels(details)
+    target = next((key for key, label in labels.items() if label.lower() == lowered), None)
+    if target is None:
+        matches = [
+            key
+            for key in labels
+            if (Path(key).name or key).lower() == lowered
+        ]
+        if len(matches) == 1:
+            target = matches[0]
+    if target is None:
+        return [detail for detail in details if detail.session.project_name.lower() == lowered]
+    return [detail for detail in details if detail.session.project_key == target]
 
 
 def summarize_details(
@@ -101,7 +147,7 @@ def summarize_details(
         session_tokens = detail.effective_total_tokens()
         total_tokens += session_tokens
         largest_session_tokens = max(largest_session_tokens, session_tokens)
-        project_tokens[detail.session.project_name] += session_tokens
+        project_tokens[detail.session.project_key or detail.session.project_name] += session_tokens
         active_days.add(local_date(detail.session.created_at, timezone))
         if detail.session.model:
             model_counter[detail.session.model] += 1
@@ -161,7 +207,7 @@ def summarize_details(
     )
 
 
-def local_date(value: datetime, timezone: tzinfo | None) -> datetime.date:
+def local_date(value: datetime, timezone: tzinfo | None) -> date:
     target_timezone = timezone or value.astimezone().tzinfo
     return value.astimezone(target_timezone).date()
 
@@ -227,9 +273,20 @@ def summarize_projects_from_details(
 ) -> list[BreakdownEntry]:
     pricing = pricing or PricingConfig()
     grouped: dict[str, list[SessionDetails]] = defaultdict(list)
+    labels = _project_labels(details)
     for detail in details:
-        grouped[detail.session.project_name].append(detail)
-    return _build_breakdown(grouped, pricing)
+        grouped[detail.session.project_key or detail.session.project_name].append(detail)
+    entries = _build_breakdown(grouped, pricing)
+    return [
+        BreakdownEntry(
+            name=labels.get(entry.name, entry.name),
+            sessions=entry.sessions,
+            requests=entry.requests,
+            total_tokens=entry.total_tokens,
+            estimated_cost_usd=entry.estimated_cost_usd,
+        )
+        for entry in entries
+    ]
 
 
 # Matched against the bare model name, as a prefix or as a hyphen-delimited segment,
@@ -355,11 +412,13 @@ def summarize_branches_from_details(
         )
 
     grouped: dict[tuple[str, str], list[SessionDetails]] = defaultdict(list)
+    labels = _project_labels(tracked)
     for detail in tracked:
-        grouped[(detail.session.project_name, detail.session.git_branch or "")].append(detail)
+        grouped[(detail.session.project_key or detail.session.project_name, detail.session.git_branch or "")].append(detail)
 
     branches: list[BranchActivity] = []
-    for (project_name, branch_name), branch_details in grouped.items():
+    for (project_key, branch_name), branch_details in grouped.items():
+        project_name = labels.get(project_key, branch_details[0].session.project_name or project_key)
         last_at = max(detail.session.updated_at for detail in branch_details)
         first_at = min(detail.session.created_at for detail in branch_details)
         idle = max((current_time - last_at).days, 0)
@@ -588,8 +647,9 @@ def summarize_expensive_session(
     if not details:
         return None
     most_expensive = max(details, key=lambda detail: estimate_detail_cost(detail, pricing))
+    labels = _project_labels(details)
     return SessionSpotlight(
-        project_name=most_expensive.session.project_name,
+        project_name=_project_label(most_expensive, labels),
         model=most_expensive.session.model,
         total_tokens=most_expensive.effective_total_tokens(),
         requests=most_expensive.request_count,
@@ -620,8 +680,8 @@ def summarize_work_rhythm(
         weekday_totals[cell.weekday] += cell.total_tokens
         hour_totals[cell.hour] += cell.total_tokens
         active_weekdays.add(cell.weekday)
-    peak_weekday = max(weekday_totals, key=weekday_totals.get, default=None)
-    peak_hour = max(hour_totals, key=hour_totals.get, default=None)
+    peak_weekday = max(weekday_totals, key=lambda key: weekday_totals[key], default=None)
+    peak_hour = max(hour_totals, key=lambda key: hour_totals[key], default=None)
     weekday_name = (
         ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][peak_weekday]
         if peak_weekday is not None
@@ -660,11 +720,12 @@ def summarize_history_from_details(
         reverse=True,
     )
     history: list[HistoryEntry] = []
+    labels = _project_labels(details)
     for detail in ordered[:limit]:
         history.append(
             HistoryEntry(
                 session_id=detail.session.session_id,
-                project_name=detail.session.project_name,
+                project_name=_project_label(detail, labels),
                 model=detail.session.model,
                 updated_at=detail.session.updated_at,
                 total_tokens=detail.effective_total_tokens(),
@@ -743,6 +804,7 @@ def summarize_costs_from_details(
     today: TimeSummary | None = None,
     week: TimeSummary | None = None,
     month: TimeSummary | None = None,
+    calendar_month: TimeSummary | None = None,
     now: datetime | None = None,
 ) -> CostSummary:
     current_time = now or datetime.now().astimezone()
@@ -769,6 +831,7 @@ def summarize_costs_from_details(
         month_cost_usd=month.estimated_cost_usd,
         projected_monthly_cost_usd=projected_monthly,
         highest_session_cost_usd=highest_session_cost_usd,
+        calendar_month_cost_usd=(calendar_month or month).estimated_cost_usd,
     )
 
 
@@ -779,7 +842,6 @@ def summarize_insights_from_details(
     month: TimeSummary | None = None,
     now: datetime | None = None,
 ) -> InsightReport:
-    current_time = now or datetime.now().astimezone()
     pricing = pricing or PricingConfig()
     month = month or summarize_details("month", details, pricing)
     large_session_threshold = 100_000
@@ -874,10 +936,11 @@ def summarize_top_sessions_from_details(
     pricing = pricing or PricingConfig()
     filtered = filter_details_by_project(details, project_name)
     ordered = sorted(filtered, key=lambda detail: detail.effective_total_tokens(), reverse=True)
+    labels = _project_labels(filtered)
     return [
         TopEntry(
             session_id=detail.session.session_id,
-            project_name=detail.session.project_name,
+            project_name=_project_label(detail, labels),
             model=detail.session.model,
             total_tokens=detail.effective_total_tokens(),
             requests=detail.request_count,
@@ -901,6 +964,7 @@ def summarize_session_drilldowns_from_details(
     """
     ordered = sorted(details, key=lambda detail: detail.effective_total_tokens(), reverse=True)
     drilldowns: list[SessionDrilldown] = []
+    labels = _project_labels(details)
     for detail in ordered[: max(limit, 0)]:
         tool_counts: Counter[str] = Counter()
         tool_errors: Counter[str] = Counter()
@@ -926,7 +990,7 @@ def summarize_session_drilldowns_from_details(
         drilldowns.append(
             SessionDrilldown(
                 session_id=detail.session.session_id,
-                project_name=detail.session.project_name,
+                project_name=_project_label(detail, labels),
                 branch=detail.session.git_branch,
                 model=detail.session.model,
                 model_provider=detail.session.model_provider,
@@ -1008,7 +1072,7 @@ def summarize_efficiency_from_details(
     untracked = [detail for detail in details if detail.session.source not in FILE_EDIT_TRACKING_SOURCES]
     untracked_sources = tuple(sorted({source_label(detail.session.source) for detail in untracked}))
 
-    per_file: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, set()])
+    per_file: dict[str, list[Any]] = defaultdict(lambda: [0, 0, 0, set()])
     for detail in tracked:
         for edit in detail.file_edits:
             bucket = per_file[edit.path]
@@ -1449,29 +1513,32 @@ def summarize_runway(
     costs: CostSummary | None = None,
     budget: BudgetConfig | None = None,
     days_window: int = 7,
+    now: datetime | None = None,
 ) -> RunwayInfo:
     budget = budget or BudgetConfig()
     if budget.monthly_limit_usd is None:
         return RunwayInfo(status="unknown", message="")
-    now = datetime.now(UTC)
+    current_time = now or datetime.now().astimezone()
+    current_day = current_time.date()
     spend_recent = 0.0
-    try:
-        start_window = now - timedelta(days=days_window)
-        for point in daily_points:
-            try:
-                pdate = datetime.strptime(point.day, "%Y-%m-%d").replace(tzinfo=UTC)
-            except Exception:
-                continue
-            if pdate >= start_window:
-                spend_recent += point.estimated_cost_usd
-    except Exception:
-        spend_recent = 0.0
+    start_day = current_day - timedelta(days=max(days_window, 1) - 1)
+    for point in daily_points:
+        try:
+            pdate = datetime.strptime(point.day, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
+        if start_day <= pdate <= current_day:
+            spend_recent += point.estimated_cost_usd
     burn = spend_recent / days_window if days_window > 0 else 0.0
-    month_spent = costs.month_cost_usd if costs else 0.0
-    next_month = now.replace(day=28) + timedelta(days=4)
+    month_spent = (
+        costs.calendar_month_cost_usd
+        if costs and costs.calendar_month_cost_usd is not None
+        else (costs.month_cost_usd if costs else 0.0)
+    )
+    next_month = current_day.replace(day=28) + timedelta(days=4)
     first_next = next_month.replace(day=1)
     last_day = first_next - timedelta(days=1)
-    days_left = max((last_day - now).days, 0)
+    days_left = max((last_day - current_day).days, 0)
     status = "unknown"
     message = ""
     days_until_exceed = None
@@ -1514,27 +1581,52 @@ def summarize_efficiency_trend(
     details: list[SessionDetails],
     window_labels: list[str] | None = None,
     pricing: PricingConfig | None = None,
+    *,
+    now: datetime | None = None,
+    max_points: int = 12,
 ) -> EfficiencyTrend:
+    """Bucket a window's sessions by week or month and compare efficiency.
+
+    The old stub returned one point whose metrics were all ``None`` whenever a
+    label was supplied, so the panel looked populated but said nothing. Buckets
+    are chosen from the span of the data: weekly for a window under roughly two
+    months, monthly for longer histories. Empty buckets are omitted rather than
+    drawn as zero, which would read as a collapse in efficiency.
+    """
     pricing = pricing or PricingConfig()
-    points: list[EfficiencyTrendPoint] = []
     if not details:
         return EfficiencyTrend(points=[], supported=False)
-    # simple: build trend by week buckets from daily points? or just use provided labels
-    # for now, if labels provided, create empty points
-    if window_labels:
-        for lbl in window_labels[:5]:
-            points.append(EfficiencyTrendPoint(label=lbl))
-        return EfficiencyTrend(points=points, supported=True)
-    # fallback: single point
-    eff = summarize_efficiency_from_details(details, pricing)
-    points.append(EfficiencyTrendPoint(
-        label="All time",
-        cost_per_1k_lines=eff.cost_per_1k_lines,
-        read_write_ratio=None,
-        read_only_cost_share=eff.read_only_cost_share,
-    ))
-    return EfficiencyTrend(points=points, supported=eff.tracked)
+    current_time = now or datetime.now().astimezone()
+    tracking_timezone = current_time.tzinfo
+    days = [local_date(detail.session.created_at, tracking_timezone) for detail in details]
+    span_days = (max(days) - min(days)).days if days else 0
+    by_week = span_days <= 60
 
+    buckets: dict[date, list[SessionDetails]] = defaultdict(list)
+    for detail in details:
+        day = local_date(detail.session.created_at, tracking_timezone)
+        if by_week:
+            key = day - timedelta(days=day.weekday())
+        else:
+            key = day.replace(day=1)
+        buckets[key].append(detail)
+
+    points: list[EfficiencyTrendPoint] = []
+    for key in sorted(buckets)[-max(max_points, 1):]:
+        bucket = buckets[key]
+        efficiency = summarize_efficiency_from_details(bucket, pricing=pricing)
+        behavior = summarize_behavior_from_details(bucket)
+        summary = summarize_details("", bucket, pricing, timezone=tracking_timezone)
+        points.append(
+            EfficiencyTrendPoint(
+                label=key.isoformat(),
+                cost_per_1k_lines=efficiency.cost_per_1k_lines,
+                read_write_ratio=behavior.read_write_ratio if behavior else None,
+                read_only_cost_share=efficiency.read_only_cost_share,
+                cache_ratio=summary.cache_ratio,
+            )
+        )
+    return EfficiencyTrend(points=points, supported=any(point.cost_per_1k_lines is not None for point in points))
 
 def summarize_regression(
     current: dict[str, Any] | None = None,

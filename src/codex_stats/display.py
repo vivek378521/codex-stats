@@ -25,7 +25,26 @@ SOURCE_CHART_COLORS: dict[str, str] = {
     "opencode": "#b45309",
     "claude": "#7c3aed",
     "hermes": "#be185d",
+    "dsh": "#2563eb",
 }
+
+
+def _json_for_script(value: Any) -> str:
+    """Serialize JSON so it cannot terminate the surrounding <script> block.
+
+    Model names, branch names and project paths are user-controlled. A raw
+    ``</script>`` inside any of them closes the block and turns the remainder of
+    the label into executable HTML, so the characters that can open a tag are
+    escaped. This stays valid JSON and JSON.parse-compatible.
+    """
+    return (
+        json.dumps(value, separators=(",", ":"))
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def _compress_svg_assets(assets: dict[str, str]) -> dict[str, str]:
@@ -142,7 +161,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         )
     budget_html = ""
     if dashboard.budget_note:
-        over = dashboard.budget_note.startswith("Over")
+        over = "Over the" in dashboard.budget_note
         budget_html = (
             f'<div class="coverage-note budget-note{" budget-over" if over else ""}" role="status">'
             f"<strong>{'Over budget.' if over else 'Watch the budget.'}</strong> {escape(dashboard.budget_note)}"
@@ -155,7 +174,29 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     leaks_banner_html = ""
     if dashboard.leaks_summary and dashboard.leaks_summary.has_leaks:
         items = ''.join(f'<li>{escape(e.description)}</li>' for e in dashboard.leaks_summary.entries[:5])
-        leaks_banner_html = f'<div class="coverage-note" role="status"><strong>Top leaks</strong><ul style="margin:4px 0 0 18px">{items}</ul></div>' 
+        leaks_banner_html = f'<div class="coverage-note" role="status"><strong>Top leaks</strong><ul style="margin:4px 0 0 18px">{items}</ul></div>'
+    source_health_html = ""
+    if dashboard.source_health:
+        health_items = []
+        for item in dashboard.source_health:
+            if item.error:
+                status = f"failed: {item.error}"
+            elif not item.available:
+                status = f"not found at {item.path}"
+            elif item.sessions == 0:
+                status = f"no sessions found at {item.path}"
+            else:
+                status = f"{item.sessions:,} session{'s' if item.sessions != 1 else ''}"
+            note = f" — {item.note}" if item.note else ""
+            health_items.append(
+                f"<li><strong>{escape(item.label)}</strong> {escape(status + note)}</li>"
+            )
+        source_health_html = (
+            '<details class="coverage-note source-health">'
+            "<summary>Data sources</summary>"
+            f"<ul style=\"margin:4px 0 0 18px\">{''.join(health_items)}</ul>"
+            "</details>"
+        )
     scope_sections = "".join(        "".join(
             _format_dashboard_window_section(
                 window,
@@ -167,27 +208,25 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         )
         for scope in scopes
     )
-    assets_json = json.dumps(
+    assets_json = _json_for_script(
         {
             f"{scope.key}-{window.key}": _compress_svg_assets(format_dashboard_svg_assets(window, scope_label=scope.label))
             for scope in scopes
             for window in scope.windows
-        },
-        separators=(",", ":"),
+        }
     )
-    summaries_json = json.dumps(
+    summaries_json = _json_for_script(
         {
             f"{scope.key}-{window.key}": _format_window_copy_summary(window, scope_label=scope.label)
             for scope in scopes
             for window in scope.windows
-        },
-        separators=(",", ":"),
+        }
     )
     leaderboard_json = "null"
     leaderboard_button = ""
     leaderboard_dialog = ""
     if leaderboard:
-        leaderboard_json = json.dumps(leaderboard, separators=(",", ":"))
+        leaderboard_json = _json_for_script(leaderboard)
         leaderboard_button = (
             '<button class="action-button" type="button" data-action="submit-leaderboard">'
             "Submit to Leaderboard</button>"
@@ -1141,6 +1180,15 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       font-size: 14px;
       font-weight: 700;
     }}
+    .search-input {{
+      min-width: 220px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      font: inherit;
+    }}
     .leaderboard-actions {{
       display: flex;
       gap: 10px;
@@ -1168,12 +1216,14 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       {budget_html}
       {regression_html}
       {leaks_banner_html}
+      {source_health_html}
       <div class="toolbar">
         <div class="tabs">
           <div class="scope-tabs">{scope_buttons}</div>
           <div class="range-tabs">{range_buttons}</div>
         </div>
         <div class="actions">
+          <input class="search-input" type="search" data-dashboard-search placeholder="Filter sessions, projects, models" aria-label="Filter dashboard rows">
           <button class="action-button" type="button" data-action="copy-summary">Copy Summary</button>
           <span class="copy-feedback" data-copy-feedback></span>
           {leaderboard_button}
@@ -1231,6 +1281,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     const activeDescription = document.querySelector("[data-active-description]");
     const printNote = document.querySelector("[data-print-note]");
     const copyFeedback = document.querySelector("[data-copy-feedback]");
+    const searchInput = document.querySelector("[data-dashboard-search]");
     let activeScope = document.body.dataset.defaultScope || scopeButtons[0]?.dataset.scopeButton || "";
     let activeWindow = document.body.dataset.defaultWindow || rangeButtons[0]?.dataset.windowButton || "";
     let expandedForPrint = [];
@@ -1376,7 +1427,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       const active = activeSection();
       const heading = active?.querySelector(".window-title h2")?.textContent || "Range";
       const description = active?.querySelector(".window-title p")?.textContent || "The selected tab updates the full page.";
-      const generatedAt = {json.dumps(generated_at)};
+      const generatedAt = {_json_for_script(generated_at)};
       if (activeTitle) {{
         activeTitle.textContent = heading;
       }}
@@ -1388,6 +1439,16 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       }}
       exportMenu?.classList.remove("is-open");
       setFeedback("");
+      applySearch();
+    }}
+
+    function applySearch() {{
+      const query = (searchInput?.value || "").trim().toLowerCase();
+      const active = activeSection();
+      if (!active) return;
+      active.querySelectorAll("tbody tr, .project-card, .history-row, .session-row").forEach((row) => {{
+        row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+      }});
     }}
 
     function setActiveScope(key) {{
@@ -1538,6 +1599,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     rangeButtons.forEach((button) => {{
       button.addEventListener("click", () => setActiveWindow(button.dataset.windowButton));
     }});
+    searchInput?.addEventListener("input", applySearch);
     document.querySelector('[data-action="toggle-export"]')?.addEventListener("click", () => {{
       exportMenu?.classList.toggle("is-open");
     }});
@@ -1767,8 +1829,15 @@ def _render_efficiency_trend_panel(window) -> str:
     trend = getattr(window, 'efficiency_trend', None)
     if not trend or not trend.points:
         return ''
-    rows = ''.join(f'<tr><td>{escape(p.label)}</td><td>{f"${p.cost_per_1k_lines:.3f}" if p.cost_per_1k_lines is not None else "—"}</td><td>{f"{p.read_write_ratio:.2f}" if p.read_write_ratio is not None else "—"}</td></tr>' for p in trend.points)
-    return f'<section class="panel"><header class="panel-header"><h2>Efficiency Trend</h2></header><div class="panel-body"><table class="data-table"><thead><tr><th>Window</th><th>Cost/1k</th><th>Read:Write</th></tr></thead><tbody>{rows}</tbody></table></div></section>'
+    rows = ''.join(
+        f'<tr><td>{escape(p.label)}</td>'
+        f'<td>{f"${p.cost_per_1k_lines:.3f}" if p.cost_per_1k_lines is not None else "—"}</td>'
+        f'<td>{f"{p.read_write_ratio:.2f}" if p.read_write_ratio is not None else "—"}</td>'
+        f'<td>{f"{p.read_only_cost_share:.0%}" if p.read_only_cost_share is not None else "—"}</td>'
+        f'<td>{f"{p.cache_ratio:.0%}" if p.cache_ratio is not None else "—"}</td></tr>'
+        for p in trend.points
+    )
+    return f'<section class="panel"><header class="panel-header"><h2>Efficiency Trend</h2></header><div class="panel-body"><table class="data-table"><thead><tr><th>Window</th><th>Cost/1k</th><th>Read:Write</th><th>Read-only spend</th><th>Cache</th></tr></thead><tbody>{rows}</tbody></table></div></section>'
 
 def _format_dashboard_window_section(
     window: DashboardWindow,

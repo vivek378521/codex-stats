@@ -27,11 +27,8 @@ from .models import (
     TOOL_CATEGORY_SEARCH,
     TOOL_CATEGORY_WEB,
     TOOL_STATUS_COMPLETED,
-    TOOL_STATUS_ERROR,
-    TOOL_STATUS_UNKNOWN,
     ToolCall,
 )
-
 
 # Exact matches on the normalized name. Keys are already normalized (lowercase, alnum only).
 _EXACT_CATEGORIES: dict[str, str] = {

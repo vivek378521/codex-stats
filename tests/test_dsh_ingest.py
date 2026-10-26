@@ -10,7 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_stats.config import DEFAULT_FALLBACK_RATES, DEFAULT_MODEL_RATES, PricingConfig
+from codex_stats.config import (
+    DEFAULT_FALLBACK_RATES,
+    DEFAULT_MODEL_RATES,
+    PricingConfig,
+)
 from codex_stats.dsh_ingest import (
     _decompress_zstd,
     _read_log_text,
@@ -23,18 +27,18 @@ from codex_stats.dsh_ingest import (
 )
 from codex_stats.models import (
     CACHED_SEPARATE,
+    TOOL_CATEGORY_AGENT,
     TOOL_CATEGORY_EDIT,
     TOOL_CATEGORY_EXEC,
     TOOL_CATEGORY_PLAN,
-    TOOL_CATEGORY_AGENT,
     TOOL_STATUS_COMPLETED,
     TOOL_STATUS_ERROR,
     TOOL_STATUS_UNKNOWN,
 )
 from codex_stats.sources import (
     FILE_EDIT_TRACKING_SOURCES,
-    SOURCE_LABELS,
     SOURCE_DSH,
+    SOURCE_LABELS,
     _dsh_source,
     iter_sources,
 )

@@ -213,6 +213,20 @@ claude = 0.05
         with self.assertRaises(ConfigError):
             load_budget_config(self.paths)
 
+    def test_project_limits_work_without_a_global_monthly_limit(self) -> None:
+        self._write_config("[budget.projects]\napp = 40.0\n\"work/client\" = 75.0")
+        budget = load_budget_config(self.paths)
+        self.assertIsNone(budget.monthly_limit_usd)
+        self.assertEqual(budget.project_limits, {"app": 40.0, "work/client": 75.0})
+
+    def test_budget_rejects_invalid_or_nonpositive_project_limits(self) -> None:
+        self._write_config("[budget.projects]\napp = \"forty\"")
+        with self.assertRaises(ConfigError):
+            load_budget_config(self.paths)
+        self._write_config("[budget.projects]\napp = 0")
+        with self.assertRaises(ConfigError):
+            load_budget_config(self.paths)
+
 
 if __name__ == "__main__":
     unittest.main()

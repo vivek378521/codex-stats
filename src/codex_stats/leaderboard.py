@@ -1,13 +1,13 @@
-"""Leaderboard submission for private, server-controlled deployments.
+"""Opt-in leaderboard submission.
 
-The browser is never trusted with a number: the dashboard can only send a
-username and totals are read from the already-computed ``DashboardData``.
+Submission is disabled unless ``CODEX_STATS_ENABLE_LEADERBOARD=1`` is set. The
+browser is never trusted with a number: the dashboard can only send a username
+and totals are read from the already-computed ``DashboardData``.
 
 This is *not* evidence that the local totals are genuine. Local usage files and
-this process are controlled by the person submitting them. In particular, no
-shared key may be shipped in this package: doing so would let anyone forge a
-valid submission. The public leaderboard is deliberately disabled until it has
-a server-side attestation source.
+this process are controlled by the person submitting them. The baked-in key is
+therefore a deployment convenience, not a secret, and the board still needs
+server-side rate limits and attestation before it can be treated as a ranking.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from .models import DashboardData, DashboardWindow
 from .sources import SOURCE_LABELS
 
 PROTOCOL_VERSION = 1
+ENV_ENABLE = "CODEX_STATS_ENABLE_LEADERBOARD"
 ENV_BASE_URL = "CODEX_STATS_LEADERBOARD_URL"
 ENV_SUBMIT_KEY = "CODEX_STATS_LEADERBOARD_KEY"
 SUBMIT_ENDPOINT = "/api/submit"
@@ -38,8 +39,8 @@ REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_BODY_BYTES = 4096
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 
-# Baked in so a fresh install can submit with no setup. The env vars still win,
-# which is what lets the key be rotated without cutting a release, and lets
+# Defaults for deployments that have explicitly opted in. They are still public
+# values: the env vars win, which lets the key rotate without a release and lets
 # tests point at a local server.
 #
 # This is a deliberate integrity trade-off, not a secret worth protecting. Once
@@ -54,7 +55,7 @@ DEFAULT_BASE_URL = "https://codex-stats-leaderboard.vercel.app"
 DEFAULT_SUBMIT_KEY = "554f68344e64f04e870de3640b7bf5a35d33903f2d084a0b679fca54a7959cf3"
 
 # Submitting publishes a username and token totals to a third-party server, so
-# deployments may also explicitly disable it.
+# it is opt-in. ``ENV_DISABLE`` remains for deployments that want a hard kill.
 ENV_DISABLE = "CODEX_STATS_DISABLE_LEADERBOARD"
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -80,6 +81,8 @@ class LeaderboardConfig:
 
     @classmethod
     def from_env(cls) -> LeaderboardConfig | None:
+        if os.environ.get(ENV_ENABLE, "").strip().lower() not in _TRUTHY:
+            return None
         if os.environ.get(ENV_DISABLE, "").strip().lower() in _TRUTHY:
             return None
         base_url = os.environ.get(ENV_BASE_URL, "").strip() or DEFAULT_BASE_URL
@@ -268,12 +271,13 @@ class LeaderboardSubmitServer:
             self._httpd.daemon_threads = True
             host, port = self._httpd.server_address[:2]
             self.port = port
-            self.submit_url = f"http://{host}:{port}/submit/{self._nonce}"
+            self.submit_url = f"http://{str(host)}:{port}/submit/{self._nonce}"
         return self.submit_url
 
     def start(self) -> str:
         """Bind, then serve in a daemon thread owned by this process."""
         url = self.bind()
+        assert self._httpd is not None
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="codex-stats-leaderboard",

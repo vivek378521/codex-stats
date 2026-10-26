@@ -63,6 +63,26 @@ that people run occasionally.
    and the drilldown surfaces a Hermes compression counter that records context rewrites
    that did not shrink a session. Anything those databases do not record stays
    "Not recorded" rather than reading as zero.
+9. Project identity
+   Projects are keyed by working directory, so two checkouts with the same folder name no
+   longer merge. Labels disambiguate with `parent/name` or the full path, and the filter
+   accepts any displayed form.
+10. Ingest cache
+    Parsed sessions are cached per source and reused until the source fingerprint or
+    session cap changes, keeping repeat launches fast without changing first-run accuracy.
+11. Source health and search
+    The dashboard lists each source's path, session count, notes, and ingest failure, and
+    the action bar filters sessions, projects, and models.
+12. Budget and trend correctness
+    The budget uses calendar-month spend instead of rolling 30 days, per-project limits can
+    stand alone, runway uses a seven-day burn rate, and efficiency trends render real
+    weekly or monthly buckets.
+13. Export and embedding safety
+    Dashboard JSON escapes `<`, `>`, `&`, and line separators before entering a script
+    block, and opening the report falls back with a clear message when no browser is available.
+14. Opt-in leaderboard and CI gates
+    Leaderboard submission is off unless explicitly enabled. CI now runs lint, type checks,
+    tests, and branch coverage on Python 3.11 through 3.14.
 
 ## Explicitly Out of Scope
 

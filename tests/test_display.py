@@ -21,13 +21,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_stats.cli import _build_scope, _build_window
 from codex_stats.display import (
+    _compress_svg_assets,
     _fmt_idle,
-    _format_branch_panel,
     _format_branch_note,
+    _format_branch_panel,
     _format_efficiency_panel,
     _format_provider_panel,
     _format_reasoning_hint,
-    _compress_svg_assets,
     format_dashboard_html,
     format_dashboard_svg_assets,
 )
@@ -39,6 +39,7 @@ from codex_stats.models import (
     FileEdit,
     SessionDetails,
     SessionRecord,
+    SourceHealth,
 )
 from codex_stats.sources import SOURCE_CODEX, SOURCE_OPENCODE
 
@@ -560,3 +561,31 @@ class TakeawayWiringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ScriptEscapingTests(unittest.TestCase):
+    def test_model_name_cannot_break_out_of_the_script_block(self) -> None:
+        payload = "</script><script>alert(2)</script>"
+        html = format_dashboard_html(
+            DashboardData(generated_at=NOW, windows=[window_for([detail(model=payload)])])
+        )
+        self.assertNotIn("</script><script>alert(2)</script>", html)
+        self.assertIn("\\u003c/script\\u003e", html)
+
+
+class SourceHealthAndSearchTests(unittest.TestCase):
+    def test_health_panel_names_failures_and_search_is_present(self) -> None:
+        health = [
+            SourceHealth("codex", "Codex", True, "/tmp/codex", 1),
+            SourceHealth("dsh", "DeepSeek Harness", True, "/tmp/dsh", 0, "no decoder", "RuntimeError: boom"),
+        ]
+        html = format_dashboard_html(
+            DashboardData(
+                generated_at=NOW,
+                windows=[window_for([detail()])],
+                source_health=health,
+            )
+        )
+        self.assertIn("data-dashboard-search", html)
+        self.assertIn("Data sources", html)
+        self.assertIn("RuntimeError: boom", html)
+        self.assertIn("no decoder", html)

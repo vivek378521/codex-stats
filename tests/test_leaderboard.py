@@ -21,6 +21,7 @@ from codex_stats.leaderboard import (
     DEFAULT_SUBMIT_KEY,
     ENV_BASE_URL,
     ENV_DISABLE,
+    ENV_ENABLE,
     ENV_SUBMIT_KEY,
     LeaderboardConfig,
     LeaderboardError,
@@ -32,6 +33,7 @@ from codex_stats.leaderboard import (
     device_id_for,
 )
 from codex_stats.models import (
+    BreakdownEntry,
     CompareReport,
     CostSummary,
     DashboardData,
@@ -41,7 +43,6 @@ from codex_stats.models import (
     TimeSummary,
     WorkRhythm,
 )
-from codex_stats.models import BreakdownEntry
 
 UNIT_KEY = b"unit-test-key"
 # ``device_id_for`` folds in the host MAC through ``uuid.getnode``, so any pin
@@ -157,7 +158,7 @@ class LeaderboardConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved = {
             name: os.environ.pop(name, None)
-            for name in (ENV_BASE_URL, ENV_SUBMIT_KEY, ENV_DISABLE)
+            for name in (ENV_BASE_URL, ENV_SUBMIT_KEY, ENV_ENABLE, ENV_DISABLE)
         }
 
     def tearDown(self) -> None:
@@ -167,7 +168,11 @@ class LeaderboardConfigTests(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    def test_is_enabled_with_no_operator_configuration(self) -> None:
+    def test_is_disabled_with_no_operator_configuration(self) -> None:
+        self.assertIsNone(LeaderboardConfig.from_env())
+
+    def test_explicit_enable_uses_defaults(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
         config = LeaderboardConfig.from_env()
         self.assertIsNotNone(config)
         assert config is not None
@@ -175,6 +180,7 @@ class LeaderboardConfigTests(unittest.TestCase):
         self.assertEqual(config.submit_key, DEFAULT_SUBMIT_KEY.encode("utf-8"))
 
     def test_env_vars_override_the_baked_in_defaults(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
         os.environ[ENV_BASE_URL] = "https://example.invalid"
         os.environ[ENV_SUBMIT_KEY] = "secret"
         config = LeaderboardConfig.from_env()
@@ -183,18 +189,26 @@ class LeaderboardConfigTests(unittest.TestCase):
         self.assertEqual(config.submit_key, b"secret")
 
     def test_can_be_disabled(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
         for value in ("1", "true", "TRUE", "yes", "on"):
             os.environ[ENV_DISABLE] = value
             self.assertIsNone(LeaderboardConfig.from_env(), value)
 
     def test_unrelated_disable_value_does_not_disable(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
         for value in ("", "0", "false", "no", "maybe"):
             os.environ[ENV_DISABLE] = value
             os.environ[ENV_BASE_URL] = "https://example.vercel.app"
             os.environ[ENV_SUBMIT_KEY] = "secret"
             self.assertIsNotNone(LeaderboardConfig.from_env(), value)
 
+    def test_disable_wins_even_when_enabled(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
+        os.environ[ENV_DISABLE] = "1"
+        self.assertIsNone(LeaderboardConfig.from_env())
+
     def test_operator_variables_configure_submission(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
         os.environ[ENV_BASE_URL] = "https://example.vercel.app"
         os.environ[ENV_SUBMIT_KEY] = "secret"
         config = LeaderboardConfig.from_env()
@@ -203,6 +217,7 @@ class LeaderboardConfigTests(unittest.TestCase):
         self.assertEqual(config.submit_key, b"secret")
 
     def test_trailing_slash_is_trimmed(self) -> None:
+        os.environ[ENV_ENABLE] = "1"
         os.environ[ENV_BASE_URL] = "https://example.vercel.app/"
         os.environ[ENV_SUBMIT_KEY] = "secret"
         config = LeaderboardConfig.from_env()
