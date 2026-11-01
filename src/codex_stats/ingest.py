@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .config import Paths
 from .models import (
@@ -14,6 +15,7 @@ from .models import (
     TOOL_STATUS_COMPLETED,
     TOOL_STATUS_ERROR,
     TOOL_STATUS_UNKNOWN,
+    CompactionEvent,
     FileEdit,
     SessionDetails,
     SessionRecord,
@@ -156,8 +158,8 @@ def iter_session_details(paths: Paths) -> list[SessionDetails]:
     return [get_session_details(paths, session) for session in iter_sessions(paths)]
 
 
-def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdit], list[ToolCall]]:
-    details: dict[str, int | str | None] = {
+def _read_rollout(path: Path) -> tuple[dict[str, Any], list[FileEdit], list[ToolCall]]:
+    details: dict[str, Any] = {
         "request_count": 0,
         "input_tokens": None,
         "output_tokens": None,
@@ -166,6 +168,8 @@ def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdi
         "total_tokens_from_rollout": None,
         "started_at": None,
         "abandoned_turns": 0,
+        "peak_context_tokens": None,
+        "compaction_events": [],
     }
     edits: list[FileEdit] = []
     if not path.exists():
@@ -175,6 +179,7 @@ def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdi
     # because a rollout writes the call before its result.
     pending_calls: list[dict] = []
     call_outputs: dict[str, object] = {}
+    last_context_tokens: int | None = None
 
     with path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
@@ -228,6 +233,28 @@ def _read_rollout(path: Path) -> tuple[dict[str, int | str | None], list[FileEdi
                     details["cached_input_tokens"] = total_usage.get("cached_input_tokens")
                     details["reasoning_output_tokens"] = total_usage.get("reasoning_output_tokens")
                     details["total_tokens_from_rollout"] = total_usage.get("total_tokens")
+                last_usage = info.get("last_token_usage") or {}
+                context_tokens = _as_optional_int(last_usage.get("input_tokens"))
+                if context_tokens and context_tokens > 0:
+                    last_context_tokens = context_tokens
+                    peak = details["peak_context_tokens"]
+                    if not isinstance(peak, int) or context_tokens > peak:
+                        details["peak_context_tokens"] = context_tokens
+                    compaction_events = details["compaction_events"]
+                    if compaction_events and compaction_events[-1].post_tokens is None:
+                        compaction_events[-1] = CompactionEvent(
+                            after_call=compaction_events[-1].after_call,
+                            pre_tokens=compaction_events[-1].pre_tokens,
+                            post_tokens=context_tokens,
+                            trigger=compaction_events[-1].trigger,
+                        )
+            elif payload_type == "context_compacted":
+                details["compaction_events"].append(
+                    CompactionEvent(
+                        after_call=len(pending_calls),
+                        pre_tokens=last_context_tokens,
+                    )
+                )
 
     return details, edits, _resolve_tool_calls(pending_calls, call_outputs)
 
@@ -542,6 +569,8 @@ def get_session_details(paths: Paths, session: SessionRecord) -> SessionDetails:
         token_accounting=CACHED_WITHIN_INPUT,
         tool_calls=tuple(tool_calls),
         abandoned_turns=int(rollout_details["abandoned_turns"] or 0),
+        compaction_events=tuple(rollout_details["compaction_events"]),
+        peak_context_tokens=_as_optional_int(rollout_details["peak_context_tokens"]),
     )
 
 

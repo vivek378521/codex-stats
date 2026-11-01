@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-11-01
+
+### Added
+
+- **Session outcomes and verification.** A new Outcomes panel classifies
+  sessions as PR created, verified, completed, unresolved errors, or
+  interrupted, and reports how often an edit was followed by a successful
+  test, lint, typecheck, or build. Outcome counts and the verification rate
+  render as a bar chart plus KPIs.
+- **Context hygiene.** A new panel reports compaction count and rate, peak
+  context tokens, average context before and after compaction, and files
+  re-read after a compaction that had been read before it. Codex, Claude Code,
+  and DeepSeek Harness now capture their compaction boundaries; Codex and
+  Claude Code also capture peak context occupancy.
+- **MCP, skill, and subagent breakdown.** Tool behavior now attributes calls to
+  MCP servers (`mcp__<server>__<tool>`), skill names, and subagent types, with
+  per-capability calls, failures, and session counts.
+- **Waste ledger.** A new estimated-dollar ledger splits spend across retries,
+  abandoned sessions, cold-context premium, duplicate reads, and failed
+  subagents. Every row explains what it measures, and the panel states that
+  tool-level figures are allocated evenly because sources bill per session.
+- **Structured source metadata.** Tool calls now record command verbs,
+  verification and PR-create detection, MCP server, skill, subagent type, and
+  file path from both structured arguments and shell commands.
+
+### Changed
+
+- **Ingest cache format.** The cache version is bumped so cached sessions from
+  older releases are re-read with the new tool and compaction fields.
+
 ## [1.18.0] - 2026-10-26
 
 ### Added

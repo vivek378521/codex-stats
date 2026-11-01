@@ -33,6 +33,7 @@ from .models import (
     TOOL_STATUS_COMPLETED,
     TOOL_STATUS_ERROR,
     TOOL_STATUS_UNKNOWN,
+    CompactionEvent,
     FileEdit,
     SessionDetails,
     SessionRecord,
@@ -265,6 +266,12 @@ def _as_int(value: object) -> int:
     return int(value)
 
 
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _parse_session_file(path: Path) -> SessionDetails | None:
     text = _read_log_text(path)
     if text is None:
@@ -283,6 +290,8 @@ def _parse_session_file(path: Path) -> SessionDetails | None:
     pending_calls: list[dict] = []
     call_results: dict[str, tuple[bool, int | None]] = {}
     edits: list[FileEdit] = []
+    compaction_events: list[CompactionEvent] = []
+    peak_context_tokens: int | None = None
 
     def _add_usage(usage: object) -> None:
         nonlocal input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens
@@ -337,6 +346,17 @@ def _parse_session_file(path: Path) -> SessionDetails | None:
             _add_usage(data.get("usage"))
             if isinstance(data.get("model"), str):
                 model_counter[data["model"]] += 1
+            context_tokens = _optional_int(data.get("contextTokens") or data.get("preTokens"))
+            if context_tokens and (peak_context_tokens is None or context_tokens > peak_context_tokens):
+                peak_context_tokens = context_tokens
+            compaction_events.append(
+                CompactionEvent(
+                    after_call=len(pending_calls),
+                    pre_tokens=_optional_int(data.get("preTokens")),
+                    post_tokens=_optional_int(data.get("postTokens")),
+                    trigger=data.get("trigger") if isinstance(data.get("trigger"), str) else None,
+                )
+            )
         elif event_type == "request/header":
             config = data.get("header", {}).get("config") if isinstance(data.get("header"), dict) else None
             if isinstance(config, dict) and isinstance(config.get("model"), str):
@@ -416,6 +436,8 @@ def _parse_session_file(path: Path) -> SessionDetails | None:
         token_accounting=CACHED_SEPARATE,
         tool_calls=tuple(_dsh_tool_calls(pending_calls, call_results)),
         abandoned_turns=abandoned_turns,
+        compaction_events=tuple(compaction_events),
+        peak_context_tokens=peak_context_tokens,
     )
 
 

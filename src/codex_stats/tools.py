@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shlex
 
 from .models import (
     TOOL_CATEGORY_AGENT,
@@ -157,6 +159,193 @@ _WHITESPACE = re.compile(r"\s+")
 
 _FINGERPRINT_MAX = 400
 
+_COMMAND_KEYS = ("command", "cmd", "script", "shell_command")
+_FILE_KEYS = ("file_path", "filepath", "filePath", "path", "file", "notebook_path", "notebookPath")
+_SKILL_TOOL_NAMES = {"skill", "activateskill", "loadskill", "useskill"}
+_SUBAGENT_TYPE_KEYS = ("subagent_type", "agent_type", "type")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SEGMENT_RE = re.compile(r"&&|\|\||[;|]")
+_QUOTED_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""")
+_VERIFY_RE = re.compile(
+    r"(?:"
+    r"(?:pytest|py\.test|tox|nox|vitest|jest|mypy|ruff|flake8|pylint|tsc|eslint|biome)"
+    r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|check|typecheck)"
+    r"|cargo\s+(?:test|clippy|check)"
+    r"|go\s+(?:test|vet)"
+    r"|make\s+(?:test|check)"
+    r"|just\s+test"
+    r"|python(?:3)?\s+-m\s+(?:pytest|unittest|mypy)"
+    r")\b"
+)
+_PREFIX_LAUNCHERS = {"sudo", "env", "command", "time", "nohup", "exec"}
+_EXEC_LAUNCHERS = {"npx", "bunx", "pnpx"}
+_RUN_LAUNCHERS = {"uv", "poetry", "pipenv", "pdm", "hatch", "rye", "bundle"}
+_PYTHON_NAMES = {"python", "python3", "py"}
+_SHELL_READ_VERBS = {"cat", "bat", "head", "tail", "sed", "less", "more", "wc", "nl", "jq"}
+_PATCH_FILE_RE = re.compile(
+    r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _arguments_dict(arguments: object) -> dict:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip().startswith(("{", "[")):
+        try:
+            parsed = json.loads(arguments)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _argument_text(arguments: object) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    return ""
+
+
+def _command_text(arguments: object) -> str | None:
+    args = _arguments_dict(arguments)
+    for key in _COMMAND_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    if not args:
+        text = _argument_text(arguments).strip()
+        if text and not text.startswith(("{", "[", "*** Begin Patch", "*** Add File", "*** Update File")):
+            return text
+    return None
+
+
+def _command_words(segment: str) -> list[str]:
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        words = segment.split()
+    while words:
+        head = os.path.basename(words[0].strip("\"'"))
+        if _ENV_ASSIGN_RE.fullmatch(words[0]):
+            words = words[1:]
+            continue
+        if head in _PREFIX_LAUNCHERS:
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[1:]
+            continue
+        if head in _EXEC_LAUNCHERS:
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[1:]
+            continue
+        if head in _RUN_LAUNCHERS and len(words) > 1 and words[1] in ("run", "exec"):
+            words = words[2:]
+            while words and words[0].startswith("-"):
+                words = words[1:]
+            continue
+        if head in _PYTHON_NAMES and len(words) > 1 and words[1] == "-m":
+            words = words[2:]
+            continue
+        break
+    return words
+
+
+def _command_segments(command: str) -> list[list[str]]:
+    cleaned = _QUOTED_RE.sub(" ", command)
+    return [_command_words(segment) for segment in _SEGMENT_RE.split(cleaned)]
+
+
+def command_verb(command: str | None) -> str | None:
+    if not command:
+        return None
+    for words in _command_segments(command):
+        if words:
+            return os.path.basename(words[0].strip("\"'"))
+    return None
+
+
+def is_verification_command(command: str | None) -> bool:
+    if not command:
+        return False
+    for words in _command_segments(command):
+        if not words:
+            continue
+        text = " ".join([os.path.basename(words[0]), *words[1:]])
+        if _VERIFY_RE.match(text):
+            return True
+    return False
+
+
+def is_pr_create_command(command: str | None) -> bool:
+    if not command:
+        return False
+    for words in _command_segments(command):
+        if len(words) < 3:
+            continue
+        verb = os.path.basename(words[0]).lower()
+        if verb in ("gh", "glab") and words[1] in ("pr", "mr") and words[2] == "create":
+            return True
+    return False
+
+
+def mcp_server_from_name(raw_name: object) -> str | None:
+    if not isinstance(raw_name, str):
+        return None
+    parts = [part for part in raw_name.strip().split("__") if part]
+    if len(parts) >= 3 and parts[0].lower() == "mcp":
+        return parts[1]
+    return None
+
+
+def _skill_from_arguments(arguments: object) -> str | None:
+    args = _arguments_dict(arguments)
+    for key in ("skill", "command", "name"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lstrip("/")
+    return None
+
+
+def _subagent_type_from_arguments(arguments: object) -> str | None:
+    args = _arguments_dict(arguments)
+    for key in _SUBAGENT_TYPE_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "general"
+
+
+def _shell_read_path(command: str | None) -> str | None:
+    if not command:
+        return None
+    for words in _command_segments(command):
+        if not words:
+            continue
+        verb = os.path.basename(words[0])
+        if verb not in _SHELL_READ_VERBS:
+            continue
+        candidates = [word for word in words[1:] if not word.startswith("-")]
+        if candidates:
+            return candidates[-1].strip("\"'")
+    return None
+
+
+def file_path_from_call(raw_name: object, arguments: object, category: str) -> str | None:
+    args = _arguments_dict(arguments)
+    for key in _FILE_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    text = _argument_text(arguments)
+    if category == TOOL_CATEGORY_EDIT and text:
+        match = _PATCH_FILE_RE.search(text)
+        if match:
+            return match.group(1).strip()
+    if category in (TOOL_CATEGORY_READ, TOOL_CATEGORY_EXEC):
+        return _shell_read_path(_command_text(arguments))
+    return None
+
 
 def normalize_tool_name(raw: object) -> str:
     """Reduce a tool name to a comparable stem.
@@ -264,12 +453,22 @@ def make_tool_call(
     status: str = TOOL_STATUS_COMPLETED,
     duration_ms: int | None = None,
 ) -> ToolCall:
+    category = tool_category(raw_name)
+    command = _command_text(arguments) if category == TOOL_CATEGORY_EXEC else None
+    normalized = normalize_tool_name(raw_name)
     return ToolCall(
         name=str(raw_name) if isinstance(raw_name, str) else "unknown",
-        category=tool_category(raw_name),
+        category=category,
         fingerprint=tool_fingerprint(raw_name, arguments),
         status=status,
         duration_ms=duration_ms,
+        verb=command_verb(command),
+        is_verification=is_verification_command(command),
+        is_pr_create=is_pr_create_command(command),
+        mcp_server=mcp_server_from_name(raw_name),
+        skill=_skill_from_arguments(arguments) if normalized in _SKILL_TOOL_NAMES else None,
+        subagent_type=_subagent_type_from_arguments(arguments) if category == TOOL_CATEGORY_AGENT else None,
+        file_path=file_path_from_call(raw_name, arguments, category),
     )
 
 
@@ -340,7 +539,12 @@ def coalesce_output_text(output: object) -> str:
 
 __all__ = [
     "coalesce_output_text",
+    "command_verb",
+    "file_path_from_call",
+    "is_pr_create_command",
+    "is_verification_command",
     "make_tool_call",
+    "mcp_server_from_name",
     "normalize_tool_name",
     "output_looks_failed",
     "tool_category",

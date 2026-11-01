@@ -2043,6 +2043,14 @@ def _format_dashboard_window_section(
 
         {_format_behavior_panel(window)}
 
+        {_format_capabilities_panel(window)}
+
+        {_format_outcomes_panel(window)}
+
+        {_format_context_panel(window)}
+
+        {_format_waste_panel(window)}
+
         {_render_leaks_panel(window)}
 
         {_render_runway_panel(window)}
@@ -2537,6 +2545,220 @@ def _format_behavior_panel(window: DashboardWindow) -> str:
             </div>
           </div>
           <p class="panel-hint">{escape(_format_behavior_note(behavior))}</p>
+        </section>
+        """
+
+
+def _format_capability_table(title: str, entries, empty: str) -> str:
+    if not entries:
+        return (
+            f'<div class="chart-card"><h3>{escape(title)}</h3>'
+            f'<p class="panel-hint">{escape(empty)}</p></div>'
+        )
+    rows = "".join(
+        f"<tr><td>{escape(entry.name)}</td><td>{entry.calls:,}</td>"
+        f"<td>{entry.errors:,}</td><td>{entry.sessions:,}</td></tr>"
+        for entry in entries[:10]
+    )
+    return f"""
+    <div class="chart-card">
+      <h3>{escape(title)}</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Calls</th><th>Failed</th><th>Sessions</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+
+
+def _format_capabilities_panel(window: DashboardWindow) -> str:
+    behavior = window.behavior
+    if behavior is None or not (
+        behavior.mcp_servers or behavior.skills or behavior.subagent_types
+    ):
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">How Work Was Delegated</p>
+              <h2>MCP, Skills &amp; Subagents</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No MCP, skill, or subagent calls in this view.", "These calls are recognized from MCP tool prefixes, Skill tool arguments, and Agent/Task subagent types. A source that records only shell and file tools legitimately has none.")}
+        </section>
+        """
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">How Work Was Delegated</p>
+              <h2>MCP, Skills &amp; Subagents</h2>
+            </div>
+          </div>
+          <div class="chart-grid">
+            {_format_capability_table("MCP servers", behavior.mcp_servers, "No MCP calls recorded.")}
+            {_format_capability_table("Skills", behavior.skills, "No skill calls recorded.")}
+            {_format_capability_table("Subagent types", behavior.subagent_types, "No subagent calls recorded.")}
+          </div>
+          <p class="panel-hint">Calls are attributed by MCP server prefix, Skill name, and Agent/Task subagent type. Sources that do not record the underlying arguments cannot populate these lists.</p>
+        </section>
+        """
+
+
+def _format_outcomes_panel(window: DashboardWindow) -> str:
+    outcomes = window.outcomes
+    if outcomes is None or not outcomes.supported:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">How Sessions Ended</p>
+              <h2>Outcomes &amp; Verification</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No session outcomes for this view.", "Outcomes are classified from ordered tool calls and interrupted turns. A scope with no tool-call data cannot distinguish a completed session from a quiet one.")}
+        </section>
+        """
+    outcome_svg = _svg_bar_chart(
+        [(label, float(value)) for label, value in outcomes.counts()],
+        bar_color="#0f766e",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No classified outcomes for this view.",
+    )
+    unclassified = (
+        f"<p class=\"panel-hint\">{outcomes.unclassified_sessions:,} sessions had no tool-call signal and were left unclassified.</p>"
+        if outcomes.unclassified_sessions
+        else ""
+    )
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">How Sessions Ended</p>
+              <h2>Outcomes &amp; Verification</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>{outcomes.classified_sessions:,}</strong><span>Classified sessions</span></div>
+              <div class="spotlight-kpi"><strong>{escape(_fmt_percent(outcomes.verification_rate))}</strong><span>Verified after edit</span></div>
+              <div class="spotlight-kpi"><strong>{outcomes.verified_after_edit:,}</strong><span>Verified sessions</span></div>
+            </div>
+          </div>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Outcome Mix</h3>
+              {outcome_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Verification</h3>
+              <div class="kpi-grid">
+                <div class="kpi"><strong>{outcomes.edited_sessions:,}</strong><span>Sessions with edits</span></div>
+                <div class="kpi"><strong>{outcomes.verified_after_edit:,}</strong><span>Verify after last edit</span></div>
+                <div class="kpi"><strong>{outcomes.pr_created:,}</strong><span>PRs created</span></div>
+                <div class="kpi"><strong>{outcomes.unresolved_errors:,}</strong><span>Unresolved errors</span></div>
+              </div>
+            </div>
+          </div>
+          {unclassified}
+          <p class="panel-hint">A session is verified only when a successful test, lint, typecheck, or build call lands after its final edit. PR creation is detected from gh/glab create commands.</p>
+        </section>
+        """
+
+
+def _format_context_panel(window: DashboardWindow) -> str:
+    context = window.context_hygiene
+    if context is None or not context.supported:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Context Pressure</p>
+              <h2>Context Hygiene</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No context measurements for this view.", "Compaction boundaries and peak context are read from Codex token events, Claude Code compact boundaries, and DeepSeek Harness compaction summaries. Sources without either cannot report this panel.")}
+        </section>
+        """
+    peak = f"{context.peak_context_tokens:,}" if context.peak_context_tokens else "n/a"
+    first = f"First {context.average_pre_tokens:,.0f}" if context.average_pre_tokens is not None else "First n/a"
+    after = f"After {context.average_post_tokens:,.0f}" if context.average_post_tokens is not None else "After n/a"
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Context Pressure</p>
+              <h2>Context Hygiene</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>{context.compactions:,}</strong><span>Compactions</span></div>
+              <div class="spotlight-kpi"><strong>{escape(_fmt_percent(context.compaction_rate))}</strong><span>Sessions compacting</span></div>
+              <div class="spotlight-kpi"><strong>{peak}</strong><span>Peak context</span></div>
+            </div>
+          </div>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Compaction</h3>
+              <div class="kpi-grid">
+                <div class="kpi"><strong>{context.sessions_with_compaction:,}</strong><span>Sessions with compaction</span></div>
+                <div class="kpi"><strong>{context.compactions:,}</strong><span>Total compactions</span></div>
+                <div class="kpi"><strong>{escape(first)}</strong><span>Average before</span></div>
+                <div class="kpi"><strong>{escape(after)}</strong><span>Average after</span></div>
+              </div>
+            </div>
+            <div class="chart-card">
+              <h3>Re-reads After Compaction</h3>
+              <div class="kpi-grid">
+                <div class="kpi"><strong>{context.rereads_after_compaction:,}</strong><span>Files re-read</span></div>
+                <div class="kpi"><strong>{context.reads:,}</strong><span>Tracked reads</span></div>
+                <div class="kpi"><strong>{escape(_fmt_percent(context.reread_rate))}</strong><span>Re-read rate</span></div>
+              </div>
+            </div>
+          </div>
+          <p class="panel-hint">A re-read is a file read again after a compaction that had been read before it, with no edit in between. Sandbox recovery and ordinary duplicate reads are not counted here.</p>
+        </section>
+        """
+
+
+def _format_waste_panel(window: DashboardWindow) -> str:
+    waste = window.waste
+    if waste is None or waste.total_cost_usd <= 0:
+        return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What Bought Nothing</p>
+              <h2>Waste Ledger</h2>
+            </div>
+          </div>
+          {_format_empty_showcase("No priced sessions for this view.", "The ledger needs estimated or recorded session cost. A scope with no priced sessions cannot turn waste counts into dollars.")}
+        </section>
+        """
+    rows = "".join(
+        f"<tr><td>{escape(entry.label)}</td><td>{entry.amount:,}</td>"
+        f"<td>${entry.cost_usd:,.2f}</td><td>{escape(entry.detail)}</td></tr>"
+        for entry in waste.entries
+    )
+    return f"""
+        <section class="panel">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">What Bought Nothing</p>
+              <h2>Waste Ledger</h2>
+            </div>
+            <div class="spotlight-kpis">
+              <div class="spotlight-kpi"><strong>${waste.waste_cost_usd:,.2f}</strong><span>Estimated waste</span></div>
+              <div class="spotlight-kpi"><strong>{escape(_fmt_percent(waste.waste_rate))}</strong><span>Of spend</span></div>
+              <div class="spotlight-kpi"><strong>${waste.total_cost_usd:,.2f}</strong><span>Total spend</span></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Bucket</th><th>Count / tokens</th><th>Cost</th><th>What it measures</th></tr></thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+          <p class="panel-hint">Estimates only. Tool-level buckets allocate each session's cost evenly across its calls because the sources bill per session, not per call. Cold-context premium is priced from fresh input tokens against the cached-read rate. Buckets are measured independently and may overlap; the total is capped at spend.</p>
         </section>
         """
 

@@ -19,6 +19,10 @@ It reads local session data from every coding assistant installed on the machine
 - file-level impact tracking: a "Most Edited Files in This Project" table inside each project drilldown, showing per-file edit counts and add/delete line totals parsed from Codex, Claude Code, and DeepSeek Harness rollouts
 - regression detection vs last run, leaks (top offenders), runway/burn rate, and efficiency trends
 - **tool behavior tracking**: a "Tool Behavior" panel showing the tools each agent actually called — normalized into shared categories (Read, Edit, Execute, Search, Web, Subagent, Plan), with per-tool failure rates, repeated-call detection, read/write ratio, and abandoned-turn counts, across every tool with recorded calls
+- **session outcomes**: an "Outcomes & Verification" panel classifying sessions as PR created, verified, completed, unresolved errors, or interrupted, and measuring how often edits were followed by a successful test, lint, typecheck, or build
+- **context hygiene**: a "Context Hygiene" panel reporting compaction count and rate, peak context tokens, before/after compaction sizes, and files re-read after context was compacted
+- **MCP, skill, and subagent attribution**: calls grouped by MCP server, skill name, and subagent type, with calls, failures, and session counts for each
+- **waste ledger**: estimated dollars split across retries, abandoned sessions, cold-context premium, duplicate reads, and failed subagents, with every estimate labelled
 - shareable JPG cards and browser PDF export from the dashboard
 
 ## Data Sources
@@ -190,6 +194,17 @@ exits on its own once the window passes without a submission.
   separately, because a branch that consumed tokens and then stopped is work that was paid
   for and never finished — invisible in a project-level view, where every branch of a
   repository collapses into one number.
+- **Outcomes are conservative.** A session is "verified" only when a successful test,
+  lint, typecheck, or build lands after its final edit. PR creation is detected from an
+  actual `gh pr create` or `glab mr create` command. Sessions with no tool-call signal are
+  left unclassified instead of being guessed as completed.
+- **Waste is an estimate, not an invoice.** Sources bill per session, not per call, so
+  tool-level waste buckets allocate session cost evenly across its calls. The cold-context
+  premium is priced from fresh input tokens against the cached-read rate. Buckets may
+  overlap and the total is capped at spend.
+- **Context hygiene needs a compaction marker.** Codex, Claude Code, and DeepSeek Harness
+  report compaction boundaries; OpenCode and Hermes do not, so their sessions show no
+  compaction or peak-context figures rather than a fabricated zero.
 - **Vendors are resolved from the model name, not the recorded provider.** Codex and
   DeepSeek Harness record the real vendor (`openai` and `deepseek`), but OpenCode and
   Hermes record their own CLI name there instead,

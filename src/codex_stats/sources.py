@@ -33,6 +33,7 @@ from .models import (
     TOOL_STATUS_COMPLETED,
     TOOL_STATUS_ERROR,
     TOOL_STATUS_UNKNOWN,
+    CompactionEvent,
     FileEdit,
     SessionDetails,
     SessionRecord,
@@ -247,6 +248,15 @@ def _connect_sqlite(path: Path) -> sqlite3.Connection:
 
 def _as_int(value) -> int:
     return int(value or 0)
+
+
+def _as_optional_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_float(value) -> float | None:
@@ -654,6 +664,8 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
     call_results: dict[str, bool] = {}
     call_times: dict[str, datetime] = {}
     result_times: dict[str, datetime] = {}
+    compaction_events: list[CompactionEvent] = []
+    peak_context_tokens: int | None = None
     with path.open("r", encoding="utf-8", errors="ignore") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -680,6 +692,17 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
                 if branch:
                     branch_counter[branch] += 1
             event_type = event.get("type")
+            if event_type == "system" and event.get("subtype") == "compact_boundary":
+                metadata = event.get("compactMetadata")
+                metadata = metadata if isinstance(metadata, dict) else {}
+                compaction_events.append(
+                    CompactionEvent(
+                        after_call=len(pending_calls),
+                        pre_tokens=_as_optional_int(metadata.get("preTokens")),
+                        post_tokens=_as_optional_int(metadata.get("postTokens")),
+                        trigger=metadata.get("trigger") if isinstance(metadata.get("trigger"), str) else None,
+                    )
+                )
             if event_type == "user" and _is_user_request(event):
                 user_count += 1
             message = event.get("message")
@@ -691,6 +714,13 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
                 output_tokens += _as_int(usage.get("output_tokens"))
                 cache_read_tokens += _as_int(usage.get("cache_read_input_tokens"))
                 cache_write_tokens += _as_int(usage.get("cache_creation_input_tokens"))
+                context_tokens = (
+                    _as_int(usage.get("input_tokens"))
+                    + _as_int(usage.get("cache_read_input_tokens"))
+                    + _as_int(usage.get("cache_creation_input_tokens"))
+                )
+                if context_tokens > 0 and (peak_context_tokens is None or context_tokens > peak_context_tokens):
+                    peak_context_tokens = context_tokens
             if event_type == "assistant" and isinstance(message.get("model"), str):
                 model_counter[message["model"]] += 1
             content = message.get("content")
@@ -754,6 +784,8 @@ def _parse_claude_session(path: Path) -> SessionDetails | None:
         file_edits=tuple(edits),
         token_accounting=CACHED_SEPARATE,
         tool_calls=tuple(_claude_tool_calls(pending_calls, call_results, call_times, result_times)),
+        compaction_events=tuple(compaction_events),
+        peak_context_tokens=peak_context_tokens,
     )
 
 

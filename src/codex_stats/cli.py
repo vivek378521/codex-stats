@@ -31,6 +31,7 @@ from .metrics import (
     summarize_behavior_from_details,
     summarize_branches_from_details,
     summarize_compare_from_details,
+    summarize_context_hygiene_from_details,
     summarize_costs_from_details,
     summarize_daily_from_details,
     summarize_details,
@@ -41,6 +42,7 @@ from .metrics import (
     summarize_history_from_details,
     summarize_insights_from_details,
     summarize_leaks,
+    summarize_outcomes_from_details,
     summarize_project_drilldowns_from_details,
     summarize_projects_from_details,
     summarize_providers_from_details,
@@ -51,6 +53,7 @@ from .metrics import (
     summarize_takeaways,
     summarize_tool_efficiency_from_details,
     summarize_top_sessions_from_details,
+    summarize_waste_from_details,
     summarize_work_rhythm,
 )
 from .models import (
@@ -606,6 +609,9 @@ def _build_window(
     file_impact = summarize_files_from_details(current_details, limit=10)
     behavior = summarize_behavior_from_details(current_details)
     efficiency = summarize_efficiency_from_details(current_details, pricing=pricing)
+    outcomes = summarize_outcomes_from_details(current_details)
+    context_hygiene = summarize_context_hygiene_from_details(current_details)
+    waste = summarize_waste_from_details(current_details, pricing=pricing)
     branches = summarize_branches_from_details(
         current_details,
         pricing=pricing,
@@ -679,6 +685,9 @@ def _build_window(
             now=now,
         ),
         efficiency_trend=summarize_efficiency_trend(current_details, pricing=pricing, now=now),
+        outcomes=outcomes,
+        context_hygiene=context_hygiene,
+        waste=waste,
     )
 
 
@@ -722,6 +731,9 @@ def _build_all_time_window(
     file_impact = summarize_files_from_details(all_details, limit=10)
     behavior = summarize_behavior_from_details(all_details)
     efficiency = summarize_efficiency_from_details(all_details, pricing=pricing)
+    outcomes = summarize_outcomes_from_details(all_details)
+    context_hygiene = summarize_context_hygiene_from_details(all_details)
+    waste = summarize_waste_from_details(all_details, pricing=pricing)
     branches = summarize_branches_from_details(
         all_details,
         pricing=pricing,
@@ -795,6 +807,9 @@ def _build_all_time_window(
             now=now,
         ),
         efficiency_trend=summarize_efficiency_trend(all_details, pricing=pricing, now=now),
+        outcomes=outcomes,
+        context_hygiene=context_hygiene,
+        waste=waste,
     )
 
 

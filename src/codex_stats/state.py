@@ -12,7 +12,7 @@ from typing import Any
 
 STATE_FILENAME = "last_snapshot.json"
 INGEST_CACHE_FILENAME = "ingest_cache.pkl"
-INGEST_CACHE_VERSION = 1
+INGEST_CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)

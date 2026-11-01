@@ -17,8 +17,10 @@ from .models import (
     BranchActivity,
     BranchSummary,
     BreakdownEntry,
+    CapabilityEntry,
     ChurnEntry,
     CompareReport,
+    ContextHygieneSummary,
     CostSummary,
     DailyPoint,
     DashboardBadge,
@@ -31,6 +33,7 @@ from .models import (
     InsightReport,
     LeakEntry,
     LeakSummary,
+    OutcomeSummary,
     ProjectDrilldown,
     RegressionDiff,
     RunwayInfo,
@@ -44,6 +47,8 @@ from .models import (
     ToolEfficiency,
     ToolUsageEntry,
     TopEntry,
+    WasteEntry,
+    WasteSummary,
     WorkRhythm,
 )
 from .sources import FILE_EDIT_TRACKING_SOURCES, source_label
@@ -1190,6 +1195,303 @@ def summarize_tool_efficiency_from_details(
     return entries
 
 
+def _has_verification_after_last_edit(detail: SessionDetails) -> bool:
+    last_edit = -1
+    last_verify = -1
+    for index, call in enumerate(detail.tool_calls):
+        if call.category == TOOL_CATEGORY_EDIT:
+            last_edit = index
+        elif call.is_verification and not call.is_error:
+            last_verify = index
+    return last_edit >= 0 and last_verify > last_edit
+
+
+def _session_outcome(detail: SessionDetails) -> str | None:
+    calls = detail.tool_calls
+    if not calls:
+        return None
+    if any(call.is_pr_create and not call.is_error for call in calls):
+        return "pr_created"
+    if detail.abandoned_turns > 0:
+        return "interrupted"
+    if _has_verification_after_last_edit(detail):
+        return "verified"
+    tail = calls[-12:]
+    if sum(1 for call in tail if call.is_error) >= 2:
+        return "unresolved_errors"
+    return "completed"
+
+
+def summarize_outcomes_from_details(details: list[SessionDetails]) -> OutcomeSummary:
+    """Classify how sessions ended from their ordered calls and turn signals.
+
+    The vocabulary is deliberately conservative: ``blocked`` and ``incomplete``
+    need error classes or final-reply text that the local sources do not expose,
+    so sessions fall back to ``completed`` rather than being guessed into a
+    stronger claim.
+    """
+    counts = {
+        "pr_created": 0,
+        "verified": 0,
+        "completed": 0,
+        "unresolved_errors": 0,
+        "interrupted": 0,
+    }
+    edited_sessions = 0
+    verified_after_edit = 0
+    classified = 0
+    supported = False
+    for detail in details:
+        if detail.tool_calls or detail.abandoned_turns:
+            supported = True
+        outcome = _session_outcome(detail)
+        if outcome is not None:
+            counts[outcome] += 1
+            classified += 1
+        if any(call.category == TOOL_CATEGORY_EDIT for call in detail.tool_calls):
+            edited_sessions += 1
+            if _has_verification_after_last_edit(detail):
+                verified_after_edit += 1
+    return OutcomeSummary(
+        total_sessions=len(details),
+        classified_sessions=classified,
+        pr_created=counts["pr_created"],
+        verified=counts["verified"],
+        completed=counts["completed"],
+        unresolved_errors=counts["unresolved_errors"],
+        interrupted=counts["interrupted"],
+        edited_sessions=edited_sessions,
+        verified_after_edit=verified_after_edit,
+        supported=supported,
+    )
+
+
+def _rereads_after_compaction(detail: SessionDetails) -> tuple[int, int]:
+    positions = {event.after_call for event in detail.compaction_events}
+    read_before: set[str] = set()
+    compacted = False
+    rereads = 0
+    reads = 0
+    for index, call in enumerate(detail.tool_calls):
+        if index in positions:
+            compacted = True
+        path = call.file_path
+        if not path:
+            continue
+        if call.is_file_edit:
+            read_before.discard(path)
+        elif call.is_file_read:
+            reads += 1
+            if compacted and path in read_before:
+                rereads += 1
+                read_before.discard(path)
+            else:
+                read_before.add(path)
+    return rereads, reads
+
+
+def summarize_context_hygiene_from_details(details: list[SessionDetails]) -> ContextHygieneSummary:
+    sessions_with_compaction = 0
+    compactions = 0
+    peak_context_tokens: int | None = None
+    pre_tokens_total = 0
+    post_tokens_total = 0
+    rereads_after_compaction = 0
+    reads = 0
+    supported = False
+    for detail in details:
+        if detail.compaction_events:
+            sessions_with_compaction += 1
+        if detail.compaction_events or detail.peak_context_tokens:
+            supported = True
+        compactions += len(detail.compaction_events)
+        for event in detail.compaction_events:
+            pre_tokens_total += event.pre_tokens or 0
+            post_tokens_total += event.post_tokens or 0
+        if detail.peak_context_tokens and (
+            peak_context_tokens is None or detail.peak_context_tokens > peak_context_tokens
+        ):
+            peak_context_tokens = detail.peak_context_tokens
+        rereads, session_reads = _rereads_after_compaction(detail)
+        rereads_after_compaction += rereads
+        reads += session_reads
+    return ContextHygieneSummary(
+        sessions=len(details),
+        sessions_with_compaction=sessions_with_compaction,
+        compactions=compactions,
+        peak_context_tokens=peak_context_tokens,
+        pre_tokens_total=pre_tokens_total,
+        post_tokens_total=post_tokens_total,
+        rereads_after_compaction=rereads_after_compaction,
+        reads=reads,
+        supported=supported,
+    )
+
+
+def _retry_failure_count(calls) -> int:
+    count = 0
+    for index, call in enumerate(calls):
+        if not call.is_error:
+            continue
+        for later in calls[index + 1 : index + 4]:
+            if later.fingerprint == call.fingerprint:
+                count += 1
+                break
+    return count
+
+
+def _duplicate_read_count(calls) -> int:
+    read_paths: set[str] = set()
+    count = 0
+    for call in calls:
+        path = call.file_path
+        if not path:
+            continue
+        if call.is_file_edit:
+            read_paths.discard(path)
+        elif call.is_file_read:
+            if path in read_paths:
+                count += 1
+            read_paths.add(path)
+    return count
+
+
+def summarize_waste_from_details(
+    details: list[SessionDetails],
+    pricing: PricingConfig | None = None,
+) -> WasteSummary:
+    """Estimate dollars spent on retries, abandonment, cold context, and re-reads.
+
+    The sources record session totals, not per-request bills, so tool-level
+    buckets allocate each session's cost evenly across its calls. The cache-miss
+    figure is different: it is priced directly from fresh input tokens at the
+    difference between the input and cached-read rate. Every figure is an
+    estimate and the panel says so.
+    """
+    pricing = pricing or PricingConfig()
+    total_cost = round(sum(estimate_detail_cost(detail, pricing) for detail in details), 4)
+    retry_cost = 0.0
+    abandoned_cost = 0.0
+    cache_miss_cost = 0.0
+    reread_cost = 0.0
+    dead_subagent_cost = 0.0
+    retry_calls = 0
+    abandoned_sessions = 0
+    cache_miss_tokens = 0
+    reread_calls = 0
+    dead_subagent_calls = 0
+    for detail in details:
+        calls = detail.tool_calls
+        cost = estimate_detail_cost(detail, pricing)
+        share = cost / len(calls) if calls else 0.0
+        retries = _retry_failure_count(calls)
+        retry_calls += retries
+        retry_cost += retries * share
+        outcome = _session_outcome(detail)
+        if outcome == "unresolved_errors":
+            abandoned_sessions += 1
+            abandoned_cost += cost
+        rereads = _duplicate_read_count(calls)
+        reread_calls += rereads
+        reread_cost += rereads * share
+        failed_subagents = sum(
+            1 for call in calls if call.subagent_type and call.is_error
+        )
+        dead_subagent_calls += failed_subagents
+        dead_subagent_cost += failed_subagents * share
+        if detail.request_count > 1:
+            rates, _ = pricing.rates_for(detail.session.source, detail.session.model)
+            fresh = detail.fresh_input_tokens()
+            marginal_fresh = int(fresh * (detail.request_count - 1) / detail.request_count)
+            premium = max(rates.input_usd_per_1k - rates.cached_read_usd_per_1k, 0.0)
+            if marginal_fresh > 0 and premium > 0:
+                cache_miss_tokens += marginal_fresh
+                cache_miss_cost += marginal_fresh * premium / 1000.0
+    entries = [
+        WasteEntry(
+            bucket="retry",
+            label="Retries after failure",
+            cost_usd=round(retry_cost, 4),
+            amount=retry_calls,
+            detail="Failed calls repeated with the same operation.",
+        ),
+        WasteEntry(
+            bucket="abandoned",
+            label="Abandoned sessions",
+            cost_usd=round(abandoned_cost, 4),
+            amount=abandoned_sessions,
+            detail="Sessions that ended with unresolved tool errors.",
+        ),
+        WasteEntry(
+            bucket="cache_miss",
+            label="Cold-context premium",
+            cost_usd=round(cache_miss_cost, 4),
+            amount=cache_miss_tokens,
+            detail="Fresh input that a warm cache would have read more cheaply.",
+        ),
+        WasteEntry(
+            bucket="reread",
+            label="Duplicate reads",
+            cost_usd=round(reread_cost, 4),
+            amount=reread_calls,
+            detail="Files read again with no edit in between.",
+        ),
+        WasteEntry(
+            bucket="dead_subagent",
+            label="Failed subagents",
+            cost_usd=round(dead_subagent_cost, 4),
+            amount=dead_subagent_calls,
+            detail="Subagent calls that returned an error.",
+        ),
+    ]
+    raw_total = sum(entry.cost_usd for entry in entries)
+    if raw_total > total_cost and raw_total > 0:
+        scale = total_cost / raw_total
+        entries = [
+            WasteEntry(
+                bucket=entry.bucket,
+                label=entry.label,
+                cost_usd=round(entry.cost_usd * scale, 4),
+                amount=entry.amount,
+                detail=entry.detail,
+            )
+            for entry in entries
+        ]
+        waste_cost = total_cost
+    else:
+        waste_cost = round(raw_total, 4)
+    return WasteSummary(
+        total_cost_usd=total_cost,
+        waste_cost_usd=waste_cost,
+        entries=entries,
+        estimated=True,
+    )
+
+
+def _capability_entries(details: list[SessionDetails], attribute: str, *, limit: int = 10) -> list[CapabilityEntry]:
+    calls: Counter[str] = Counter()
+    errors: Counter[str] = Counter()
+    sessions: dict[str, set[str]] = defaultdict(set)
+    for detail in details:
+        for call in detail.tool_calls:
+            name = getattr(call, attribute, None)
+            if not name:
+                continue
+            calls[name] += 1
+            sessions[name].add(detail.session.session_id)
+            if call.is_error:
+                errors[name] += 1
+    return [
+        CapabilityEntry(
+            name=name,
+            calls=count,
+            errors=errors[name],
+            sessions=len(sessions[name]),
+        )
+        for name, count in calls.most_common(max(limit, 0))
+    ]
+
+
 def summarize_behavior_from_details(
     details: list[SessionDetails],
     *,
@@ -1300,6 +1602,9 @@ def summarize_behavior_from_details(
         total_duration_ms=total_duration_ms,
         timed_calls=timed_calls,
         recovered_errors=recovered_errors,
+        mcp_servers=_capability_entries(details, "mcp_server"),
+        skills=_capability_entries(details, "skill"),
+        subagent_types=_capability_entries(details, "subagent_type"),
     )
 
 

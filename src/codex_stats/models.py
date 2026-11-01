@@ -150,10 +150,30 @@ class ToolCall:
     fingerprint: str
     status: str = TOOL_STATUS_UNKNOWN
     duration_ms: int | None = None
+    verb: str | None = None
+    is_verification: bool = False
+    is_pr_create: bool = False
+    mcp_server: str | None = None
+    skill: str | None = None
+    subagent_type: str | None = None
+    file_path: str | None = None
 
     @property
     def is_error(self) -> bool:
         return self.status == TOOL_STATUS_ERROR
+
+    @property
+    def is_file_read(self) -> bool:
+        if not self.file_path:
+            return False
+        return self.category == TOOL_CATEGORY_READ or (
+            self.category == TOOL_CATEGORY_EXEC
+            and self.verb in {"cat", "bat", "head", "tail", "sed", "less", "more", "wc", "nl", "jq"}
+        )
+
+    @property
+    def is_file_edit(self) -> bool:
+        return self.category == TOOL_CATEGORY_EDIT and bool(self.file_path)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,7 +182,32 @@ class ToolCall:
             "fingerprint": self.fingerprint,
             "status": self.status,
             "duration_ms": self.duration_ms,
+            "verb": self.verb,
+            "is_verification": self.is_verification,
+            "is_pr_create": self.is_pr_create,
+            "mcp_server": self.mcp_server,
+            "skill": self.skill,
+            "subagent_type": self.subagent_type,
+            "file_path": self.file_path,
         }
+
+
+@dataclass(frozen=True)
+class CompactionEvent:
+    """One context compaction, positioned after ``after_call`` tool calls.
+
+    ``after_call`` is an index into the session's ordered ``tool_calls`` tuple.
+    It lets context hygiene distinguish a file that was re-read because the
+    summary dropped it from an ordinary duplicate read.
+    """
+
+    after_call: int
+    pre_tokens: int | None = None
+    post_tokens: int | None = None
+    trigger: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -190,6 +235,8 @@ class SessionDetails:
     # database has non-zero figures, so sources that report nothing stay "not
     # recorded" instead of being read as "no files touched".
     opencode_summary: tuple[int, int, int, int] | None = None
+    compaction_events: tuple[CompactionEvent, ...] = ()
+    peak_context_tokens: int | None = None
 
     def fresh_input_tokens(self) -> int:
         raw = self.input_tokens or 0
@@ -247,6 +294,8 @@ class SessionDetails:
             "abandoned_turns": self.abandoned_turns,
             "compression_ineffective_count": self.compression_ineffective_count,
             "opencode_summary": self.opencode_summary,
+            "compaction_events": [event.to_dict() for event in self.compaction_events],
+            "peak_context_tokens": self.peak_context_tokens,
         }
         return payload
 
@@ -559,6 +608,25 @@ class ToolCategoryEntry:
 
 
 @dataclass(frozen=True)
+class CapabilityEntry:
+    """Calls attributed to one MCP server, skill, or subagent type."""
+
+    name: str
+    calls: int
+    errors: int
+    sessions: int
+
+    @property
+    def error_rate(self) -> float | None:
+        if not self.calls:
+            return None
+        return self.errors / self.calls
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class BehaviorSummary:
     """What the agents actually did, as opposed to what they cost.
 
@@ -580,6 +648,9 @@ class BehaviorSummary:
     total_duration_ms: int = 0
     timed_calls: int = 0
     recovered_errors: int = 0
+    mcp_servers: list[CapabilityEntry] = field(default_factory=list, repr=False)
+    skills: list[CapabilityEntry] = field(default_factory=list, repr=False)
+    subagent_types: list[CapabilityEntry] = field(default_factory=list, repr=False)
 
     @property
     def error_rate(self) -> float | None:
@@ -631,6 +702,153 @@ class BehaviorSummary:
             "total_duration_ms": self.total_duration_ms,
             "timed_calls": self.timed_calls,
             "recovered_errors": self.recovered_errors,
+            "mcp_servers": [entry.to_dict() for entry in self.mcp_servers],
+            "skills": [entry.to_dict() for entry in self.skills],
+            "subagent_types": [entry.to_dict() for entry in self.subagent_types],
+        }
+
+
+@dataclass(frozen=True)
+class OutcomeSummary:
+    """How sessions ended and whether edits were verified before they stopped."""
+
+    total_sessions: int
+    classified_sessions: int
+    pr_created: int
+    verified: int
+    completed: int
+    unresolved_errors: int
+    interrupted: int
+    edited_sessions: int
+    verified_after_edit: int
+    supported: bool = True
+
+    @property
+    def unclassified_sessions(self) -> int:
+        return max(self.total_sessions - self.classified_sessions, 0)
+
+    @property
+    def verification_rate(self) -> float | None:
+        if not self.edited_sessions:
+            return None
+        return self.verified_after_edit / self.edited_sessions
+
+    def counts(self) -> list[tuple[str, int]]:
+        return [
+            ("PR created", self.pr_created),
+            ("Verified", self.verified),
+            ("Completed", self.completed),
+            ("Unresolved errors", self.unresolved_errors),
+            ("Interrupted", self.interrupted),
+        ]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_sessions": self.total_sessions,
+            "classified_sessions": self.classified_sessions,
+            "pr_created": self.pr_created,
+            "verified": self.verified,
+            "completed": self.completed,
+            "unresolved_errors": self.unresolved_errors,
+            "interrupted": self.interrupted,
+            "edited_sessions": self.edited_sessions,
+            "verified_after_edit": self.verified_after_edit,
+            "unclassified_sessions": self.unclassified_sessions,
+            "verification_rate": self.verification_rate,
+            "supported": self.supported,
+        }
+
+
+@dataclass(frozen=True)
+class ContextHygieneSummary:
+    """Compaction pressure and the re-reads it causes."""
+
+    sessions: int
+    sessions_with_compaction: int
+    compactions: int
+    peak_context_tokens: int | None
+    pre_tokens_total: int
+    post_tokens_total: int
+    rereads_after_compaction: int
+    reads: int
+    supported: bool = True
+
+    @property
+    def compaction_rate(self) -> float | None:
+        if not self.sessions:
+            return None
+        return self.sessions_with_compaction / self.sessions
+
+    @property
+    def reread_rate(self) -> float | None:
+        if not self.reads:
+            return None
+        return self.rereads_after_compaction / self.reads
+
+    @property
+    def average_pre_tokens(self) -> float | None:
+        if not self.compactions:
+            return None
+        return self.pre_tokens_total / self.compactions
+
+    @property
+    def average_post_tokens(self) -> float | None:
+        if not self.compactions:
+            return None
+        return self.post_tokens_total / self.compactions
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sessions": self.sessions,
+            "sessions_with_compaction": self.sessions_with_compaction,
+            "compactions": self.compactions,
+            "peak_context_tokens": self.peak_context_tokens,
+            "pre_tokens_total": self.pre_tokens_total,
+            "post_tokens_total": self.post_tokens_total,
+            "rereads_after_compaction": self.rereads_after_compaction,
+            "reads": self.reads,
+            "compaction_rate": self.compaction_rate,
+            "reread_rate": self.reread_rate,
+            "average_pre_tokens": self.average_pre_tokens,
+            "average_post_tokens": self.average_post_tokens,
+            "supported": self.supported,
+        }
+
+
+@dataclass(frozen=True)
+class WasteEntry:
+    bucket: str
+    label: str
+    cost_usd: float
+    amount: int
+    detail: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class WasteSummary:
+    """Estimated dollars spent on work that did not ship."""
+
+    total_cost_usd: float
+    waste_cost_usd: float
+    entries: list[WasteEntry] = field(default_factory=list, repr=False)
+    estimated: bool = True
+
+    @property
+    def waste_rate(self) -> float | None:
+        if self.total_cost_usd <= 0:
+            return None
+        return self.waste_cost_usd / self.total_cost_usd
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_cost_usd": self.total_cost_usd,
+            "waste_cost_usd": self.waste_cost_usd,
+            "waste_rate": self.waste_rate,
+            "entries": [entry.to_dict() for entry in self.entries],
+            "estimated": self.estimated,
         }
 
 
@@ -698,6 +916,9 @@ class DashboardWindow:
     runway: "RunwayInfo | None" = None
     regression: "RegressionDiff | None" = None
     efficiency_trend: "EfficiencyTrend | None" = None
+    outcomes: "OutcomeSummary | None" = None
+    context_hygiene: "ContextHygieneSummary | None" = None
+    waste: "WasteSummary | None" = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -731,6 +952,9 @@ class DashboardWindow:
             "runway": self.runway.to_dict() if self.runway else None,
             "regression": self.regression.to_dict() if self.regression else None,
             "efficiency_trend": self.efficiency_trend.to_dict() if self.efficiency_trend else None,
+            "outcomes": self.outcomes.to_dict() if self.outcomes else None,
+            "context_hygiene": self.context_hygiene.to_dict() if self.context_hygiene else None,
+            "waste": self.waste.to_dict() if self.waste else None,
         }
 
 
