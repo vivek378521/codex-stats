@@ -15,6 +15,7 @@ from codex_stats.display import (
     _format_context_panel,
     _format_outcomes_panel,
     _format_waste_panel,
+    _svg_waste_flow,
     format_dashboard_html,
 )
 from codex_stats.ingest import _read_rollout
@@ -356,6 +357,40 @@ class InsightPanelsTest(unittest.TestCase):
         self.assertIn("Outcomes &amp; Verification", html)
         self.assertIn("Context Hygiene", html)
         self.assertIn("Waste Ledger", html)
+
+    def test_waste_panel_draws_the_context_tax_flow(self) -> None:
+        failed = call("Bash", {"command": "false"}, status=TOOL_STATUS_ERROR)
+        fixed = call("Bash", {"command": "false"})
+        read = call("Read", {"file_path": "/tmp/a.py"})
+        window = window_for(
+            [
+                detail(
+                    session_id="a",
+                    calls=(failed, fixed, read, read),
+                    cost=2.0,
+                    request_count=2,
+                    input_tokens=1000,
+                    compactions=(CompactionEvent(after_call=2, pre_tokens=900, post_tokens=100),),
+                    peak_context_tokens=900,
+                )
+            ]
+        )
+
+        flow = _svg_waste_flow(window)
+        waste = _format_waste_panel(window)
+
+        self.assertIn("<svg", flow)
+        self.assertIn("TOTAL SPEND", flow)
+        self.assertIn("Context tax", flow)
+        self.assertIn("Re-read tax", flow)
+        self.assertIn("Failure tax", flow)
+        self.assertIn("Context Tax", waste)
+        self.assertIn("Post-compaction re-reads", waste)
+
+    def test_waste_flow_is_empty_when_nothing_was_wasted(self) -> None:
+        window = window_for([detail(calls=(call("Read", {"file_path": "/tmp/a.py"}),), cost=1.0)])
+
+        self.assertIn("No waste to visualize", _svg_waste_flow(window))
 
 
 if __name__ == "__main__":

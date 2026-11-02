@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-11-02
+
+### Added
+
+- **Context Tax flow diagram.** The waste ledger now visualizes total spend
+  flowing into useful work or waste, then splitting waste across context,
+  re-read, and failure taxes. Ribbons scale with estimated dollars, legend
+  cards show counts, tokens, and shares, and hover titles expose each amount.
+
 ## [1.19.0] - 2026-11-01
 
 ### Added

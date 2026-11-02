@@ -22,7 +22,7 @@ It reads local session data from every coding assistant installed on the machine
 - **session outcomes**: an "Outcomes & Verification" panel classifying sessions as PR created, verified, completed, unresolved errors, or interrupted, and measuring how often edits were followed by a successful test, lint, typecheck, or build
 - **context hygiene**: a "Context Hygiene" panel reporting compaction count and rate, peak context tokens, before/after compaction sizes, and files re-read after context was compacted
 - **MCP, skill, and subagent attribution**: calls grouped by MCP server, skill name, and subagent type, with calls, failures, and session counts for each
-- **waste ledger**: estimated dollars split across retries, abandoned sessions, cold-context premium, duplicate reads, and failed subagents, with every estimate labelled
+- **waste ledger**: estimated dollars split across retries, abandoned sessions, cold-context premium, duplicate reads, and failed subagents, with every estimate labelled and a Context Tax flow diagram showing where spend is reclaimed by useful work versus each waste bucket
 - shareable JPG cards and browser PDF export from the dashboard
 
 ## Data Sources

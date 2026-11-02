@@ -674,6 +674,19 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       font-size: 0.86rem;
       line-height: 1.5;
     }}
+    .waste-flow-card {{
+      margin-bottom: 18px;
+    }}
+    .waste-flow {{
+      width: 100%;
+      height: auto;
+      display: block;
+    }}
+    .waste-flow-empty {{
+      color: var(--muted);
+      font-size: 0.95rem;
+      padding: 8px 0 12px;
+    }}
     .split {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2720,6 +2733,276 @@ def _format_context_panel(window: DashboardWindow) -> str:
         """
 
 
+def _compact_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.0f}k"
+    return f"{value:,}"
+
+
+def _flow_ribbon(
+    x1: float,
+    top1: float,
+    bottom1: float,
+    x2: float,
+    top2: float,
+    bottom2: float,
+    *,
+    fill: str,
+    opacity: float,
+    title: str = "",
+) -> str:
+    middle = (x1 + x2) / 2
+    path = (
+        f"M {x1:.1f},{top1:.1f} "
+        f"C {middle:.1f},{top1:.1f} {middle:.1f},{top2:.1f} {x2:.1f},{top2:.1f} "
+        f"L {x2:.1f},{bottom2:.1f} "
+        f"C {middle:.1f},{bottom2:.1f} {middle:.1f},{bottom1:.1f} {x1:.1f},{bottom1:.1f} Z"
+    )
+    title_svg = f"<title>{escape(title)}</title>" if title else ""
+    return f'<path d="{path}" fill="{fill}" fill-opacity="{opacity}">{title_svg}</path>'
+
+
+def _flow_card(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    kicker: str,
+    amount: str,
+    detail: str,
+    accent: str,
+) -> str:
+    if height >= 150:
+        kicker_y, amount_y, detail_y, amount_size = y + 26, y + 58, y + 82, 26
+    elif height >= 100:
+        kicker_y, amount_y, detail_y, amount_size = y + 22, y + 48, y + 68, 22
+    elif height >= 78:
+        kicker_y, amount_y, detail_y, amount_size = y + 18, y + 42, y + 60, 18
+    else:
+        kicker_y, amount_y, detail_y, amount_size = y + 16, y + 36, y + 52, 16
+    detail_svg = ""
+    if detail:
+        detail_svg = f'<text x="{x + 16:.1f}" y="{detail_y:.1f}" font-size="9.5" fill="#6d645d">{escape(detail)}</text>'
+    return (
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{height:.1f}" rx="14" fill="#fffaf2" stroke="rgba(72,53,36,0.16)" />'
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="5" height="{height:.1f}" rx="2.5" fill="{accent}" />'
+        f'<text x="{x + 16:.1f}" y="{kicker_y:.1f}" font-size="9.5" letter-spacing="1.4" fill="#6d645d">{escape(kicker)}</text>'
+        f'<text x="{x + 16:.1f}" y="{amount_y:.1f}" font-size="{amount_size}" font-weight="700" fill="#1f1a17">{escape(amount)}</text>'
+        f'{detail_svg}'
+    )
+
+
+def _svg_waste_flow(window: DashboardWindow) -> str:
+    waste = window.waste
+    if waste is None or waste.total_cost_usd <= 0 or waste.waste_cost_usd <= 0:
+        return '<div class="waste-flow-empty">No waste to visualize in this view.</div>'
+    buckets = {entry.bucket: entry for entry in waste.entries}
+    context_entry = buckets.get("cache_miss")
+    reread_entry = buckets.get("reread")
+    retry_entry = buckets.get("retry")
+    abandoned_entry = buckets.get("abandoned")
+    dead_entry = buckets.get("dead_subagent")
+
+    context_cost = float(context_entry.cost_usd) if context_entry else 0.0
+    reread_cost = float(reread_entry.cost_usd) if reread_entry else 0.0
+    failure_cost = float(
+        (retry_entry.cost_usd if retry_entry else 0.0)
+        + (abandoned_entry.cost_usd if abandoned_entry else 0.0)
+        + (dead_entry.cost_usd if dead_entry else 0.0)
+    )
+    waste_total = float(waste.waste_cost_usd)
+    spend_total = float(waste.total_cost_usd)
+    useful = max(spend_total - waste_total, 0.0)
+    if waste_total <= 0:
+        return '<div class="waste-flow-empty">No waste to visualize in this view.</div>'
+
+    flow_top = 50.0
+    flow_height = 260.0
+    gap = 16.0
+    inner_height = flow_height - gap
+    if useful <= 0:
+        useful_height = 0.0
+        waste_height = flow_height
+    else:
+        waste_height = max(waste_total / spend_total * inner_height, 78.0)
+        useful_height = inner_height - waste_height
+        if useful_height < 78.0:
+            useful_height = 78.0
+            waste_height = inner_height - useful_height
+    waste_y = flow_top + useful_height + (gap if useful_height else 0.0)
+    useful_y = flow_top
+
+    source_x, source_w = 18.0, 154.0
+    mid_x, mid_w = 276.0, 176.0
+    legend_x, legend_w, legend_h = 560.0, 184.0, 58.0
+    legend_gap = 16.0
+    legend_start = 86.0
+
+    context_share = context_cost / waste_total if waste_total else 0.0
+    reread_share = reread_cost / waste_total if waste_total else 0.0
+    failure_share = failure_cost / waste_total if waste_total else 0.0
+
+    ribbons: list[str] = []
+    source_right = source_x + source_w
+    mid_left = mid_x
+    mid_right = mid_x + mid_w
+    source_inner = 244.0
+    source_top = flow_top + 8.0
+    useful_source_h = useful / spend_total * source_inner if spend_total else 0.0
+    waste_source_top = source_top + useful_source_h
+    if useful > 0:
+        ribbons.append(
+            _flow_ribbon(
+                source_right,
+                source_top,
+                source_top + useful_source_h,
+                mid_left,
+                useful_y,
+                useful_y + useful_height,
+                fill="#0f766e",
+                opacity=0.18,
+                title=f"Useful work: ${useful:,.2f}",
+            )
+        )
+    ribbons.append(
+        _flow_ribbon(
+            source_right,
+            waste_source_top,
+            source_top + source_inner,
+            mid_left,
+            waste_y,
+            waste_y + waste_height,
+            fill="#b45309",
+            opacity=0.22,
+            title=f"Estimated waste: ${waste_total:,.2f}",
+        )
+    )
+
+    group_labels = {
+        "context": "Context tax",
+        "reread": "Re-read tax",
+        "failure": "Failure tax",
+    }
+    groups = [
+        ("context", context_cost, context_share, "#2563eb"),
+        ("reread", reread_cost, reread_share, "#7c3aed"),
+        ("failure", failure_cost, failure_share, "#be185d"),
+    ]
+    positive_groups = [group for group in groups if group[1] > 0]
+    legend_centers = [
+        legend_start + index * (legend_h + legend_gap) + legend_h / 2
+        for index in range(3)
+    ]
+    start_positions: dict[str, tuple[float, float]] = {}
+    if positive_groups:
+        available = max(waste_height - 12.0 - 5.0 * (len(positive_groups) - 1), 6.0 * len(positive_groups))
+        heights = [max(2.0, available * group[1] / waste_total) for group in positive_groups]
+        scale = available / sum(heights) if sum(heights) > available else 1.0
+        heights = [height * scale for height in heights]
+        cursor = waste_y + 6.0
+        for (key, cost, share, color), height in zip(positive_groups, heights):
+            center = cursor + height / 2
+            start_positions[key] = (center, height)
+            cursor += height + 5.0
+    for index, (key, cost, share, color) in enumerate(groups):
+        if cost <= 0:
+            continue
+        start_center, start_height = start_positions[key]
+        end_height = max(2.0, min(24.0, share * 24.0))
+        end_center = legend_centers[index]
+        ribbons.append(
+            _flow_ribbon(
+                mid_right,
+                start_center - start_height / 2,
+                start_center + start_height / 2,
+                legend_x,
+                end_center - end_height / 2,
+                end_center + end_height / 2,
+                fill=color,
+                opacity=0.20,
+                title=f"{group_labels[key]}: ${cost:,.2f}",
+            )
+        )
+
+    cards: list[str] = []
+    cards.append(
+        _flow_card(
+            source_x,
+            flow_top,
+            source_w,
+            flow_height,
+            kicker="TOTAL SPEND",
+            amount=f"${spend_total:,.2f}",
+            detail=f"{window.summary.sessions:,} sessions · {waste_total / spend_total:.0%} waste",
+            accent="#4b4036",
+        )
+    )
+    if useful > 0:
+        cards.append(
+            _flow_card(
+                mid_x,
+                useful_y,
+                mid_w,
+                useful_height,
+                kicker="USEFUL WORK",
+                amount=f"${useful:,.2f}",
+                detail=f"{useful / spend_total:.0%} of spend",
+                accent="#0f766e",
+            )
+        )
+    cards.append(
+        _flow_card(
+            mid_x,
+            waste_y,
+            mid_w,
+            waste_height,
+            kicker="ESTIMATED WASTE",
+            amount=f"${waste_total:,.2f}",
+            detail=f"{waste_total / spend_total:.0%} of spend",
+            accent="#b45309",
+        )
+    )
+
+    context_detail = f"{_compact_count(context_entry.amount if context_entry else 0)} fresh tokens · {context_share:.0%}"
+    reread_detail = f"{reread_entry.amount if reread_entry else 0:,} reads · {reread_share:.0%}"
+    failure_count = sum(
+        entry.amount for entry in (retry_entry, abandoned_entry, dead_entry) if entry is not None
+    )
+    failure_detail = f"{failure_count:,} calls · {failure_share:.0%}"
+    legend_rows = [
+        ("Context tax", f"${context_cost:,.2f}", context_detail, "#2563eb", context_cost > 0),
+        ("Re-read tax", f"${reread_cost:,.2f}", reread_detail, "#7c3aed", reread_cost > 0),
+        ("Failure tax", f"${failure_cost:,.2f}", failure_detail, "#be185d", failure_cost > 0),
+    ]
+    legend: list[str] = [
+        f'<text x="{legend_x:.1f}" y="70" font-size="9.5" letter-spacing="1.4" fill="#6d645d">WASTE TYPES</text>'
+    ]
+    for index, (label, amount, detail, color, active) in enumerate(legend_rows):
+        row_y = legend_start + index * (legend_h + legend_gap)
+        center = legend_centers[index]
+        end_height = max(2.0, min(24.0, (groups[index][2] if active else 0.0) * 24.0))
+        fill = "#fffaf2" if active else "rgba(255,250,242,0.55)"
+        text_color = "#1f1a17" if active else "#8a8178"
+        accent = color if active else "#d6cec4"
+        legend.append(
+            f'<rect x="{legend_x:.1f}" y="{row_y:.1f}" width="{legend_w:.1f}" height="{legend_h:.1f}" rx="12" fill="{fill}" stroke="rgba(72,53,36,0.14)" />'
+            f'<rect x="{legend_x:.1f}" y="{center - end_height / 2:.1f}" width="5" height="{end_height:.1f}" rx="2.5" fill="{accent}" />'
+            f'<text x="{legend_x + 18:.1f}" y="{row_y + 22:.1f}" font-size="12" font-weight="600" fill="{text_color}">{escape(label)}</text>'
+            f'<text x="{legend_x + legend_w - 12:.1f}" y="{row_y + 22:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="{text_color}">{escape(amount)}</text>'
+            f'<text x="{legend_x + 18:.1f}" y="{row_y + 40:.1f}" font-size="9.5" fill="#6d645d">{escape(detail)}</text>'
+        )
+
+    width = 760
+    height = 360
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="waste-flow" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Context tax flow diagram">'
+        f'{"".join(ribbons)}{"".join(cards)}{"".join(legend)}</svg>'
+    )
+
+
 def _format_waste_panel(window: DashboardWindow) -> str:
     waste = window.waste
     if waste is None or waste.total_cost_usd <= 0:
@@ -2739,6 +3022,15 @@ def _format_waste_panel(window: DashboardWindow) -> str:
         f"<td>${entry.cost_usd:,.2f}</td><td>{escape(entry.detail)}</td></tr>"
         for entry in waste.entries
     )
+    flow = _svg_waste_flow(window)
+    context = window.context_hygiene
+    relearn_hint = ""
+    if context is not None and context.supported and context.reads > 0:
+        relearn_hint = (
+            '<p class="panel-hint">The re-read tax is the direct relearning share. '
+            f"Post-compaction re-reads: {context.rereads_after_compaction:,} of "
+            f"{context.reads:,} tracked reads ({escape(_fmt_percent(context.reread_rate))}).</p>"
+        )
     return f"""
         <section class="panel">
           <div class="section-header">
@@ -2752,6 +3044,11 @@ def _format_waste_panel(window: DashboardWindow) -> str:
               <div class="spotlight-kpi"><strong>${waste.total_cost_usd:,.2f}</strong><span>Total spend</span></div>
             </div>
           </div>
+          <div class="chart-card chart-wide waste-flow-card">
+            <h3>Context Tax</h3>
+            {flow}
+          </div>
+          {relearn_hint}
           <div class="table-wrap">
             <table>
               <thead><tr><th>Bucket</th><th>Count / tokens</th><th>Cost</th><th>What it measures</th></tr></thead>
