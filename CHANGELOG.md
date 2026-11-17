@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.21.0] - 2026-11-17
+
+### Added
+
+- **Graphs and Stats views.** A new toggle switches each window between a
+  chart-first Graphs read and a numbers-first Stats read. Charts, tables, and
+  text hints are tagged individually, so mixed panels split cleanly: Graphs
+  keeps the pictures and Stats keeps the tables, and neither scrolls past the
+  other's content.
+- **Visual Summary panel.** Two donut charts split tokens by cache/input/output
+  and spend by tool or project, and two column charts put this window's tokens
+  and spend beside the previous window. These replace bare numbers that
+  previously carried the same information as text.
+- **More charts.** Requests and cost per request now have daily trends, outcomes
+  and provider share are donuts, context before/after compaction is a column
+  chart, and Efficiency and Branches gained spend/rewrite bar charts.
+- **New chart shapes.** Project share is a treemap, sessions get a cost-versus-
+  tokens bubble plot, the window gets a daily activity calendar, tools get a
+  stacked-area spend trend, and the Visual Summary gains health gauges.
+- **Animated charts.** Donuts sweep, bars grow, lines draw, calendar and heatmap
+  cells pop in, and stacking layers rise when a window becomes active. Panels
+  fade in and hero values pop on tool, window, and view switches. Everything is
+  CSS-only and compositor-friendly; reduced motion collapses it to final frames
+  and print renders still frames.
+- **Readable charts.** Long trends thin their x-axis labels and dots instead of
+  crowding every day, column charts gained a y-axis, the bubble chart labels its
+  token axis, a long donut legend folds into "Other", and the Visual Summary
+  states the token and spend movement versus the previous window. `G` and `S`
+  toggle the Graphs and Stats views from the keyboard.
+
 ## [1.20.0] - 2026-11-02
 
 ### Added

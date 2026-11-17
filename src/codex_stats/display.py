@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import math
 import textwrap
 from collections import defaultdict
+from datetime import date
 from html import escape
 from typing import Any
 
@@ -406,6 +408,35 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       color: #fff;
       box-shadow: 0 12px 30px rgba(15, 118, 110, 0.22);
     }}
+    /* The dashboard carries two reads of the same window: a chart-first Graphs
+       view and a numbers-first Stats view. Panels opt into one with data-view,
+       and the body attribute decides which set is on screen. Panels without the
+       attribute belong to both reads, so the hero and the shared analysis panels
+       never disappear. */
+    .view-tabs {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding-left: 14px;
+      border-left: 1px solid var(--line);
+    }}
+    .view-button {{
+      padding: 13px 20px;
+      background: rgba(255,255,255,0.74);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      font-weight: 700;
+    }}
+    .view-button.is-active {{
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 12px 30px rgba(15, 118, 110, 0.22);
+    }}
+    body[data-view="visual"] [data-view="stats"] {{ display: none; }}
+    body[data-view="stats"] [data-view="visual"] {{ display: none; }}
+    /* Charts are hidden in Stats, so the remaining cards should use the full
+       width instead of leaving half an empty grid column behind. */
+    body[data-view="stats"] .chart-grid {{ grid-template-columns: 1fr; }}
     .action-button {{
       padding: 11px 16px;
       background: var(--panel-strong);
@@ -702,6 +733,12 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     .section-header h2, .section-header h3 {{
       margin: 0;
     }}
+    .section-note {{
+      margin: -4px 0 16px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }}
     .kpi-grid {{
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -756,6 +793,11 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 16px;
+      transition: box-shadow 200ms ease, border-color 200ms ease;
+    }}
+    .chart-card:hover {{
+      border-color: rgba(15, 118, 110, 0.34);
+      box-shadow: 0 18px 38px rgba(72, 53, 36, 0.12);
     }}
     .chart-card.chart-wide {{
       grid-column: 1 / -1;
@@ -768,11 +810,142 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       width: 100%;
       height: auto;
       display: block;
+      overflow: visible;
     }}
     .chart-empty {{
       color: var(--muted);
       font-size: 0.95rem;
       padding: 12px 0 6px;
+    }}
+    .gauge-row {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      align-items: end;
+    }}
+    .gauge-svg {{
+      width: 100%;
+      max-width: 210px;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }}
+    /* Charts draw themselves in when a window becomes active, so switching
+       tabs replays the reveal instead of every chart racing once at load.
+       Everything animates from real geometry rather than a static image, and
+       the reduced-motion rule above collapses each one to its final frame. */
+    @keyframes chart-rise {{
+      from {{ opacity: 0; transform: translateY(14px); }}
+      to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    @keyframes grow-x {{
+      from {{ transform: scaleX(0); }}
+      to {{ transform: scaleX(1); }}
+    }}
+    @keyframes grow-y {{
+      from {{ transform: scaleY(0); }}
+      to {{ transform: scaleY(1); }}
+    }}
+    @keyframes donut-draw {{
+      from {{ stroke-dashoffset: var(--circ); }}
+      to {{ stroke-dashoffset: var(--offset); }}
+    }}
+    @keyframes line-draw {{
+      from {{ stroke-dashoffset: 1; }}
+      to {{ stroke-dashoffset: 0; }}
+    }}
+    @keyframes soft-fade {{
+      from {{ opacity: 0; }}
+      to {{ opacity: 1; }}
+    }}
+    @keyframes cell-pop {{
+      from {{ opacity: 0; transform: scale(0.55); }}
+      to {{ opacity: 1; transform: scale(1); }}
+    }}
+    @keyframes panel-in {{
+      from {{ opacity: 0; transform: translateY(10px); }}
+      to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    @keyframes value-pop {{
+      from {{ opacity: 0; transform: translateY(6px) scale(0.96); }}
+      to {{ opacity: 1; transform: translateY(0) scale(1); }}
+    }}
+    /* A window or view switch swaps content, so the new panels rise into place.
+       Only the active window animates, and opacity/transform are compositor
+       properties, which keeps this cheap even on a long dashboard. */
+    .window.is-active .panel {{
+      animation: panel-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }}
+    .window.is-active .metric .value {{
+      animation: value-pop 420ms cubic-bezier(0.2, 0.8, 0.2, 1) 90ms backwards;
+    }}
+    button:active {{
+      transform: translateY(1px) scale(0.99);
+    }}
+    .window.is-active .chart-card {{
+      animation: chart-rise 460ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    }}
+    .window.is-active .chart-card:nth-child(2) {{ animation-delay: 60ms; }}
+    .window.is-active .chart-card:nth-child(3) {{ animation-delay: 120ms; }}
+    .window.is-active .chart-card:nth-child(4) {{ animation-delay: 180ms; }}
+    .chart-bar {{
+      transform-box: fill-box;
+      transform-origin: left center;
+      animation: grow-x 640ms cubic-bezier(0.22, 0.9, 0.25, 1) backwards;
+      animation-delay: calc(var(--i, 0) * 45ms);
+    }}
+    .chart-column {{
+      transform-box: fill-box;
+      transform-origin: center bottom;
+      animation: grow-y 640ms cubic-bezier(0.22, 0.9, 0.25, 1) backwards;
+      animation-delay: calc(var(--i, 0) * 60ms);
+    }}
+    .chart-line {{
+      stroke-dasharray: 1;
+      animation: line-draw 900ms ease-out 140ms backwards;
+    }}
+    .chart-area {{
+      animation: soft-fade 900ms ease-out 120ms backwards;
+      animation-delay: calc(var(--i, 0) * 90ms);
+    }}
+    .chart-dot {{
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: cell-pop 360ms ease-out backwards;
+      animation-delay: calc(180ms + var(--i, 0) * 26ms);
+      transition: r 150ms ease, fill-opacity 150ms ease;
+    }}
+    .chart-dot:hover {{
+      r: 6.5;
+      fill-opacity: 0.85;
+    }}
+    .chart-dot-last {{
+      stroke: #fffaf2;
+      stroke-width: 2.5;
+    }}
+    .donut-ring {{
+      animation: donut-draw 950ms cubic-bezier(0.22, 0.9, 0.25, 1) backwards;
+    }}
+    .chart-cell {{
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: cell-pop 420ms ease-out backwards;
+      animation-delay: calc(var(--i, 0) * 7ms);
+    }}
+    .gauge-value {{
+      stroke-dasharray: 1;
+      animation: line-draw 900ms ease-out 140ms backwards;
+    }}
+    .chart-tile {{
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: cell-pop 520ms cubic-bezier(0.22, 0.9, 0.25, 1) backwards;
+      animation-delay: calc(var(--i, 0) * 40ms);
+    }}
+    .tool-share-bar span {{
+      transform-origin: left center;
+      animation: grow-x 700ms cubic-bezier(0.22, 0.9, 0.25, 1) backwards;
+      animation-delay: calc(var(--i, 0) * 70ms);
     }}
     .empty-showcase {{
       background: linear-gradient(135deg, rgba(15,118,110,0.08), rgba(180,83,9,0.06));
@@ -1062,7 +1235,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       /* The hover lift is the only motion on the page. Left in place with a
          near-zero duration it reads as a jump rather than a transition, so it is
          removed rather than shortened. */
-      button:hover {{
+      button:hover, button:active {{
         transform: none;
       }}
     }}
@@ -1097,11 +1270,23 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       .panel {{
         margin-bottom: 6mm;
       }}
+      /* A printed report includes every panel, not just the view mode that was
+         on screen when the reader hit Export. */
+      body[data-view] [data-view] {{
+        display: block !important;
+      }}
       .chart-grid, .split, .kpi-grid {{
         grid-template-columns: 1fr !important;
       }}
       .chart-card.chart-wide {{
         grid-column: auto;
+      }}
+      /* A printed page is a still frame, not a recording. */
+      .window.is-active .panel, .window.is-active .metric .value,
+      .window.is-active .chart-card, .chart-bar, .chart-column, .chart-line,
+      .chart-area, .chart-dot, .donut-ring, .chart-cell, .gauge-value,
+      .chart-tile, .tool-share-bar span {{
+        animation: none !important;
       }}
       .table-wrap {{
         overflow: visible;
@@ -1210,7 +1395,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     }}
   </style>
 </head>
-<body data-default-scope="{escape(default_scope_key)}" data-default-window="{escape(default_window_key)}">
+<body data-default-scope="{escape(default_scope_key)}" data-default-window="{escape(default_window_key)}" data-default-view="visual" data-view="visual">
   <main class="page">
     <section class="hero">
       <p class="eyebrow">Coding Agent Stats</p>
@@ -1234,6 +1419,10 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
         <div class="tabs">
           <div class="scope-tabs">{scope_buttons}</div>
           <div class="range-tabs">{range_buttons}</div>
+          <div class="view-tabs" role="group" aria-label="View mode">
+            <button class="view-button is-active" type="button" data-view-button="visual" aria-pressed="true" aria-keyshortcuts="G">Graphs</button>
+            <button class="view-button" type="button" data-view-button="stats" aria-pressed="false" aria-keyshortcuts="S">Stats</button>
+          </div>
         </div>
         <div class="actions">
           <input class="search-input" type="search" data-dashboard-search placeholder="Filter sessions, projects, models" aria-label="Filter dashboard rows">
@@ -1287,6 +1476,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     const dashboardSummaries = {summaries_json};
     const scopeButtons = Array.from(document.querySelectorAll("[data-scope-button]"));
     const rangeButtons = Array.from(document.querySelectorAll("[data-window-button]"));
+    const viewButtons = Array.from(document.querySelectorAll("[data-view-button]"));
     const windows = Array.from(document.querySelectorAll(".window"));
     const exportWrap = document.querySelector(".export-wrap");
     const exportMenu = document.querySelector("[data-export-menu]");
@@ -1297,6 +1487,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     const searchInput = document.querySelector("[data-dashboard-search]");
     let activeScope = document.body.dataset.defaultScope || scopeButtons[0]?.dataset.scopeButton || "";
     let activeWindow = document.body.dataset.defaultWindow || rangeButtons[0]?.dataset.windowButton || "";
+    let activeView = document.body.dataset.defaultView || "visual";
     let expandedForPrint = [];
     let pendingPrintTitle = null;
 
@@ -1474,6 +1665,17 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       reflectActive();
     }}
 
+    function setActiveView(view) {{
+      activeView = view;
+      document.body.dataset.view = view;
+      viewButtons.forEach((button) => {{
+        const active = button.dataset.viewButton === view;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+      }});
+      setFeedback("");
+    }}
+
     function beforePrint() {{
       const active = activeSection();
       expandedForPrint = [];
@@ -1612,6 +1814,19 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     rangeButtons.forEach((button) => {{
       button.addEventListener("click", () => setActiveWindow(button.dataset.windowButton));
     }});
+    viewButtons.forEach((button) => {{
+      button.addEventListener("click", () => setActiveView(button.dataset.viewButton));
+    }});
+    document.addEventListener("keydown", (event) => {{
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
+      if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) return;
+      const key = event.key.toLowerCase();
+      if (key === "g") setActiveView("visual");
+      if (key === "s") setActiveView("stats");
+    }});
+    setActiveView(activeView);
     searchInput?.addEventListener("input", applySearch);
     document.querySelector('[data-action="toggle-export"]')?.addEventListener("click", () => {{
       exportMenu?.classList.toggle("is-open");
@@ -1829,14 +2044,14 @@ def _render_leaks_panel(window) -> str:
     if not leaks or not leaks.entries:
         return ''
     items = ''.join(f'<li>{escape(e.description)}</li>' for e in leaks.entries[:6])
-    return f'<section class="panel"><header class="panel-header"><h2>Leaks</h2></header><div class="panel-body"><ul>{items}</ul></div></section>'
+    return f'<section class="panel" data-view="stats"><header class="panel-header"><h2>Leaks</h2></header><div class="panel-body"><ul>{items}</ul></div></section>'
 
 def _render_runway_panel(window) -> str:
     runway = getattr(window, 'runway', None)
     if not runway or runway.status == 'unknown' and not runway.message:
         return ''
     msg = escape(runway.message or f"Status: {runway.status}")
-    return f'<section class="panel"><header class="panel-header"><h2>Runway & Burn</h2></header><div class="panel-body"><p>{msg}</p><p>Burn: ${runway.burn_rate_usd_per_day:.4f}/day (last {runway.days_in_window}d)</p></div></section>'
+    return f'<section class="panel" data-view="stats"><header class="panel-header"><h2>Runway & Burn</h2></header><div class="panel-body"><p>{msg}</p><p>Burn: ${runway.burn_rate_usd_per_day:.4f}/day (last {runway.days_in_window}d)</p></div></section>'
 
 def _render_efficiency_trend_panel(window) -> str:
     trend = getattr(window, 'efficiency_trend', None)
@@ -1850,7 +2065,7 @@ def _render_efficiency_trend_panel(window) -> str:
         f'<td>{f"{p.cache_ratio:.0%}" if p.cache_ratio is not None else "—"}</td></tr>'
         for p in trend.points
     )
-    return f'<section class="panel"><header class="panel-header"><h2>Efficiency Trend</h2></header><div class="panel-body"><table class="data-table"><thead><tr><th>Window</th><th>Cost/1k</th><th>Read:Write</th><th>Read-only spend</th><th>Cache</th></tr></thead><tbody>{rows}</tbody></table></div></section>'
+    return f'<section class="panel" data-view="stats"><header class="panel-header"><h2>Efficiency Trend</h2></header><div class="panel-body"><table class="data-table"><thead><tr><th>Window</th><th>Cost/1k</th><th>Read:Write</th><th>Read-only spend</th><th>Cache</th></tr></thead><tbody>{rows}</tbody></table></div></section>'
 
 def _format_dashboard_window_section(
     window: DashboardWindow,
@@ -1883,9 +2098,23 @@ def _format_dashboard_window_section(
         fill="rgba(180, 83, 9, 0.14)",
         value_formatter=lambda value: f"${value:.2f}",
     )
-    projects_svg = _svg_bar_chart(
-        [(entry.name, float(entry.total_tokens)) for entry in window.projects[:6]],
-        bar_color="#0f766e",
+    requests_trend_svg = _svg_line_chart(
+        [(point.day[5:], float(point.requests)) for point in window.daily_points],
+        stroke="#7c3aed",
+        fill="rgba(124, 58, 237, 0.12)",
+        value_formatter=lambda value: f"{int(value):,}",
+    )
+    request_cost_svg = _svg_line_chart(
+        [
+            (point.day[5:], point.estimated_cost_usd / point.requests if point.requests else 0.0)
+            for point in window.daily_points
+        ],
+        stroke="#be185d",
+        fill="rgba(190, 24, 93, 0.12)",
+        value_formatter=lambda value: f"${value:.3f}",
+    )
+    projects_svg = _svg_treemap(
+        [(entry.name, float(entry.total_tokens)) for entry in window.projects[:10]],
         value_formatter=lambda value: f"{int(value):,}",
         empty_label="No project data available for this view.",
     )
@@ -1895,8 +2124,24 @@ def _format_dashboard_window_section(
         value_formatter=lambda value: f"{int(value):,}",
         empty_label="No top session data available for this view.",
     )
+    session_scatter_svg = _svg_scatter(
+        [
+            (
+                f"{entry.project_name} / {entry.model or 'unknown'}",
+                float(entry.total_tokens),
+                float(entry.estimated_cost_usd),
+                float(entry.requests),
+            )
+            for entry in window.top_sessions[:18]
+        ],
+        x_formatter=lambda value: f"{int(value):,}",
+        y_formatter=lambda value: f"${value:.2f}",
+        empty_label="Sessions need tokens, cost, and requests recorded before they can be plotted.",
+    )
+    calendar_svg = _svg_calendar_heatmap([(point.day, float(point.total_tokens)) for point in window.daily_points])
     heatmap_svg = _svg_heatmap_chart(window.activity_heatmap)
     tool_trend_html = _format_tool_trend(window)
+    tool_spend_html = _format_tool_spend_trend(window)
     project_rows = "".join(
         f"""
         <tr>
@@ -1999,7 +2244,9 @@ def _format_dashboard_window_section(
           </div>
         </section>
 
-        <section class="panel">
+        {_format_visual_summary(window)}
+
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">Biggest Change</p>
@@ -2013,7 +2260,7 @@ def _format_dashboard_window_section(
         </section>
         {tool_share_html}
 
-        <section class="panel">
+        <section class="panel" data-view="visual">
           <div class="section-header">
             <div>
               <p class="section-kicker">When You Work</p>
@@ -2023,7 +2270,7 @@ def _format_dashboard_window_section(
           {_format_work_rhythm_card(window)}
         </section>
 
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">What Changed</p>
@@ -2033,7 +2280,7 @@ def _format_dashboard_window_section(
           <ul class="takeaway-list">{''.join(f"<li>{escape(item)}</li>" for item in window.takeaways)}</ul>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">Work Shape</p>
@@ -2074,7 +2321,7 @@ def _format_dashboard_window_section(
 
         {_format_provider_panel(window)}
 
-        <section class="panel">
+        <section class="panel" data-view="visual">
           <div class="section-header">
             <div>
               <p class="section-kicker">Why It Happened</p>
@@ -2091,6 +2338,14 @@ def _format_dashboard_window_section(
               {cost_trend_svg}
             </div>
             <div class="chart-card">
+              <h3>Requests Trend</h3>
+              {requests_trend_svg}
+            </div>
+            <div class="chart-card">
+              <h3>Cost per Request</h3>
+              {request_cost_svg}
+            </div>
+            <div class="chart-card">
               <h3>Project Share</h3>
               {projects_svg}
             </div>
@@ -2098,7 +2353,17 @@ def _format_dashboard_window_section(
               <h3>Top Sessions by Tokens</h3>
               {sessions_svg}
             </div>
+            <div class="chart-card">
+              <h3>Session Cost vs Tokens</h3>
+              {session_scatter_svg}
+            </div>
             {tool_trend_html}
+            {tool_spend_html}
+            <div class="chart-card chart-wide">
+              <h3>Activity Calendar</h3>
+              {calendar_svg}
+              <div class="chart-empty">Daily tokens across the recent history this window can see.</div>
+            </div>
             <div class="chart-card chart-wide">
               <h3>Activity Heatmap</h3>
               {heatmap_svg}
@@ -2107,7 +2372,7 @@ def _format_dashboard_window_section(
           </div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">What To Look At</p>
@@ -2134,7 +2399,7 @@ def _format_dashboard_window_section(
           </div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">Go Deeper</p>
@@ -2144,7 +2409,7 @@ def _format_dashboard_window_section(
           {project_drilldown_html}
         </section>
 
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">Details</p>
@@ -2530,15 +2795,15 @@ def _format_behavior_panel(window: DashboardWindow) -> str:
             </div>
           </div>
           <div class="chart-grid">
-            <div class="chart-card">
+            <div class="chart-card" data-view="visual">
               <h3>Calls by Category</h3>
               {category_svg}
             </div>
-            <div class="chart-card">
+            <div class="chart-card" data-view="visual">
               <h3>Most Used Tools</h3>
               {tool_svg}
             </div>
-            <div class="chart-card">
+            <div class="chart-card" data-view="stats">
               <h3>Failure Detail</h3>
               <div class="table-wrap">
                 <table>
@@ -2557,7 +2822,7 @@ def _format_behavior_panel(window: DashboardWindow) -> str:
               </div>
             </div>
           </div>
-          <p class="panel-hint">{escape(_format_behavior_note(behavior))}</p>
+          <p class="panel-hint" data-view="stats">{escape(_format_behavior_note(behavior))}</p>
         </section>
         """
 
@@ -2592,7 +2857,7 @@ def _format_capabilities_panel(window: DashboardWindow) -> str:
         behavior.mcp_servers or behavior.skills or behavior.subagent_types
     ):
         return f"""
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">How Work Was Delegated</p>
@@ -2603,7 +2868,7 @@ def _format_capabilities_panel(window: DashboardWindow) -> str:
         </section>
         """
     return f"""
-        <section class="panel">
+        <section class="panel" data-view="stats">
           <div class="section-header">
             <div>
               <p class="section-kicker">How Work Was Delegated</p>
@@ -2634,9 +2899,13 @@ def _format_outcomes_panel(window: DashboardWindow) -> str:
           {_format_empty_showcase("No session outcomes for this view.", "Outcomes are classified from ordered tool calls and interrupted turns. A scope with no tool-call data cannot distinguish a completed session from a quiet one.")}
         </section>
         """
-    outcome_svg = _svg_bar_chart(
-        [(label, float(value)) for label, value in outcomes.counts()],
-        bar_color="#0f766e",
+    outcome_svg = _svg_donut_chart(
+        [
+            (label, float(value), VISUAL_PALETTE[index % len(VISUAL_PALETTE)])
+            for index, (label, value) in enumerate(outcomes.counts())
+        ],
+        center_value=f"{outcomes.classified_sessions:,}",
+        center_label="classified sessions",
         value_formatter=lambda value: f"{int(value):,}",
         empty_label="No classified outcomes for this view.",
     )
@@ -2659,7 +2928,7 @@ def _format_outcomes_panel(window: DashboardWindow) -> str:
             </div>
           </div>
           <div class="chart-grid">
-            <div class="chart-card">
+            <div class="chart-card" data-view="visual">
               <h3>Outcome Mix</h3>
               {outcome_svg}
             </div>
@@ -2674,7 +2943,7 @@ def _format_outcomes_panel(window: DashboardWindow) -> str:
             </div>
           </div>
           {unclassified}
-          <p class="panel-hint">A session is verified only when a successful test, lint, typecheck, or build call lands after its final edit. PR creation is detected from gh/glab create commands.</p>
+          <p class="panel-hint" data-view="stats">A session is verified only when a successful test, lint, typecheck, or build call lands after its final edit. PR creation is detected from gh/glab create commands.</p>
         </section>
         """
 
@@ -2696,6 +2965,14 @@ def _format_context_panel(window: DashboardWindow) -> str:
     peak = f"{context.peak_context_tokens:,}" if context.peak_context_tokens else "n/a"
     first = f"First {context.average_pre_tokens:,.0f}" if context.average_pre_tokens is not None else "First n/a"
     after = f"After {context.average_post_tokens:,.0f}" if context.average_post_tokens is not None else "After n/a"
+    compaction_svg = _svg_column_chart(
+        [
+            ("Before", float(context.average_pre_tokens or 0), VISUAL_PALETTE[1]),
+            ("After", float(context.average_post_tokens or 0), VISUAL_PALETTE[0]),
+        ],
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No compaction boundaries recorded to compare before and after.",
+    )
     return f"""
         <section class="panel">
           <div class="section-header">
@@ -2727,8 +3004,12 @@ def _format_context_panel(window: DashboardWindow) -> str:
                 <div class="kpi"><strong>{escape(_fmt_percent(context.reread_rate))}</strong><span>Re-read rate</span></div>
               </div>
             </div>
+            <div class="chart-card" data-view="visual">
+              <h3>Context Before and After Compaction</h3>
+              {compaction_svg}
+            </div>
           </div>
-          <p class="panel-hint">A re-read is a file read again after a compaction that had been read before it, with no edit in between. Sandbox recovery and ordinary duplicate reads are not counted here.</p>
+          <p class="panel-hint" data-view="stats">A re-read is a file read again after a compaction that had been read before it, with no edit in between. Sandbox recovery and ordinary duplicate reads are not counted here.</p>
         </section>
         """
 
@@ -2761,7 +3042,7 @@ def _flow_ribbon(
         f"C {middle:.1f},{bottom2:.1f} {middle:.1f},{bottom1:.1f} {x1:.1f},{bottom1:.1f} Z"
     )
     title_svg = f"<title>{escape(title)}</title>" if title else ""
-    return f'<path d="{path}" fill="{fill}" fill-opacity="{opacity}">{title_svg}</path>'
+    return f'<path class="chart-area" d="{path}" fill="{fill}" fill-opacity="{opacity}">{title_svg}</path>'
 
 
 def _flow_card(
@@ -3027,7 +3308,7 @@ def _format_waste_panel(window: DashboardWindow) -> str:
     relearn_hint = ""
     if context is not None and context.supported and context.reads > 0:
         relearn_hint = (
-            '<p class="panel-hint">The re-read tax is the direct relearning share. '
+            '<p class="panel-hint" data-view="stats">The re-read tax is the direct relearning share. '
             f"Post-compaction re-reads: {context.rereads_after_compaction:,} of "
             f"{context.reads:,} tracked reads ({escape(_fmt_percent(context.reread_rate))}).</p>"
         )
@@ -3044,18 +3325,18 @@ def _format_waste_panel(window: DashboardWindow) -> str:
               <div class="spotlight-kpi"><strong>${waste.total_cost_usd:,.2f}</strong><span>Total spend</span></div>
             </div>
           </div>
-          <div class="chart-card chart-wide waste-flow-card">
+          <div class="chart-card chart-wide waste-flow-card" data-view="visual">
             <h3>Context Tax</h3>
             {flow}
           </div>
           {relearn_hint}
-          <div class="table-wrap">
+          <div class="table-wrap" data-view="stats">
             <table>
               <thead><tr><th>Bucket</th><th>Count / tokens</th><th>Cost</th><th>What it measures</th></tr></thead>
               <tbody>{rows}</tbody>
             </table>
           </div>
-          <p class="panel-hint">Estimates only. Tool-level buckets allocate each session's cost evenly across its calls because the sources bill per session, not per call. Cold-context premium is priced from fresh input tokens against the cached-read rate. Buckets are measured independently and may overlap; the total is capped at spend.</p>
+          <p class="panel-hint" data-view="stats">Estimates only. Tool-level buckets allocate each session's cost evenly across its calls because the sources bill per session, not per call. Cold-context premium is priced from fresh input tokens against the cached-read rate. Buckets are measured independently and may overlap; the total is capped at spend.</p>
         </section>
         """
 
@@ -3094,6 +3375,12 @@ def _format_branch_panel(window: DashboardWindow) -> str:
         if branches.idle_branches
         else '<div class="spotlight-kpi"><strong>None</strong><span>Idle spend</span></div>'
     )
+    branch_svg = _svg_bar_chart(
+        [(branch.name, float(branch.estimated_cost_usd)) for branch in branches.branches[:8]],
+        bar_color="#b45309",
+        value_formatter=lambda value: f"${value:.2f}",
+        empty_label="No branch spend recorded for this view.",
+    )
     return f"""
         <section class="panel">
           <div class="section-header">
@@ -3108,7 +3395,11 @@ def _format_branch_panel(window: DashboardWindow) -> str:
               {idle_kpi}
             </div>
           </div>
-          <div class="table-wrap">
+          <div class="chart-card" data-view="visual" style="margin-bottom: 16px;">
+            <h3>Spend by Branch</h3>
+            {branch_svg}
+          </div>
+          <div class="table-wrap" data-view="stats">
             <table>
               <thead>
                 <tr>
@@ -3123,7 +3414,7 @@ def _format_branch_panel(window: DashboardWindow) -> str:
               <tbody>{rows}</tbody>
             </table>
           </div>
-          <p class="panel-hint">{escape(_format_branch_note(branches))}</p>
+          <p class="panel-hint" data-view="stats">{escape(_format_branch_note(branches))}</p>
         </section>
         """
 
@@ -3161,10 +3452,14 @@ def _format_provider_panel(window: DashboardWindow) -> str:
 
     total_cost = sum(entry.estimated_cost_usd for entry in providers)
     unidentified = [entry for entry in providers if entry.name == UNIDENTIFIED_VENDOR_LABEL]
-    cost_svg = _svg_bar_chart(
-        [(entry.name, float(entry.estimated_cost_usd)) for entry in providers],
-        bar_color="#b45309",
-        value_formatter=lambda value: f"${value:.2f}",
+    cost_svg = _svg_donut_chart(
+        [
+            (entry.name, float(entry.estimated_cost_usd), VISUAL_PALETTE[index % len(VISUAL_PALETTE)])
+            for index, entry in enumerate(providers)
+        ],
+        center_value=f"${total_cost:,.2f}",
+        center_label="estimated spend",
+        value_formatter=lambda value: f"${value:,.2f}",
         empty_label="No provider spend recorded for this view.",
     )
     rows = "".join(
@@ -3201,11 +3496,11 @@ def _format_provider_panel(window: DashboardWindow) -> str:
             </div>
           </div>
           <div class="chart-grid">
-            <div class="chart-card">
+            <div class="chart-card" data-view="visual">
               <h3>Cost Share by Vendor</h3>
               {cost_svg}
             </div>
-            <div class="chart-card">
+            <div class="chart-card" data-view="stats">
               <h3>Provider Detail</h3>
               <div class="table-wrap">
                 <table>
@@ -3223,7 +3518,7 @@ def _format_provider_panel(window: DashboardWindow) -> str:
               </div>
             </div>
           </div>
-          <p class="panel-hint">{escape(note)}</p>
+          <p class="panel-hint" data-view="stats">{escape(note)}</p>
         </section>
         """
 
@@ -3285,6 +3580,22 @@ def _format_efficiency_panel(window: DashboardWindow) -> str:
             "rather than counted as cost with no work to divide by."
         )
 
+    tool_efficiency_svg = _svg_bar_chart(
+        [
+            (entry.label, float(entry.cost_per_1k_lines))
+            for entry in window.tool_efficiency
+            if entry.cost_per_1k_lines is not None
+        ],
+        bar_color="#7c3aed",
+        value_formatter=lambda value: f"${value:,.2f}",
+        empty_label="No per-tool cost per line to chart yet.",
+    )
+    hotspot_svg = _svg_bar_chart(
+        [(entry.path, float(entry.edits)) for entry in efficiency.hotspots[:8]],
+        bar_color="#b45309",
+        value_formatter=lambda value: f"{int(value):,} edits",
+        empty_label="No rewritten files recorded for this view.",
+    )
     return f"""
         <section class="panel">
           <div class="section-header">
@@ -3298,9 +3609,19 @@ def _format_efficiency_panel(window: DashboardWindow) -> str:
             </div>
           </div>
           <div class="kpi-grid">{kpis}</div>
+          <div class="chart-grid" style="margin-top: 16px;">
+            <div class="chart-card" data-view="visual">
+              <h3>Cost per 1k Lines by Tool</h3>
+              {tool_efficiency_svg}
+            </div>
+            <div class="chart-card" data-view="visual">
+              <h3>Most Rewritten Files</h3>
+              {hotspot_svg}
+            </div>
+          </div>
           {_format_tool_efficiency_table(window.tool_efficiency)}
           {_format_hotspot_table(efficiency.hotspots)}
-          <p class="panel-hint">{escape(note)}</p>
+          <p class="panel-hint" data-view="stats">{escape(note)}</p>
         </section>
         """
 
@@ -3328,7 +3649,7 @@ def _format_hotspot_table(hotspots: list) -> str:
         for entry in hotspots
     )
     return f"""
-        <div class="chart-card">
+        <div class="chart-card" data-view="stats">
           <h3>Most Rewritten Files</h3>
           <div class="table-wrap">
             <table>
@@ -3374,7 +3695,7 @@ def _format_tool_efficiency_table(entries: list) -> str:
         for entry in entries
     )
     return f"""
-        <div class="chart-card">
+        <div class="chart-card" data-view="stats">
           <h3>Cost per 1k Lines by Tool</h3>
           <div class="table-wrap">
             <table>
@@ -3463,6 +3784,126 @@ def _format_empty_chart(title: str, detail: str) -> str:
     return f'<div class="chart-empty">{_format_empty_showcase(title, detail)}</div>'
 
 
+VISUAL_PALETTE = ["#0f766e", "#b45309", "#7c3aed", "#be185d", "#2563eb", "#ca8a04"]
+
+
+def _format_visual_summary(window: DashboardWindow) -> str:
+    """A chart-first read of the window for the Graphs view.
+
+    Everything here already exists as text or tables elsewhere: the token split
+    was a hint line under the cost metric, the current-versus-previous figures
+    were two bare numbers, and spend share was only a ranked table. The Graphs
+    view turns those into pictures, so the numbers that matter are legible at a
+    glance instead of being read row by row.
+    """
+    split = window.summary.token_split()
+    token_donut = _svg_donut_chart(
+        [
+            ("Fresh input", float(split.fresh_input), VISUAL_PALETTE[0]),
+            ("Cached read", float(split.cached_read), "#2ea596"),
+            ("Cache write", float(split.cache_write), "#8ed3c5"),
+            ("Output", float(split.output), VISUAL_PALETTE[1]),
+        ],
+        center_value=f"{window.summary.total_tokens:,}",
+        center_label="total tokens",
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="This view recorded no token split to chart.",
+    )
+
+    tools = [entry for entry in (window.tool_breakdown or []) if entry.estimated_cost_usd > 0]
+    if len(tools) > 1:
+        spend_entries = [(entry.name, float(entry.estimated_cost_usd)) for entry in tools]
+        spend_label = "Estimated spend by tool"
+    else:
+        spend_entries = [(entry.name, float(entry.estimated_cost_usd)) for entry in window.projects[:6]]
+        spend_label = "Estimated spend by project"
+    spend_donut = _svg_donut_chart(
+        [
+            (name, value, VISUAL_PALETTE[index % len(VISUAL_PALETTE)])
+            for index, (name, value) in enumerate(spend_entries)
+        ],
+        center_value=f"${sum(value for _, value in spend_entries):,.2f}",
+        center_label="estimated spend",
+        value_formatter=lambda value: f"${value:,.2f}",
+        empty_label="No priced sessions in this view yet.",
+    )
+
+    comparison = window.comparison
+    token_columns = _svg_column_chart(
+        [
+            (comparison.current.label, float(comparison.current.total_tokens), VISUAL_PALETTE[0]),
+            (comparison.previous.label, float(comparison.previous.total_tokens), "#8ed3c5"),
+        ],
+        value_formatter=lambda value: f"{int(value):,}",
+        empty_label="No previous window to compare tokens against.",
+    )
+    cost_columns = _svg_column_chart(
+        [
+            (comparison.current.label, float(comparison.current.estimated_cost_usd), VISUAL_PALETTE[1]),
+            (comparison.previous.label, float(comparison.previous.estimated_cost_usd), "#f3c98b"),
+        ],
+        value_formatter=lambda value: f"${value:,.2f}",
+        empty_label="No previous window to compare spend against.",
+    )
+
+    gauges: list[tuple[str, float | None, str]] = [
+        ("Cache hit", window.summary.cache_ratio, VISUAL_PALETTE[0]),
+    ]
+    if window.outcomes is not None and window.outcomes.supported:
+        gauges.append(("Verified after edit", window.outcomes.verification_rate, VISUAL_PALETTE[2]))
+    if window.context_hygiene is not None and window.context_hygiene.supported:
+        gauges.append(("Sessions compacting", window.context_hygiene.compaction_rate, VISUAL_PALETTE[1]))
+    if window.efficiency is not None and window.efficiency.tracked:
+        gauges.append(("Read-only spend", window.efficiency.read_only_cost_share, VISUAL_PALETTE[3]))
+    health_gauges = _format_gauge_row(
+        gauges,
+        empty_label="This view records no cache, verification, compaction, or read-only signal to gauge.",
+    )
+    if comparison.total_tokens_delta_pct is None:
+        comparison_note = "No comparable previous window yet."
+    else:
+        token_word = "up" if comparison.total_tokens_delta_pct >= 0 else "down"
+        spend_word = "up" if comparison.cost_delta_usd >= 0 else "down"
+        comparison_note = (
+            f"Tokens {token_word} {abs(comparison.total_tokens_delta_pct):.1f}% and spend {spend_word} "
+            f"${abs(comparison.cost_delta_usd):,.2f} versus {comparison.previous.label}."
+        )
+
+    return f"""
+        <section class="panel" data-view="visual">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">The Shape of It</p>
+              <h2>Visual Summary</h2>
+            </div>
+          </div>
+          <p class="section-note">{escape(comparison_note)}</p>
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Token Mix</h3>
+              {token_donut}
+            </div>
+            <div class="chart-card">
+              <h3>{escape(spend_label)}</h3>
+              {spend_donut}
+            </div>
+            <div class="chart-card">
+              <h3>Tokens: This Window vs Previous</h3>
+              {token_columns}
+            </div>
+            <div class="chart-card">
+              <h3>Spend: This Window vs Previous</h3>
+              {cost_columns}
+            </div>
+            <div class="chart-card chart-wide">
+              <h3>Health Signals</h3>
+              {health_gauges}
+            </div>
+          </div>
+        </section>
+        """
+
+
 def _format_tool_share(window: DashboardWindow) -> str:
     entries = window.tool_breakdown or []
     if not entries:
@@ -3470,7 +3911,7 @@ def _format_tool_share(window: DashboardWindow) -> str:
     total_tokens = sum(entry.total_tokens for entry in entries)
     rows = []
     if total_tokens > 0:
-        for entry in entries:
+        for index, entry in enumerate(entries):
             share = (entry.total_tokens / total_tokens) * 100 if total_tokens else 0.0
             rows.append(
                 f"""
@@ -3479,7 +3920,7 @@ def _format_tool_share(window: DashboardWindow) -> str:
             <strong>{escape(entry.name)}</strong>
             <span>{share:.1f}%</span>
           </div>
-          <div class="tool-share-bar"><span style="width: {share:.1f}%"></span></div>
+          <div class="tool-share-bar"><span style="--i:{index}; width: {share:.1f}%"></span></div>
           <div class="tool-share-meta">{entry.sessions} session{'s' if entry.sessions != 1 else ''} · {entry.requests} requests · {entry.total_tokens:,} tokens · ${entry.estimated_cost_usd:.2f}</div>
         </div>
         """
@@ -3487,7 +3928,7 @@ def _format_tool_share(window: DashboardWindow) -> str:
     else:
         rows.append('<div class="chart-empty">No token usage recorded across tools yet.</div>')
     return f"""
-        <section class="panel">
+        <section class="panel" data-view="visual">
           <div class="section-header">
             <div>
               <p class="section-kicker">Where It Happened</p>
@@ -3569,13 +4010,24 @@ def _svg_line_chart(
 
     line_points = " ".join(f"{point_x(index):.1f},{point_y(value):.1f}" for index, (_, value) in enumerate(points))
     area_points = f"{padding_left:.1f},{padding_top + inner_height:.1f} {line_points} {padding_left + inner_width:.1f},{padding_top + inner_height:.1f}"
+    max_labels = 8
+    label_indexes = (
+        sorted({round(i * (len(points) - 1) / max_labels) for i in range(max_labels + 1)})
+        if len(points) > max_labels
+        else set(range(len(points)))
+    )
     labels = "".join(
         f'<text x="{point_x(index):.1f}" y="{height - 12}" text-anchor="middle" font-size="11" fill="#6d645d">{escape(label)}</text>'
         for index, (label, _) in enumerate(points)
+        if index in label_indexes
     )
+    dot_indexes = set(range(len(points))) if len(points) <= 14 else label_indexes
     dots = "".join(
-        f'<circle cx="{point_x(index):.1f}" cy="{point_y(value):.1f}" r="4" fill="{stroke}"><title>{escape(label)}: {escape(value_formatter(value))}</title></circle>'
+        f'<circle class="chart-dot{" chart-dot-last" if index == len(points) - 1 else ""}" style="--i:{min(index, 24)}" '
+        f'cx="{point_x(index):.1f}" cy="{point_y(value):.1f}" r="4" fill="{stroke}">'
+        f"<title>{escape(label)}: {escape(value_formatter(value))}</title></circle>"
         for index, (label, value) in enumerate(points)
+        if index in dot_indexes
     )
     grid = "".join(
         f'<line x1="{padding_left}" y1="{padding_top + step * (inner_height / 3):.1f}" x2="{width - padding_right}" y2="{padding_top + step * (inner_height / 3):.1f}" stroke="rgba(72,53,36,0.12)" stroke-dasharray="4 6" />'
@@ -3588,8 +4040,8 @@ def _svg_line_chart(
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Trend chart">'
         f'{grid}'
-        f'<polygon points="{area_points}" fill="{fill}" />'
-        f'<polyline points="{line_points}" fill="none" stroke="{stroke}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />'
+        f'<polygon class="chart-area" points="{area_points}" fill="{fill}" />'
+        f'<polyline class="chart-line" pathLength="1" points="{line_points}" fill="none" stroke="{stroke}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />'
         f'{dots}{labels}{y_labels}</svg>'
     )
 
@@ -3625,10 +4077,479 @@ def _svg_bar_chart(
         rows.append(
             f'<text x="{padding}" y="{y + 20}" font-size="12" fill="#1f1a17">{escape(fitted)}<title>{escape(label)}</title></text>'
             f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_max_width:.1f}" height="16" rx="8" fill="rgba(72,53,36,0.08)" />'
-            f'<rect x="{padding + label_width}" y="{y + 6}" width="{bar_width:.1f}" height="16" rx="8" fill="{bar_color}" />'
+            f'<rect class="chart-bar" style="--i:{min(index, 20)}" x="{padding + label_width}" y="{y + 6}" width="{bar_width:.1f}" height="16" rx="8" fill="{bar_color}" />'
             f'<text x="{padding + label_width + bar_max_width + 10}" y="{y + 19}" font-size="12" fill="#6d645d">{escape(value_formatter(value))}</text>'
         )
     return f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="Bar chart">{"".join(rows)}</svg>'
+
+
+def _svg_donut_chart(
+    segments: list[tuple[str, float, str]],
+    *,
+    center_value: str,
+    center_label: str,
+    value_formatter,
+    empty_label: str,
+) -> str:
+    segments = [(label, float(value), color) for label, value, color in segments if value and value > 0]
+    if not segments:
+        return _format_empty_chart("Nothing to split yet.", empty_label)
+    if len(segments) > 7:
+        segments = segments[:6] + [("Other", sum(value for _, value, _ in segments[6:]), "#9c948c")]
+    width = 720
+    height = 280
+    cx = 150
+    cy = height / 2
+    radius = 84
+    thickness = 30
+    circumference = 2 * math.pi * radius
+    total = sum(value for _, value, _ in segments)
+    rings = []
+    offset = 0.0
+    for label, value, color in segments:
+        share = value / total
+        dash = share * circumference
+        rings.append(
+            f'<circle class="donut-ring" style="--circ:{circumference:.2f};--offset:{-offset:.2f}" '
+            f'cx="{cx}" cy="{cy}" r="{radius}" fill="none" stroke="{color}" '
+            f'stroke-width="{thickness}" stroke-dasharray="{dash:.2f} {circumference - dash:.2f}" '
+            f'stroke-dashoffset="{-offset:.2f}" transform="rotate(-90 {cx} {cy})">'
+            f"<title>{escape(label)}: {escape(value_formatter(value))} ({share:.0%})</title></circle>"
+        )
+        offset += dash
+    center = (
+        f'<text x="{cx}" y="{cy - 2}" text-anchor="middle" font-size="21" font-weight="700" fill="#1f1a17">{escape(center_value)}</text>'
+        f'<text x="{cx}" y="{cy + 22}" text-anchor="middle" font-size="11" fill="#6d645d">{escape(center_label)}</text>'
+    )
+    legend_x = 300
+    line_height = 34
+    legend_top = cy - (len(segments) * line_height) / 2
+    legend = []
+    for index, (label, value, color) in enumerate(segments):
+        y = legend_top + index * line_height
+        share = value / total
+        legend.append(
+            f'<rect x="{legend_x}" y="{y - 11:.1f}" width="14" height="14" rx="4" fill="{color}" />'
+            f'<text x="{legend_x + 24}" y="{y + 1:.1f}" font-size="13" font-weight="600" fill="#1f1a17">'
+            f"{escape(_fit_label(label, 34))}</text>"
+            f'<text x="{width - 24}" y="{y + 1:.1f}" text-anchor="end" font-size="13" fill="#6d645d">'
+            f"{escape(value_formatter(value))} · {share:.0%}</text>"
+        )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Donut chart">'
+        f'{"".join(rings)}{center}{"".join(legend)}</svg>'
+    )
+
+
+def _svg_column_chart(
+    bars: list[tuple[str, float, str]],
+    *,
+    value_formatter,
+    empty_label: str,
+) -> str:
+    bars = [(label, float(value), color) for label, value, color in bars if value and value > 0]
+    if not bars:
+        return _format_empty_chart("Nothing to compare yet.", empty_label)
+    width = 720
+    height = 250
+    padding_left = 64
+    padding_right = 20
+    padding_top = 34
+    padding_bottom = 42
+    inner_width = width - padding_left - padding_right
+    inner_height = height - padding_top - padding_bottom
+    max_value = max(value for _, value, _ in bars)
+    slot = inner_width / len(bars)
+    bar_width = max(24.0, min(slot * 0.46, 120.0))
+    columns = []
+    for index, (label, value, color) in enumerate(bars):
+        center = padding_left + slot * index + slot / 2
+        bar_height = (value / max_value) * inner_height if max_value else 0.0
+        top = padding_top + inner_height - bar_height
+        columns.append(
+            f'<rect class="chart-column" style="--i:{index}" x="{center - bar_width / 2:.1f}" y="{top:.1f}" width="{bar_width:.1f}" '
+            f'height="{max(0.0, bar_height):.1f}" rx="8" fill="{color}">'
+            f"<title>{escape(label)}: {escape(value_formatter(value))}</title></rect>"
+            f'<text x="{center:.1f}" y="{top - 10:.1f}" text-anchor="middle" font-size="12" '
+            f'font-weight="600" fill="#1f1a17">{escape(value_formatter(value))}</text>'
+            f'<text x="{center:.1f}" y="{height - 14}" text-anchor="middle" font-size="12" fill="#6d645d">{escape(label)}</text>'
+        )
+    grid = "".join(
+        f'<line x1="{padding_left}" y1="{padding_top + step * (inner_height / 3):.1f}" '
+        f'x2="{width - padding_right}" y2="{padding_top + step * (inner_height / 3):.1f}" '
+        f'stroke="rgba(72,53,36,0.12)" stroke-dasharray="4 6" />'
+        for step in range(4)
+    )
+    y_labels = "".join(
+        f'<text x="{padding_left - 8}" y="{padding_top + inner_height - step * (inner_height / 3) + 4:.1f}" '
+        f'text-anchor="end" font-size="11" fill="#6d645d">{escape(value_formatter((max_value / 3) * step))}</text>'
+        for step in range(4)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Column chart">'
+        f'{grid}{y_labels}{"".join(columns)}</svg>'
+    )
+
+
+def _arc_path(cx: float, cy: float, radius: float, start_deg: float, end_deg: float) -> str:
+    start = math.radians(start_deg)
+    end = math.radians(end_deg)
+    x1 = cx + radius * math.cos(start)
+    y1 = cy + radius * math.sin(start)
+    x2 = cx + radius * math.cos(end)
+    y2 = cy + radius * math.sin(end)
+    large_arc = 1 if abs(end_deg - start_deg) > 180 else 0
+    sweep = 1 if end_deg >= start_deg else 0
+    return f"M {x1:.1f} {y1:.1f} A {radius} {radius} 0 {large_arc} {sweep} {x2:.1f} {y2:.1f}"
+
+
+def _svg_gauge(
+    value: float | None,
+    *,
+    label: str,
+    accent: str,
+    detail: str = "",
+) -> str:
+    width = 240
+    height = 190
+    cx = width / 2
+    cy = 128
+    radius = 74
+    thickness = 20
+    start = 150
+    sweep = 240
+    ratio = 0.0 if value is None else max(0.0, min(1.0, value))
+    background = _arc_path(cx, cy, radius, start, start + sweep)
+    foreground = _arc_path(cx, cy, radius, start, start + sweep * ratio) if ratio > 0 else ""
+    percent = "n/a" if value is None else f"{ratio:.0%}"
+    detail_svg = (
+        f'<text x="{cx}" y="{cy + 46}" text-anchor="middle" font-size="11" fill="#6d645d">{escape(detail)}</text>'
+        if detail
+        else ""
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="gauge-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(label)} gauge">'
+        f'<path d="{background}" fill="none" stroke="rgba(72,53,36,0.12)" stroke-width="{thickness}" stroke-linecap="round" />'
+        f'<path class="gauge-value" pathLength="1" d="{foreground}" fill="none" stroke="{accent}" stroke-width="{thickness}" stroke-linecap="round" />'
+        f'<text x="{cx}" y="{cy + 4}" text-anchor="middle" font-size="30" font-weight="700" fill="#1f1a17">{percent}</text>'
+        f'<text x="{cx}" y="{cy + 26}" text-anchor="middle" font-size="12" fill="#6d645d">{escape(label)}</text>'
+        f'{detail_svg}</svg>'
+    )
+
+
+def _format_gauge_row(gauges: list[tuple[str, float | None, str]], *, empty_label: str) -> str:
+    usable = [gauge for gauge in gauges if gauge[1] is not None]
+    if not usable:
+        return _format_empty_chart("No health signal yet.", empty_label)
+    cells = "".join(_svg_gauge(value, label=label, accent=accent) for label, value, accent in usable)
+    return f'<div class="gauge-row">{cells}</div>'
+
+
+def _treemap_place(
+    areas: list[float],
+    indices: list[int],
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    placed: list[tuple[int, float, float, float, float]],
+) -> None:
+    if not indices:
+        return
+    if len(indices) == 1 or width <= 0 or height <= 0:
+        for index in indices:
+            placed.append((index, x, y, width, height))
+        return
+    total = sum(areas[index] for index in indices)
+    if total <= 0:
+        return
+    half = total / 2
+    running = 0.0
+    split = len(indices)
+    for position, index in enumerate(indices):
+        running += areas[index]
+        if running >= half and position < len(indices) - 1:
+            split = position + 1
+            break
+    left = indices[:split]
+    right = indices[split:]
+    if not right:
+        for index in indices:
+            placed.append((index, x, y, width, height))
+        return
+    left_area = sum(areas[index] for index in left)
+    fraction = left_area / total
+    if width >= height:
+        _treemap_place(areas, left, x, y, width * fraction, height, placed)
+        _treemap_place(areas, right, x + width * fraction, y, width * (1 - fraction), height, placed)
+    else:
+        _treemap_place(areas, left, x, y, width, height * fraction, placed)
+        _treemap_place(areas, right, x, y + height * fraction, width, height * (1 - fraction), placed)
+
+
+def _svg_treemap(
+    items: list[tuple[str, float]],
+    *,
+    value_formatter,
+    empty_label: str,
+) -> str:
+    items = [(label, float(value)) for label, value in items if value and value > 0]
+    if not items:
+        return _format_empty_chart("Nothing to map yet.", empty_label)
+    items.sort(key=lambda item: item[1], reverse=True)
+    width = 720
+    height = 300
+    gap = 3
+    areas = [value for _, value in items]
+    placed: list[tuple[int, float, float, float, float]] = []
+    _treemap_place(areas, list(range(len(items))), 0.0, 0.0, float(width), float(height), placed)
+    cells = []
+    for index, x, y, cell_width, cell_height in placed:
+        label, value = items[index]
+        color = VISUAL_PALETTE[index % len(VISUAL_PALETTE)]
+        inner_width = max(0.0, cell_width - gap)
+        inner_height = max(0.0, cell_height - gap)
+        room = max(6, int(inner_width / 7.4))
+        cells.append(
+            f'<rect class="chart-tile" style="--i:{index}" x="{x + gap / 2:.1f}" y="{y + gap / 2:.1f}" width="{inner_width:.1f}" '
+            f'height="{inner_height:.1f}" rx="6" fill="{color}">'
+            f"<title>{escape(label)}: {escape(value_formatter(value))}</title></rect>"
+        )
+        if inner_width >= 72 and inner_height >= 40:
+            cells.append(
+                f'<text x="{x + gap / 2 + 10:.1f}" y="{y + gap / 2 + 20:.1f}" font-size="12" '
+                f'font-weight="600" fill="#fffaf2">{escape(_fit_label(label, room))}</text>'
+            )
+        if inner_width >= 72 and inner_height >= 60:
+            cells.append(
+                f'<text x="{x + gap / 2 + 10:.1f}" y="{y + gap / 2 + 38:.1f}" font-size="11" '
+                f'fill="rgba(255,250,242,0.85)">{escape(value_formatter(value))}</text>'
+            )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Treemap">{"".join(cells)}</svg>'
+    )
+
+
+def _svg_scatter(
+    points: list[tuple[str, float, float, float]],
+    *,
+    x_formatter,
+    y_formatter,
+    empty_label: str,
+) -> str:
+    points = [(label, float(x), float(y), float(size)) for label, x, y, size in points if x >= 0 and y >= 0]
+    if not points:
+        return _format_empty_chart("No sessions to plot yet.", empty_label)
+    width = 720
+    height = 300
+    padding_left = 64
+    padding_right = 24
+    padding_top = 24
+    padding_bottom = 48
+    inner_width = width - padding_left - padding_right
+    inner_height = height - padding_top - padding_bottom
+    log_x = [math.log10(1 + max(0.0, x)) for _, x, _, _ in points]
+    max_log_x = max(log_x) or 1.0
+    max_x = max(x for _, x, _, _ in points) or 1.0
+    max_y = max(y for _, _, y, _ in points) or 1.0
+    max_size = max(size for _, _, _, size in points) or 1.0
+    marks = []
+    for index, ((label, x_value, y_value, size_value), log_value) in enumerate(zip(points, log_x)):
+        x = padding_left + (log_value / max_log_x) * inner_width
+        y = padding_top + inner_height - (y_value / max_y) * inner_height
+        radius = 6 + (size_value / max_size) * 12
+        marks.append(
+            f'<circle class="chart-dot" style="--i:{min(index, 20)}" cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" '
+            f'fill="{VISUAL_PALETTE[1]}" fill-opacity="0.55" stroke="{VISUAL_PALETTE[1]}" stroke-width="2">'
+            f"<title>{escape(label)}: {escape(x_formatter(x_value))} tokens · "
+            f"{escape(y_formatter(y_value))} · {int(size_value):,} requests</title></circle>"
+        )
+    grid = "".join(
+        f'<line x1="{padding_left}" y1="{padding_top + step * (inner_height / 3):.1f}" '
+        f'x2="{width - padding_right}" y2="{padding_top + step * (inner_height / 3):.1f}" '
+        f'stroke="rgba(72,53,36,0.12)" stroke-dasharray="4 6" />'
+        for step in range(4)
+    )
+    y_labels = "".join(
+        f'<text x="{padding_left - 8}" y="{padding_top + inner_height - step * (inner_height / 3) + 4:.1f}" '
+        f'text-anchor="end" font-size="11" fill="#6d645d">{escape(y_formatter((max_y / 3) * step))}</text>'
+        for step in range(4)
+    )
+    x_ticks = []
+    for exponent in range(1, max(1, math.ceil(math.log10(max_x))) + 1):
+        tick = 10**exponent
+        if tick > max_x * 1.05:
+            break
+        tick_x = padding_left + (math.log10(1 + tick) / max_log_x) * inner_width
+        x_ticks.append(
+            f'<text x="{tick_x:.1f}" y="{height - 24}" text-anchor="middle" font-size="10" fill="#6d645d">'
+            f"{escape(_compact_count(tick))}</text>"
+        )
+    x_title = (
+        f'<text x="{padding_left + inner_width / 2:.1f}" y="{height - 8}" text-anchor="middle" '
+        f'font-size="11" fill="#6d645d">Tokens per session (log scale)</text>'
+    )
+    y_title = (
+        f'<text x="14" y="{padding_top + inner_height / 2:.1f}" text-anchor="middle" '
+        f'font-size="11" fill="#6d645d" transform="rotate(-90 14 {padding_top + inner_height / 2:.1f})">Cost per session</text>'
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Bubble chart">'
+        f'{grid}{y_labels}{"".join(x_ticks)}{x_title}{y_title}{"".join(marks)}</svg>'
+    )
+
+
+def _svg_calendar_heatmap(points: list[tuple[str, float]]) -> str:
+    points = [(day, float(value)) for day, value in points][-91:]
+    if not points:
+        return _format_empty_chart("No daily activity yet.", "This calendar fills in once sessions land on at least one day.")
+    first_day = date.fromisoformat(points[0][0])
+    offset = first_day.weekday()
+    weeks = max(1, (offset + len(points) + 6) // 7)
+    width = 760
+    left = 44
+    right = 20
+    top = 26
+    bottom = 22
+    gap = 4
+    cell = min(34.0, max(12.0, (width - left - right) / weeks - gap))
+    height = top + 7 * (cell + gap) + bottom
+    max_value = max(value for _, value in points) or 1.0
+    lookup = {day: value for day, value in points}
+    cells = []
+    month_labels = []
+    seen_months: set[str] = set()
+    for index in range(offset + len(points)):
+        weekday = index % 7
+        week = index // 7
+        x = left + week * (cell + gap)
+        y = top + weekday * (cell + gap)
+        if index < offset:
+            continue
+        day_text = points[index - offset][0]
+        value = lookup.get(day_text, 0.0)
+        day_date = date.fromisoformat(day_text)
+        month_key = day_text[:7]
+        if month_key not in seen_months and (day_date.day <= 7 or not seen_months):
+            seen_months.add(month_key)
+            month_labels.append(
+                f'<text x="{x:.1f}" y="{top - 8}" font-size="11" fill="#6d645d">{day_date.strftime("%b")}</text>'
+            )
+        cells.append(
+            f'<rect class="chart-cell" style="--i:{min(index - offset, 60)}" x="{x:.1f}" y="{y:.1f}" '
+            f'width="{cell:.1f}" height="{cell:.1f}" rx="5" '
+            f'fill="{_heatmap_color(value / max_value if max_value else 0)}">'
+            f"<title>{escape(day_text)}: {int(value):,} tokens</title></rect>"
+        )
+    weekday_labels = "".join(
+        f'<text x="{left - 8}" y="{top + weekday * (cell + gap) + cell / 2 + 4:.1f}" '
+        f'text-anchor="end" font-size="11" fill="#6d645d">{label}</text>'
+        for weekday, label in ((0, "Mon"), (2, "Wed"), (4, "Fri"))
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Daily activity calendar">'
+        f'{weekday_labels}{"".join(month_labels)}{"".join(cells)}</svg>'
+    )
+
+
+def _svg_stacked_area(
+    series: list[tuple[str, list[tuple[str, float]]]],
+    *,
+    colors: dict[str, str],
+    value_formatter,
+    empty_label: str,
+) -> str:
+    if not series or not any(points for _, points in series):
+        return _format_empty_chart("Nothing to stack yet.", empty_label)
+    width = 760
+    height = 280
+    padding_left = 58
+    padding_right = 20
+    padding_top = 26
+    padding_bottom = 40
+    inner_width = width - padding_left - padding_right
+    inner_height = height - padding_top - padding_bottom
+    days: list[str] = []
+    value_maps: list[tuple[str, dict[str, float]]] = []
+    for source, points in series:
+        mapping = dict(points)
+        value_maps.append((source, mapping))
+        for day, _ in points:
+            if day not in days:
+                days.append(day)
+    days.sort()
+    if not days:
+        return _format_empty_chart("Nothing to stack yet.", empty_label)
+    totals: defaultdict[str, float] = defaultdict(float)
+    for _, mapping in value_maps:
+        for day in days:
+            totals[day] += mapping.get(day, 0.0)
+    max_total = max(totals.values()) or 1.0
+    scale = inner_height / max_total
+
+    def point_x(index: int) -> float:
+        if len(days) == 1:
+            return padding_left + inner_width / 2
+        return padding_left + (index / (len(days) - 1)) * inner_width
+
+    cumulative: defaultdict[str, float] = defaultdict(float)
+    areas = []
+    for layer, (source, mapping) in enumerate(value_maps):
+        top_points = []
+        bottom_points = []
+        for index, day in enumerate(days):
+            value = mapping.get(day, 0.0)
+            x = point_x(index)
+            y_bottom = padding_top + inner_height - cumulative[day] * scale
+            y_top = padding_top + inner_height - (cumulative[day] + value) * scale
+            top_points.append(f"{x:.1f},{y_top:.1f}")
+            bottom_points.append(f"{x:.1f},{y_bottom:.1f}")
+        for day in days:
+            cumulative[day] += mapping.get(day, 0.0)
+        if any(mapping.get(day, 0.0) > 0 for day in days):
+            polygon = " ".join(top_points + list(reversed(bottom_points)))
+            areas.append(
+                f'<polygon class="chart-area" style="--i:{layer}" points="{polygon}" '
+                f'fill="{colors.get(source, "#6d645d")}" fill-opacity="0.78">'
+                f"<title>{escape(source_label(source))}</title></polygon>"
+            )
+    grid = "".join(
+        f'<line x1="{padding_left}" y1="{padding_top + step * (inner_height / 3):.1f}" '
+        f'x2="{width - padding_right}" y2="{padding_top + step * (inner_height / 3):.1f}" '
+        f'stroke="rgba(72,53,36,0.12)" stroke-dasharray="4 6" />'
+        for step in range(4)
+    )
+    y_labels = "".join(
+        f'<text x="{padding_left - 8}" y="{padding_top + inner_height - step * (inner_height / 3) + 4:.1f}" '
+        f'text-anchor="end" font-size="11" fill="#6d645d">{escape(value_formatter((max_total / 3) * step))}</text>'
+        for step in range(4)
+    )
+    max_x_labels = 8
+    label_indexes = (
+        {round(i * (len(days) - 1) / max_x_labels) for i in range(max_x_labels + 1)} if len(days) > 1 else {0}
+    )
+    x_labels = "".join(
+        f'<text x="{point_x(index):.1f}" y="{height - 12}" text-anchor="middle" font-size="11" fill="#6d645d">'
+        f"{escape(day[5:])}</text>"
+        for index, day in enumerate(days)
+        if index in label_indexes
+    )
+    legend = "".join(
+        f'<rect x="{48 + legend_index * 150}" y="6" width="12" height="12" rx="3" fill="{colors.get(source, "#6d645d")}"/>'
+        f'<text x="{66 + legend_index * 150}" y="17" font-size="12" fill="#1f1a17">{escape(source_label(source))}</text>'
+        for legend_index, (source, _) in enumerate([entry for entry in series if any(v > 0 for _, v in entry[1])])
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Stacked area chart">'
+        f'{legend}{grid}{y_labels}{"".join(areas)}{x_labels}</svg>'
+    )
 
 
 def _svg_stacked_bar_chart(
@@ -3676,7 +4597,9 @@ def _svg_stacked_bar_chart(
             y_bottom = padding_top + inner_height - stack_heights[day]
             y_top = y_bottom - bar_height
             bars.append(
-                f'<rect x="{center - bar_width / 2:.1f}" y="{y_top:.1f}" width="{bar_width:.1f}" height="{max(0.0, bar_height):.1f}" rx="2" fill="{colors.get(source, "#6d645d")}"><title>{escape(source)}: {escape(value_formatter(value))} on {escape(day)}</title></rect>'
+                f'<rect class="chart-area" style="--i:{min(index, 24)}" x="{center - bar_width / 2:.1f}" '
+                f'y="{y_top:.1f}" width="{bar_width:.1f}" height="{max(0.0, bar_height):.1f}" rx="2" '
+                f'fill="{colors.get(source, "#6d645d")}"><title>{escape(source)}: {escape(value_formatter(value))} on {escape(day)}</title></rect>'
             )
             stack_heights[day] += bar_height
     grid = "".join(
@@ -3728,6 +4651,29 @@ def _format_tool_trend(window: DashboardWindow) -> str:
         """
 
 
+def _format_tool_spend_trend(window: DashboardWindow) -> str:
+    points = window.tool_daily_points or []
+    if not points:
+        return ""
+    series: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for point in points:
+        series[point.source].append((point.day, float(point.estimated_cost_usd)))
+    ordered = sorted(series.items(), key=lambda item: (-sum(value for _, value in item[1]), item[0]))
+    svg = _svg_stacked_area(
+        ordered,
+        colors=SOURCE_CHART_COLORS,
+        value_formatter=lambda value: f"${value:.2f}",
+        empty_label="Run any tool on more than one day in this window to reveal spend over time.",
+    )
+    return f"""
+        <div class="chart-card chart-wide">
+          <h3>Tool Spend Over Time (Stacked Area)</h3>
+          {svg}
+          <div class="chart-empty">Estimated cost per day, stacked by tool.</div>
+        </div>
+        """
+
+
 def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
     if not cells:
         return _format_empty_chart("No activity map yet.", "This heatmap fills in once activity spans different hours of the day.")
@@ -3752,7 +4698,8 @@ def _svg_heatmap_chart(cells: list[HeatmapCell]) -> str:
             x = left + hour * (cell_width + gap)
             y = top + weekday * (cell_height + gap)
             rects.append(
-                f'<rect x="{x}" y="{y}" width="{cell_width}" height="{cell_height}" rx="7" fill="{fill}">'
+                f'<rect class="chart-cell" style="--i:{weekday * 24 + hour}" x="{x}" y="{y}" '
+                f'width="{cell_width}" height="{cell_height}" rx="7" fill="{fill}">'
                 f'<title>{escape(_heatmap_title(weekday_labels[weekday], hour, sessions, tokens))}</title>'
                 f"</rect>"
             )

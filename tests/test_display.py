@@ -474,6 +474,33 @@ class DashboardStructureTest(unittest.TestCase):
         for label in ("Today", "Last 7 Days", "Last 30 Days", "All Time"):
             self.assertIn(f">{label}<", html)
 
+    def test_view_toggle_separates_graphs_from_stats(self) -> None:
+        html = self._render([detail()])
+        self.assertIn('data-view-button="visual"', html)
+        self.assertIn('data-view-button="stats"', html)
+        self.assertIn('data-view="visual"', html)
+        self.assertIn('data-view="stats"', html)
+        self.assertIn("<h2>Visual Summary</h2>", html)
+        self.assertIn("Token Mix", html)
+        self.assertIn("Spend: This Window vs Previous", html)
+        self.assertIn("Requests Trend", html)
+        self.assertIn("Cost per Request", html)
+        self.assertIn("Health Signals", html)
+
+    def test_graphs_use_geometry_driven_animations(self) -> None:
+        html = self._render([detail()])
+        self.assertIn("@keyframes donut-draw", html)
+        self.assertIn("@keyframes line-draw", html)
+        self.assertIn("@keyframes grow-x", html)
+        self.assertIn("@keyframes cell-pop", html)
+        self.assertIn('class="donut-ring"', html)
+        self.assertIn('class="chart-line" pathLength="1"', html)
+        self.assertIn("Session Cost vs Tokens", html)
+        self.assertIn("Activity Calendar", html)
+        self.assertIn('key === "g"', html)
+        self.assertIn('key === "s"', html)
+        self.assertIn("No comparable previous window yet.", html)
+
     def test_all_four_windows_render_their_own_panels(self) -> None:
         scope = _build_scope(
             key="codex",
