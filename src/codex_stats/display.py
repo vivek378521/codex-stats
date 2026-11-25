@@ -21,6 +21,7 @@ from .models import (
     SessionDrilldown,
 )
 from .sources import source_label
+from .telemetry import TelemetryReport
 
 SOURCE_CHART_COLORS: dict[str, str] = {
     "codex": "#0f766e",
@@ -116,6 +117,73 @@ def _default_dashboard_view(
     return (scopes[0].key if scopes else ""), (range_keys[0] if range_keys else "")
 
 
+def _format_telemetry_panel(report: TelemetryReport | None) -> str:
+    if report is None:
+        return ""
+    cards: list[str] = []
+    for item in report.harnesses:
+        profile = item.profile
+        rows = "".join(
+            f"<dt>{escape(label)}</dt><dd>{escape(value)}</dd>"
+            for label, value in (
+                ("Default", profile.default),
+                ("Sends to", "; ".join(profile.destinations)),
+                ("Data", "; ".join(profile.categories)),
+                ("Prompts and code", profile.content),
+                ("Opt out", profile.opt_out),
+                ("Caveat", profile.caveat),
+            )
+        )
+        here = textwrap.shorten(item.local_summary.split(";")[0], width=96, placeholder="…")
+        settings = "".join(
+            f"<li><code>{escape(setting.name)}</code> = {escape(setting.value)} "
+            f"<span class=\"telemetry-muted\">({escape(setting.location)}, {escape(setting.state)})</span></li>"
+            for setting in item.settings
+        )
+        observations = "".join(
+            f"<li><strong>{escape(observation.label)}:</strong> {escape(observation.detail)}</li>"
+            for observation in item.observations
+        )
+        evidence = "".join(
+            f'<li><a href="{escape(source.url)}" target="_blank" rel="noreferrer">{escape(source.title)}</a> '
+            f'<span class="telemetry-muted">— {escape(source.kind)}: {escape(source.detail)}</span></li>'
+            for source in profile.evidence
+        )
+        details = "".join(
+            section
+            for heading, content in (
+                ("Local settings", settings),
+                ("Observed on this machine", observations),
+                ("Sources", evidence),
+            )
+            if content
+            for section in (
+                f'<div class="telemetry-subsection"><h4>{heading}</h4><ul>{content}</ul></div>',
+            )
+        )
+        cards.append(
+            '<article class="telemetry-card">'
+            f"<h3>{escape(profile.label)} <span class=\"telemetry-default\">{escape(profile.default)}</span></h3>"
+            f"<p class=\"telemetry-line\">{escape(profile.summary)}</p>"
+            f"<p class=\"telemetry-here\"><strong>Here:</strong> {escape(here)}</p>"
+            f"<p class=\"telemetry-line\"><strong>Opt out:</strong> <code>{escape(profile.opt_out_short)}</code></p>"
+            f'<details class="telemetry-more"><summary>Details and sources</summary><dl class="telemetry-dl">{rows}</dl>{details}</details>'
+            "</article>"
+        )
+    return (
+        '<details class="coverage-note telemetry-panel">'
+        "<summary>Telemetry and privacy: the short version, per harness</summary>"
+        '<p class="telemetry-intro">Expand a card for exact settings and sources. '
+        "codex-stats does not upload this report.</p>"
+        f'<div class="telemetry-grid">{"".join(cards)}</div>'
+        '<div class="telemetry-actions">'
+        '<button class="action-button" type="button" data-action="download-telemetry-json">Download JSON report</button>'
+        '<button class="action-button" type="button" data-action="download-telemetry-md">Download Markdown report</button>'
+        "</div>"
+        "</details>"
+    )
+
+
 def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, Any] | None = None) -> str:
     generated_at = dashboard.generated_at.strftime("%Y-%m-%d %H:%M %Z")
     scopes = list(dashboard.scopes)
@@ -199,6 +267,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
             f"<ul style=\"margin:4px 0 0 18px\">{''.join(health_items)}</ul>"
             "</details>"
         )
+    telemetry_html = _format_telemetry_panel(dashboard.telemetry)
     scope_sections = "".join(        "".join(
             _format_dashboard_window_section(
                 window,
@@ -224,6 +293,12 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
             for window in scope.windows
         }
     )
+    if dashboard.telemetry is not None:
+        telemetry_json = _json_for_script(dashboard.telemetry.to_json())
+        telemetry_markdown = _json_for_script(dashboard.telemetry.to_markdown())
+    else:
+        telemetry_json = _json_for_script("")
+        telemetry_markdown = _json_for_script("")
     leaderboard_json = "null"
     leaderboard_button = ""
     leaderboard_dialog = ""
@@ -599,6 +674,95 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
     }}
     .coverage-note strong {{
       color: var(--warn);
+    }}
+    .telemetry-panel {{
+      border-color: rgba(15, 118, 110, 0.32);
+      background: rgba(15, 118, 110, 0.07);
+    }}
+    .telemetry-panel > summary {{
+      cursor: pointer;
+      font-weight: 700;
+    }}
+    .telemetry-panel .telemetry-intro {{
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin: 10px 0 14px;
+    }}
+    .telemetry-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 12px;
+    }}
+    .telemetry-card {{
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }}
+    .telemetry-card h3 {{
+      margin: 0 0 6px;
+      font-size: 1rem;
+    }}
+    .telemetry-default {{
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 500;
+      text-transform: uppercase;
+    }}
+    .telemetry-line {{
+      margin: 0 0 6px;
+    }}
+    .telemetry-line code {{
+      background: rgba(72, 53, 36, 0.07);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }}
+    .telemetry-here {{
+      color: var(--ink);
+      margin: 0 0 6px;
+    }}
+    .telemetry-dl {{
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 4px 10px;
+      margin: 0;
+      font-size: 0.82rem;
+    }}
+    .telemetry-dl dt {{
+      color: var(--muted);
+      font-weight: 600;
+    }}
+    .telemetry-dl dd {{
+      margin: 0;
+      overflow-wrap: anywhere;
+    }}
+    .telemetry-more {{
+      border-top: 1px solid var(--line);
+      font-size: 0.8rem;
+      margin-top: 10px;
+      padding-top: 8px;
+    }}
+    .telemetry-more summary {{
+      cursor: pointer;
+    }}
+    .telemetry-subsection h4 {{
+      color: var(--muted);
+      font-size: 0.74rem;
+      margin: 10px 0 2px;
+      text-transform: uppercase;
+    }}
+    .telemetry-subsection ul {{
+      margin: 0 0 0 18px;
+      overflow-wrap: anywhere;
+    }}
+    .telemetry-muted {{
+      color: var(--muted);
+    }}
+    .telemetry-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
     }}
     .config-error {{
       border-color: rgba(185, 28, 28, 0.32);
@@ -1415,6 +1579,7 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       {regression_html}
       {leaks_banner_html}
       {source_health_html}
+      {telemetry_html}
       <div class="toolbar">
         <div class="tabs">
           <div class="scope-tabs">{scope_buttons}</div>
@@ -1474,6 +1639,8 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
   <script>
     const dashboardAssets = {assets_json};
     const dashboardSummaries = {summaries_json};
+    const telemetryJson = {telemetry_json};
+    const telemetryMarkdown = {telemetry_markdown};
     const scopeButtons = Array.from(document.querySelectorAll("[data-scope-button]"));
     const rangeButtons = Array.from(document.querySelectorAll("[data-window-button]"));
     const viewButtons = Array.from(document.querySelectorAll("[data-view-button]"));
@@ -1782,6 +1949,24 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       }}
     }}
 
+    function downloadTelemetryReport(format) {{
+      const content = format === "json" ? telemetryJson : telemetryMarkdown;
+      if (!content) {{
+        setFeedback("No telemetry report is available for this page.");
+        return;
+      }}
+      const blob = new Blob([content], {{ type: format === "json" ? "application/json;charset=utf-8" : "text/markdown;charset=utf-8" }});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `codex-stats-telemetry-${{exportTimestamp()}}.${{format === "json" ? "json" : "md"}}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setFeedback("Telemetry report downloaded. Nothing was uploaded.");
+    }}
+
     async function copySummary() {{
       const content = dashboardSummaries[activeSectionId()];
       if (!content) {{
@@ -1832,6 +2017,8 @@ def format_dashboard_html(dashboard: DashboardData, *, leaderboard: dict[str, An
       exportMenu?.classList.toggle("is-open");
     }});
     document.querySelector('[data-action="copy-summary"]')?.addEventListener("click", copySummary);
+    document.querySelector('[data-action="download-telemetry-json"]')?.addEventListener("click", () => downloadTelemetryReport("json"));
+    document.querySelector('[data-action="download-telemetry-md"]')?.addEventListener("click", () => downloadTelemetryReport("markdown"));
     document.querySelector('[data-action="pdf"]')?.addEventListener("click", () => {{
       exportMenu?.classList.remove("is-open");
       beforePrint();

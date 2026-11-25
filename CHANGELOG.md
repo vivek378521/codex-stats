@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-11-25
+
+### Added
+
+- **Telemetry and privacy disclosure.** The dashboard now has a collapsed panel that
+  explains, for each supported harness, what it sends off the machine, where it goes,
+  whether prompts or code are included, and the exact opt-out. Claims link to vendor
+  docs, vendor source, or independent source review with a review date, while the local
+  settings come from this machine only. `codex-stats --telemetry-report` writes the same
+  report as JSON and Markdown without uploading anything. Claude Code's queued telemetry
+  events contribute event and field names only; IDs, hashes, device IDs, and session IDs
+  are excluded.
+
 ## [1.21.0] - 2026-11-17
 
 ### Added

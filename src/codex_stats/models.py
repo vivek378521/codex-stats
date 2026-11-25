@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .telemetry import TelemetryReport
 
 DEFAULT_SOURCE = "codex"
 
@@ -1254,6 +1257,7 @@ class DashboardData:
     regression_summary: "RegressionDiff | None" = None
     regression_stdout: list[str] | None = None
     source_health: list[SourceHealth] = field(default_factory=list)
+    telemetry: "TelemetryReport | None" = None
 
     def __post_init__(self) -> None:
         if not self.scopes and self.windows:
@@ -1288,4 +1292,5 @@ class DashboardData:
             "regression_summary": self.regression_summary.to_dict() if self.regression_summary else None,
             "regression_stdout": self.regression_stdout,
             "source_health": [item.to_dict() for item in self.source_health],
+            "telemetry": self.telemetry.to_dict() if self.telemetry else None,
         }

@@ -14,6 +14,7 @@ writes a standalone browser dashboard.
   where spend goes, leaks, runway/burn, and regression detection
 - Animated donuts, columns, treemaps, gauges, scatter plots, calendars, stacked areas, and heatmaps
 - Shareable JPG cards and browser PDF export
+- A cited telemetry/privacy panel: what each harness sends, where, and how to turn it off
 
 ## Install
 
@@ -36,7 +37,8 @@ codex-stats
 It writes `~/.cache/codex-stats/dashboard.html` and opens it in your browser. Set
 `XDG_CACHE_HOME` to move it. Inside the dashboard, use the tab row to switch tools and
 windows, the **Graphs / Stats** toggle to switch views, the search box to filter rows,
-**Data sources** to inspect ingest health, and the export menu for PDF and JPG cards.
+**Data sources** to inspect ingest health, **Telemetry and privacy** to see what each
+harness sends off the machine, and the export menu for PDF and JPG cards.
 Press `G` or `S` anywhere outside a text field to switch between Graphs and Stats.
 
 ## Data sources
@@ -57,6 +59,26 @@ Each source reads its 2,000 most recent sessions by default. Set
 `CODEX_STATS_MAX_SESSIONS=N` to change the cap, or `0` to read everything. Parsed
 sessions are cached under the dashboard cache directory and re-read when a source
 changes.
+
+## Telemetry disclosure
+
+The dashboard's **Telemetry and privacy** panel is collapsed by default. It shows, for
+each harness, its default behavior, destinations, data categories, whether prompts or
+code are included, the exact opt-out, and caveats. Curated claims link to vendor docs,
+vendor source, or independent source review and carry a review date; the local settings
+underneath are read from this machine only and take precedence. Use the panel's buttons
+to download the report as JSON or Markdown.
+
+You can also write both files from the terminal:
+
+```bash
+codex-stats --telemetry-report
+```
+
+They land in `~/.cache/codex-stats/telemetry-report.json` and `telemetry-report.md`, and
+the command prints a short summary. **`codex-stats` never uploads this report anywhere.**
+For Claude Code, the panel reports event and field *names* from locally queued
+failed-send telemetry files; IDs, hashes, device IDs, and session IDs are excluded.
 
 ## Cost
 

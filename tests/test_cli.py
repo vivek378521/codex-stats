@@ -22,7 +22,8 @@ from codex_stats.cli import (
 class CliTestCase(unittest.TestCase):
     def test_parser_takes_no_options(self) -> None:
         parser = build_parser()
-        self.assertEqual(vars(parser.parse_args([])), {})
+        self.assertEqual(vars(parser.parse_args([])), {"telemetry_report": False})
+        self.assertTrue(parser.parse_args(["--telemetry-report"]).telemetry_report)
         for removed in ("--output", "--no-open", "--source", "export"):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args([removed])

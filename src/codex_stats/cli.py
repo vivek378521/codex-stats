@@ -65,18 +65,27 @@ from .models import (
 )
 from .sources import Source, iter_sources
 from .state import IngestCache, Snapshot, StateStore, ingest_fingerprint
+from .telemetry import build_telemetry_report, write_telemetry_report
 
 
 def build_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="codex-stats",
         description="Open a local coding-agent usage dashboard in the browser.",
     )
+    parser.add_argument(
+        "--telemetry-report",
+        action="store_true",
+        help="Write a local JSON and Markdown report of what each coding agent harness sends off this machine.",
+    )
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
     paths = Paths.discover()
+    if args.telemetry_report:
+        return _run_telemetry_report(paths)
 
     dashboard = _build_dashboard(paths)
     submit_server = _start_leaderboard(dashboard)
@@ -90,6 +99,15 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"No browser could be opened automatically. Open this file: {output_path}")
     return _run_submit_endpoint(submit_server)
+
+
+def _run_telemetry_report(paths: Paths) -> int:
+    report = build_telemetry_report(paths)
+    json_path, markdown_path = write_telemetry_report(report, paths.output_dir)
+    print(report.to_terminal())
+    print(f"Wrote JSON report to {json_path}")
+    print(f"Wrote Markdown report to {markdown_path}")
+    return 0
 
 
 def _run_submit_endpoint(server: LeaderboardSubmitServer | None) -> int:
@@ -303,6 +321,7 @@ def _build_dashboard(paths: Paths, now: datetime | None = None) -> DashboardData
         regression_summary=regression_summary,
         regression_stdout=regression_stdout,
         source_health=source_health,
+        telemetry=build_telemetry_report(paths, now=current_time),
     )
 
 
